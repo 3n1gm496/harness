@@ -1,0 +1,10 @@
+{
+	"files": [],
+	"references": [
+		{ "path": "packages/shared" },
+		{ "path": "packages/control-plane" },
+		{ "path": "packages/fleet-extension" },
+		{ "path": "packages/llm-gateway" },
+		{ "path": "packages/agent-client" }
+	]
+}

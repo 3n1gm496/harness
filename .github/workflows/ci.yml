@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Installa dipendenze (senza lifecycle script)
+        run: npm ci --ignore-scripts
+      - name: Build
+        run: npm run build
+      - name: Test
+        run: npm test
+      - name: Audit dipendenze di produzione
+        run: npm audit --omit=dev
+        continue-on-error: true

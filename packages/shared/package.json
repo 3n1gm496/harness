@@ -1,0 +1,16 @@
+{
+	"name": "@harness/shared",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"exports": {
+		".": "./dist/index.js"
+	},
+	"scripts": {
+		"build": "tsc --build",
+		"clean": "rm -rf dist *.tsbuildinfo",
+		"test": "npm run build && node --test dist/test/*.test.js"
+	}
+}

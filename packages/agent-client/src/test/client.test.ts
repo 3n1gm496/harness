@@ -1,0 +1,103 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AddressInfo } from "node:net";
+import { after, before, test } from "node:test";
+import { ControlPlaneService, Store, createControlPlaneServer } from "@harness/control-plane";
+import { verifyConfigBundle } from "@harness/shared";
+import { applyManagedPiSettings, buildPiArgs, enroll, syncConfig } from "../client.js";
+
+let dataDir: string;
+let clientDir: string;
+let server: ReturnType<typeof createControlPlaneServer>;
+let baseUrl: string;
+let service: ControlPlaneService;
+let adminToken: string;
+let enrollToken: string;
+
+before(async () => {
+	dataDir = mkdtempSync(join(tmpdir(), "harness-ac-cp-"));
+	clientDir = mkdtempSync(join(tmpdir(), "harness-ac-cli-"));
+	const store = new Store(dataDir);
+	service = new ControlPlaneService(store);
+	adminToken = service.bootstrapAdminToken("test");
+	server = createControlPlaneServer(service);
+	await new Promise<void>((resolve) => server.listen(0, resolve));
+	baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	const identity = service.authenticateAdmin(adminToken);
+	const groupId = service.overview(identity).groups[0]?.groupId as string;
+	enrollToken = service.createEnrollToken(identity, groupId, 10);
+});
+
+after(async () => {
+	await new Promise((resolve) => server.close(resolve));
+	rmSync(dataDir, { recursive: true, force: true });
+	rmSync(clientDir, { recursive: true, force: true });
+});
+
+test("enroll scrive l'identità del device con permessi 0600", async () => {
+	const configPath = join(clientDir, "agent.json");
+	const config = await enroll({
+		controlPlaneUrl: baseUrl,
+		enrollToken,
+		deviceName: "workstation-42",
+		configPath,
+	});
+	assert.ok(config.deviceId.startsWith("dev_"));
+	assert.ok(config.publicKeyPem.includes("PUBLIC KEY"));
+	const mode = statSync(configPath).mode & 0o777;
+	assert.equal(mode, 0o600);
+
+	const persisted = JSON.parse(readFileSync(configPath, "utf8")) as { deviceToken: string };
+	assert.equal(persisted.deviceToken, config.deviceToken);
+});
+
+test("syncConfig scarica e verifica il bundle, e applica i settings gestiti", async () => {
+	const configPath = join(clientDir, "agent.json");
+	const config = JSON.parse(readFileSync(configPath, "utf8")) as Parameters<typeof syncConfig>[0];
+	config.bundleCachePath = join(clientDir, "bundle.jws");
+
+	const state = await syncConfig(config);
+	assert.equal(state.status, "ok");
+	assert.equal(state.policy.killSwitch, false);
+
+	const cachedToken = readFileSync(config.bundleCachePath, "utf8").trim();
+	const verified = verifyConfigBundle(config.publicKeyPem, cachedToken);
+	assert.equal(verified.valid, true);
+	if (!verified.valid) return;
+
+	// Settings esistenti dell'utente + settings gestiti: i gestiti vincono.
+	const piAgentDir = join(clientDir, "pi-agent");
+	const settingsPath = join(piAgentDir, "settings.json");
+	writeFileSync(join(clientDir, "placeholder"), ""); // assicura la dir
+	applyManagedPiSettings(verified.payload, piAgentDir);
+	const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+	assert.equal(settings.defaultProjectTrust, "never");
+	assert.equal(settings.enableInstallTelemetry, false);
+
+	// Un secondo apply preserva le personalizzazioni utente non gestite.
+	const withUserPrefs = { ...settings, theme: "light" };
+	writeFileSync(settingsPath, JSON.stringify(withUserPrefs));
+	applyManagedPiSettings(verified.payload, piAgentDir);
+	const merged = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+	assert.equal(merged.theme, "light");
+	assert.equal(merged.defaultProjectTrust, "never");
+});
+
+test("enrollment con token non valido fallisce", async () => {
+	await assert.rejects(
+		enroll({
+			controlPlaneUrl: baseUrl,
+			enrollToken: "enr_falso",
+			deviceName: "x",
+			configPath: join(clientDir, "mai-scritto.json"),
+		}),
+		/enrollment fallito/,
+	);
+});
+
+test("buildPiArgs carica l'estensione fleet e passa gli argomenti extra", () => {
+	const args = buildPiArgs("/opt/harness/fleet/dist/index.js", ["--mode", "rpc"]);
+	assert.deepEqual(args, ["-e", "/opt/harness/fleet/dist/index.js", "--mode", "rpc"]);
+});

@@ -1,0 +1,23 @@
+{
+	"name": "@harness/agent-client",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"bin": {
+		"harness-agent": "dist/cli.js"
+	},
+	"scripts": {
+		"build": "tsc --build",
+		"clean": "rm -rf dist *.tsbuildinfo",
+		"test": "npm run build && node --test dist/test/*.test.js"
+	},
+	"dependencies": {
+		"@harness/fleet-extension": "0.1.0",
+		"@harness/shared": "0.1.0"
+	},
+	"devDependencies": {
+		"@harness/control-plane": "0.1.0"
+	}
+}

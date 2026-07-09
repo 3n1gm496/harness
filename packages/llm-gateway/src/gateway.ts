@@ -1,0 +1,203 @@
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { createServer } from "node:http";
+import { Readable } from "node:stream";
+
+/**
+ * Gateway LLM: i client si autenticano con il token di device (verificato via
+ * introspezione sul control plane) e il gateway inoltra le richieste al
+ * provider iniettando le credenziali, che così non risiedono mai sui client.
+ *
+ * Route:
+ *   /anthropic/*  →  ANTHROPIC_BASE_URL con header x-api-key
+ *   /openai/*     →  OPENAI_BASE_URL con header Authorization: Bearer
+ */
+export interface GatewayOptions {
+	controlPlaneUrl: string;
+	/** Token gateway emesso dal control plane per l'introspezione. */
+	gatewayToken: string;
+	providers: {
+		anthropic?: { baseUrl: string; apiKey: string };
+		openai?: { baseUrl: string; apiKey: string };
+	};
+	/** Richieste al minuto per device (default 60). */
+	rateLimitPerMinute?: number;
+	/** TTL della cache di introspezione in millisecondi (default 60s). */
+	introspectionTtlMs?: number;
+	log?: (entry: Record<string, unknown>) => void;
+}
+
+interface IntrospectionEntry {
+	active: boolean;
+	deviceId?: string;
+	expiresAt: number;
+}
+
+export function createGatewayServer(options: GatewayOptions): Server {
+	const introspectionCache = new Map<string, IntrospectionEntry>();
+	const rateBuckets = new Map<string, { windowStart: number; count: number }>();
+	const rateLimit = options.rateLimitPerMinute ?? 60;
+	const ttl = options.introspectionTtlMs ?? 60_000;
+	const log = options.log ?? ((entry) => console.log(JSON.stringify(entry)));
+
+	async function introspect(deviceToken: string): Promise<IntrospectionEntry> {
+		const cached = introspectionCache.get(deviceToken);
+		if (cached && cached.expiresAt > Date.now()) return cached;
+		const response = await fetch(`${options.controlPlaneUrl}/api/introspect`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${options.gatewayToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ deviceToken }),
+			signal: AbortSignal.timeout(10_000),
+		});
+		if (!response.ok) throw new Error(`introspezione fallita: HTTP ${response.status}`);
+		const data = (await response.json()) as { active: boolean; deviceId?: string };
+		const entry: IntrospectionEntry = {
+			active: data.active,
+			// I token rifiutati restano in cache per poco: una revoca deve
+			// propagarsi in fretta, un token invalido non deve martellare il CP.
+			expiresAt: Date.now() + (data.active ? ttl : Math.min(ttl, 10_000)),
+		};
+		if (data.deviceId !== undefined) entry.deviceId = data.deviceId;
+		introspectionCache.set(deviceToken, entry);
+		return entry;
+	}
+
+	function checkRateLimit(deviceId: string): boolean {
+		const now = Date.now();
+		const bucket = rateBuckets.get(deviceId);
+		if (!bucket || now - bucket.windowStart >= 60_000) {
+			rateBuckets.set(deviceId, { windowStart: now, count: 1 });
+			return true;
+		}
+		bucket.count += 1;
+		return bucket.count <= rateLimit;
+	}
+
+	return createServer((req, res) => {
+		void handle(req, res).catch((error) => {
+			log({ ts: new Date().toISOString(), level: "error", error: String(error) });
+			sendJson(res, 502, { error: "errore del gateway" });
+		});
+	});
+
+	async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		const url = new URL(req.url ?? "/", "http://localhost");
+		if (req.method === "GET" && url.pathname === "/healthz") {
+			sendJson(res, 200, { ok: true });
+			return;
+		}
+
+		const providerMatch = /^\/(anthropic|openai)(\/.*)$/.exec(url.pathname);
+		if (!providerMatch) {
+			sendJson(res, 404, { error: "route non trovata: usare /anthropic/* o /openai/*" });
+			return;
+		}
+		const providerName = providerMatch[1] as "anthropic" | "openai";
+		const upstreamPath = providerMatch[2] as string;
+		const provider = options.providers[providerName];
+		if (!provider) {
+			sendJson(res, 503, { error: `provider ${providerName} non configurato sul gateway` });
+			return;
+		}
+
+		// Il device token può arrivare come Bearer o come x-api-key (per gli SDK
+		// che usano il formato Anthropic).
+		const deviceToken = bearerToken(req) ?? headerValue(req, "x-api-key");
+		if (!deviceToken) {
+			sendJson(res, 401, { error: "token device mancante" });
+			return;
+		}
+		const introspection = await introspect(deviceToken);
+		if (!introspection.active || !introspection.deviceId) {
+			sendJson(res, 401, { error: "device non autorizzato (token non valido, revocato o sospeso)" });
+			return;
+		}
+		if (!checkRateLimit(introspection.deviceId)) {
+			sendJson(res, 429, { error: "rate limit superato" });
+			return;
+		}
+
+		const body = await readBody(req);
+		const started = Date.now();
+		const headers: Record<string, string> = {
+			"content-type": headerValue(req, "content-type") ?? "application/json",
+		};
+		if (providerName === "anthropic") {
+			headers["x-api-key"] = provider.apiKey;
+			const version = headerValue(req, "anthropic-version");
+			if (version) headers["anthropic-version"] = version;
+		} else {
+			headers.authorization = `Bearer ${provider.apiKey}`;
+		}
+
+		const upstream = await fetch(`${provider.baseUrl}${upstreamPath}${url.search}`, {
+			method: req.method ?? "POST",
+			headers,
+			body: body.length > 0 ? body : null,
+		});
+
+		log({
+			ts: new Date().toISOString(),
+			deviceId: introspection.deviceId,
+			provider: providerName,
+			path: upstreamPath,
+			model: extractModel(body),
+			status: upstream.status,
+			durationMs: Date.now() - started,
+		});
+
+		res.writeHead(upstream.status, {
+			"content-type": upstream.headers.get("content-type") ?? "application/json",
+			"cache-control": "no-store",
+		});
+		if (upstream.body) {
+			Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream).pipe(res);
+		} else {
+			res.end();
+		}
+	}
+}
+
+function bearerToken(req: IncomingMessage): string | undefined {
+	const header = req.headers.authorization;
+	if (!header?.startsWith("Bearer ")) return undefined;
+	return header.slice("Bearer ".length).trim();
+}
+
+function headerValue(req: IncomingMessage, name: string): string | undefined {
+	const value = req.headers[name];
+	return typeof value === "string" ? value : undefined;
+}
+
+async function readBody(req: IncomingMessage): Promise<Buffer> {
+	const chunks: Buffer[] = [];
+	let total = 0;
+	for await (const chunk of req) {
+		const buffer = chunk as Buffer;
+		total += buffer.length;
+		if (total > 32 * 1_048_576) throw new Error("body troppo grande");
+		chunks.push(buffer);
+	}
+	return Buffer.concat(chunks);
+}
+
+function extractModel(body: Buffer): string | undefined {
+	try {
+		const parsed = JSON.parse(body.toString("utf8")) as { model?: unknown };
+		return typeof parsed.model === "string" ? parsed.model : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function sendJson(res: ServerResponse, status: number, payload: unknown): void {
+	const body = JSON.stringify(payload);
+	res.writeHead(status, {
+		"content-type": "application/json; charset=utf-8",
+		"content-length": Buffer.byteLength(body),
+		"cache-control": "no-store",
+	});
+	res.end(body);
+}

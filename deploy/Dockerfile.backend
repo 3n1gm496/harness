@@ -1,0 +1,15 @@
+# Immagine per control plane e gateway LLM (stesso build, entrypoint diversi).
+FROM node:22-bookworm-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json tsconfig.json tsconfig.base.json ./
+COPY packages ./packages
+RUN npm ci --ignore-scripts && npm run build
+
+FROM node:22-bookworm-slim
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build /app /app
+USER node
+# Control plane (default). Per il gateway: command ["node", "packages/llm-gateway/dist/cli.js"]
+EXPOSE 8787 8788
+CMD ["node", "packages/control-plane/dist/cli.js", "serve", "--data-dir", "/data"]

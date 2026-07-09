@@ -1,0 +1,21 @@
+{
+	"name": "harness-monorepo",
+	"private": true,
+	"type": "module",
+	"engines": {
+		"node": ">=22"
+	},
+	"workspaces": [
+		"packages/*"
+	],
+	"scripts": {
+		"build": "npm run build --workspaces --if-present",
+		"clean": "npm run clean --workspaces --if-present",
+		"test": "npm run test --workspaces --if-present",
+		"typecheck": "tsc --build"
+	},
+	"devDependencies": {
+		"@types/node": "22.10.2",
+		"typescript": "5.7.2"
+	}
+}

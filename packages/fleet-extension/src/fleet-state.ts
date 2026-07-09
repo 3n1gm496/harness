@@ -1,0 +1,194 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import type { AuditEvent, ConfigBundle, PolicyDocument } from "@harness/shared";
+import { failClosedPolicy, newId, verifyConfigBundle } from "@harness/shared";
+
+/** File di identità del device scritto dall'agent-client in fase di enrollment. */
+export interface AgentConfig {
+	controlPlaneUrl: string;
+	deviceId: string;
+	deviceToken: string;
+	/** Chiave pubblica di firma dei bundle, pinnata all'enrollment. */
+	publicKeyPem: string;
+	/** Intervallo di sync della configurazione in secondi (default 60). */
+	syncIntervalSeconds?: number;
+	/** Intervallo di flush dell'audit in secondi (default 10). */
+	auditFlushSeconds?: number;
+	/** Percorso della cache locale del bundle firmato. */
+	bundleCachePath?: string;
+}
+
+export function defaultAgentConfigPath(): string {
+	return process.env.HARNESS_AGENT_CONFIG ?? join(homedir(), ".harness", "agent.json");
+}
+
+export function loadAgentConfig(path: string = defaultAgentConfigPath()): AgentConfig {
+	const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<AgentConfig>;
+	for (const key of ["controlPlaneUrl", "deviceId", "deviceToken", "publicKeyPem"] as const) {
+		if (typeof raw[key] !== "string" || raw[key] === "") {
+			throw new Error(`config agent non valida: campo mancante "${key}" in ${path}`);
+		}
+	}
+	return raw as AgentConfig;
+}
+
+export type FleetStatus = "ok" | "cached" | "fail-closed";
+
+/**
+ * Stato runtime dell'estensione fleet: policy corrente, sync del bundle
+ * firmato con verifica della firma pinnata e fail-closed alla scadenza,
+ * buffer dell'audit con spedizione batch.
+ */
+export class FleetState {
+	readonly config: AgentConfig;
+	private bundle: ConfigBundle | undefined;
+	private policyOverride: PolicyDocument | undefined;
+	private auditBuffer: AuditEvent[] = [];
+	private timers: NodeJS.Timeout[] = [];
+	status: FleetStatus = "fail-closed";
+	lastError = "";
+	onStatusChange: ((state: FleetState) => void) | undefined;
+
+	constructor(config: AgentConfig) {
+		this.config = config;
+	}
+
+	get policy(): PolicyDocument {
+		if (this.policyOverride) return this.policyOverride;
+		if (!this.bundle || Date.parse(this.bundle.expiresAt) < Date.now()) {
+			// Bundle assente o scaduto tra un sync e l'altro: fail-closed.
+			return failClosedPolicy();
+		}
+		return this.bundle.policy;
+	}
+
+	get configVersion(): number | undefined {
+		return this.bundle?.configVersion;
+	}
+
+	get bundleCachePath(): string {
+		return this.config.bundleCachePath ?? join(homedir(), ".harness", "config-bundle.jws");
+	}
+
+	/** Carica la cache locale (per partenza offline), poi tenta il refresh dal server. */
+	async initialLoad(fetchImpl: typeof fetch = fetch): Promise<void> {
+		this.loadFromCache();
+		await this.refresh(fetchImpl);
+	}
+
+	private loadFromCache(): void {
+		if (!existsSync(this.bundleCachePath)) return;
+		const token = readFileSync(this.bundleCachePath, "utf8").trim();
+		const verified = verifyConfigBundle(this.config.publicKeyPem, token);
+		if (verified.valid && verified.payload.deviceId === this.config.deviceId) {
+			this.bundle = verified.payload;
+			this.setStatus("cached");
+		}
+	}
+
+	async refresh(fetchImpl: typeof fetch = fetch): Promise<void> {
+		try {
+			const response = await fetchImpl(`${this.config.controlPlaneUrl}/api/device/config`, {
+				headers: { authorization: `Bearer ${this.config.deviceToken}` },
+				signal: AbortSignal.timeout(15_000),
+			});
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+			const data = (await response.json()) as { token?: string };
+			if (typeof data.token !== "string") throw new Error("risposta senza token");
+
+			const verified = verifyConfigBundle(this.config.publicKeyPem, data.token);
+			if (!verified.valid) throw new Error(`bundle rifiutato: ${verified.error}`);
+			if (verified.payload.deviceId !== this.config.deviceId) {
+				throw new Error("bundle emesso per un altro device");
+			}
+
+			this.bundle = verified.payload;
+			this.writeCache(data.token);
+			this.lastError = "";
+			this.setStatus("ok");
+		} catch (error) {
+			this.lastError = error instanceof Error ? error.message : String(error);
+			// Il bundle corrente resta valido fino alla sua scadenza; oltre,
+			// il getter `policy` degrada da solo a fail-closed.
+			if (!this.bundle || Date.parse(this.bundle.expiresAt) < Date.now()) {
+				this.setStatus("fail-closed");
+			} else {
+				this.setStatus("cached");
+			}
+		}
+	}
+
+	private writeCache(token: string): void {
+		const path = this.bundleCachePath;
+		mkdirSync(dirname(path), { recursive: true });
+		const tmpPath = `${path}.tmp`;
+		writeFileSync(tmpPath, token, { mode: 0o600 });
+		renameSync(tmpPath, path);
+	}
+
+	private setStatus(status: FleetStatus): void {
+		this.status = status;
+		this.onStatusChange?.(this);
+	}
+
+	// ---- Audit ---------------------------------------------------------------
+
+	pushAudit(type: AuditEvent["type"], data: Record<string, unknown>): void {
+		this.auditBuffer.push({
+			eventId: newId("evt"),
+			deviceId: this.config.deviceId,
+			timestamp: new Date().toISOString(),
+			type,
+			data,
+		});
+		// Cap difensivo: in caso di control plane irraggiungibile a lungo si
+		// scartano gli eventi più vecchi invece di esaurire la memoria.
+		if (this.auditBuffer.length > 1000) {
+			this.auditBuffer = this.auditBuffer.slice(-1000);
+		}
+	}
+
+	async flushAudit(fetchImpl: typeof fetch = fetch): Promise<void> {
+		if (this.auditBuffer.length === 0) return;
+		const batch = this.auditBuffer.slice(0, 200);
+		try {
+			const response = await fetchImpl(`${this.config.controlPlaneUrl}/api/device/audit`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${this.config.deviceToken}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ events: batch }),
+				signal: AbortSignal.timeout(15_000),
+			});
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+			this.auditBuffer = this.auditBuffer.slice(batch.length);
+		} catch {
+			// Gli eventi restano nel buffer e verranno ritentati al prossimo flush.
+		}
+	}
+
+	// ---- Cicli in background ---------------------------------------------------
+
+	startLoops(fetchImpl: typeof fetch = fetch): void {
+		const syncMs = (this.config.syncIntervalSeconds ?? 60) * 1000;
+		const flushMs = (this.config.auditFlushSeconds ?? 10) * 1000;
+		const syncTimer = setInterval(() => void this.refresh(fetchImpl), syncMs);
+		const flushTimer = setInterval(() => void this.flushAudit(fetchImpl), flushMs);
+		syncTimer.unref();
+		flushTimer.unref();
+		this.timers.push(syncTimer, flushTimer);
+	}
+
+	async shutdown(fetchImpl: typeof fetch = fetch): Promise<void> {
+		for (const timer of this.timers) clearInterval(timer);
+		this.timers = [];
+		await this.flushAudit(fetchImpl);
+	}
+
+	/** Solo per i test: forza una policy specifica. */
+	setPolicyForTesting(policy: PolicyDocument | undefined): void {
+		this.policyOverride = policy;
+	}
+}

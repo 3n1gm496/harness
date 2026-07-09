@@ -1,0 +1,20 @@
+{
+	"name": "@harness/control-plane",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"bin": {
+		"harness-cp": "dist/cli.js"
+	},
+	"scripts": {
+		"build": "tsc --build",
+		"clean": "rm -rf dist *.tsbuildinfo",
+		"test": "npm run build && node --test dist/test/*.test.js",
+		"start": "node dist/cli.js serve"
+	},
+	"dependencies": {
+		"@harness/shared": "0.1.0"
+	}
+}

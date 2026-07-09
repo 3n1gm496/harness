@@ -1,0 +1,36 @@
+# Backend della piattaforma: control plane + gateway LLM.
+# Prima di avviare:
+#   1. docker compose run --rm control-plane node packages/control-plane/dist/cli.js init --data-dir /data
+#   2. dalla UI (o via API) creare un token gateway ed esportarlo come GATEWAY_TOKEN
+#   3. esportare ANTHROPIC_API_KEY (e/o OPENAI_API_KEY)
+services:
+  control-plane:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    ports:
+      - "8787:8787"
+    volumes:
+      - cp-data:/data
+    restart: unless-stopped
+
+  llm-gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    command: ["node", "packages/llm-gateway/dist/cli.js"]
+    ports:
+      - "8788:8788"
+    environment:
+      PORT: "8788"
+      CONTROL_PLANE_URL: "http://control-plane:8787"
+      GATEWAY_TOKEN: "${GATEWAY_TOKEN:?definire GATEWAY_TOKEN}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      RATE_LIMIT_PER_MINUTE: "60"
+    depends_on:
+      - control-plane
+    restart: unless-stopped
+
+volumes:
+  cp-data:

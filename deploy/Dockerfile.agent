@@ -1,0 +1,24 @@
+# Client gestito sandboxato: PI + agent-client + estensione fleet.
+# PI non ha sandbox propria: questo container È il confine di sicurezza.
+# Montare solo la workspace, limitare l'egress a control plane e gateway LLM.
+FROM node:22-bookworm-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json tsconfig.json tsconfig.base.json ./
+COPY packages ./packages
+RUN npm ci --ignore-scripts && npm run build
+
+FROM node:22-bookworm-slim
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends bash ca-certificates git ripgrep \
+	&& rm -rf /var/lib/apt/lists/* \
+	&& npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+COPY --from=build /app /opt/harness
+ENV PATH="/opt/harness/node_modules/.bin:${PATH}" \
+	PI_SKIP_VERSION_CHECK=1
+USER node
+WORKDIR /workspace
+# Flusso tipico:
+#   docker run ... harness-agent enroll --url https://cp.azienda.it --token enr_...
+#   docker run ... harness-agent run
+ENTRYPOINT ["node", "/opt/harness/packages/agent-client/dist/cli.js"]
+CMD ["status"]

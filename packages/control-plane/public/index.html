@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness — Piattaforma amministrativa</title>
+<style>
+	:root { --bg:#0f1216; --panel:#171c22; --border:#2a3138; --text:#e6e9ec; --muted:#9aa4ad; --accent:#4f8cff; --danger:#e5534b; --ok:#3fb950; }
+	* { box-sizing:border-box; }
+	body { margin:0; font:14px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--text); }
+	header { display:flex; align-items:center; gap:12px; padding:14px 24px; border-bottom:1px solid var(--border); }
+	header h1 { font-size:16px; margin:0; }
+	header .spacer { flex:1; }
+	main { max-width:1100px; margin:0 auto; padding:24px; display:grid; gap:20px; }
+	section { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:18px; }
+	h2 { margin:0 0 12px; font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+	table { width:100%; border-collapse:collapse; }
+	th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:middle; }
+	th { color:var(--muted); font-weight:500; }
+	input, select, textarea, button { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; }
+	textarea { width:100%; min-height:180px; font-family:ui-monospace, monospace; font-size:12px; }
+	button { cursor:pointer; background:var(--accent); border-color:transparent; color:#fff; }
+	button.secondary { background:transparent; border-color:var(--border); color:var(--text); }
+	button.danger { background:var(--danger); }
+	.pill { display:inline-block; padding:1px 9px; border-radius:99px; font-size:12px; }
+	.pill.on { background:rgba(229,83,75,.15); color:var(--danger); }
+	.pill.off { background:rgba(63,185,80,.15); color:var(--ok); }
+	.row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+	.muted { color:var(--muted); }
+	code { background:var(--bg); padding:2px 6px; border-radius:4px; font-size:12px; word-break:break-all; }
+	#msg { position:fixed; bottom:18px; right:18px; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:10px 16px; display:none; max-width:420px; }
+	pre { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; overflow:auto; max-height:320px; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+	<h1>Harness · Piattaforma amministrativa</h1>
+	<span id="orgName" class="muted"></span>
+	<div class="spacer"></div>
+	<span id="configVersion" class="muted"></span>
+	<button id="btnGlobalKill" class="danger" hidden>Kill switch globale</button>
+	<button id="btnLogout" class="secondary">Cambia token</button>
+</header>
+<main>
+	<section id="loginPanel">
+		<h2>Accesso</h2>
+		<div class="row">
+			<input id="tokenInput" type="password" placeholder="Token amministrativo" size="50">
+			<button id="btnLogin">Accedi</button>
+		</div>
+		<p class="muted">Il token viene generato con <code>harness-cp init</code> o dalla sezione token di un admin.</p>
+	</section>
+
+	<section id="devicesPanel" hidden>
+		<h2>Device</h2>
+		<table>
+			<thead><tr><th>Nome</th><th>Gruppo</th><th>Ultimo contatto</th><th>Config</th><th>Kill switch</th><th></th></tr></thead>
+			<tbody id="devicesBody"></tbody>
+		</table>
+	</section>
+
+	<section id="groupsPanel" hidden>
+		<h2>Gruppi</h2>
+		<table>
+			<thead><tr><th>Nome</th><th>Kill switch</th><th></th></tr></thead>
+			<tbody id="groupsBody"></tbody>
+		</table>
+		<div class="row" style="margin-top:10px">
+			<input id="newGroupName" placeholder="Nome nuovo gruppo">
+			<button id="btnCreateGroup">Crea gruppo</button>
+		</div>
+	</section>
+
+	<section id="enrollPanel" hidden>
+		<h2>Enrollment</h2>
+		<div class="row">
+			<select id="enrollGroup"></select>
+			<input id="enrollTtl" type="number" value="60" min="5" style="width:90px" title="TTL in minuti">
+			<button id="btnEnrollToken">Genera token di enrollment</button>
+		</div>
+		<p id="enrollResult" class="muted"></p>
+	</section>
+
+	<section id="policyPanel" hidden>
+		<h2>Policy organizzazione (override JSON sul default)</h2>
+		<textarea id="orgPolicy" spellcheck="false"></textarea>
+		<div class="row" style="margin-top:10px">
+			<button id="btnSavePolicy">Salva policy org</button>
+			<span class="muted">Ogni salvataggio incrementa la versione di configurazione e viene distribuito ai device al prossimo sync.</span>
+		</div>
+	</section>
+
+	<section id="auditPanel" hidden>
+		<h2>Audit</h2>
+		<div class="row">
+			<select id="auditDevice"><option value="">— audit amministrativo —</option></select>
+			<button id="btnLoadAudit" class="secondary">Carica</button>
+		</div>
+		<pre id="auditOutput">…</pre>
+	</section>
+</main>
+<div id="msg"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let token = localStorage.getItem("harnessAdminToken") || "";
+let overview = null;
+
+function msg(text, isError) {
+	const el = $("msg");
+	el.textContent = text;
+	el.style.borderColor = isError ? "var(--danger)" : "var(--border)";
+	el.style.display = "block";
+	setTimeout(() => { el.style.display = "none"; }, 4000);
+}
+
+async function api(method, path, body) {
+	const res = await fetch(path, {
+		method,
+		headers: { "authorization": "Bearer " + token, "content-type": "application/json" },
+		body: body === undefined ? undefined : JSON.stringify(body),
+	});
+	const data = await res.json().catch(() => ({}));
+	if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+	return data;
+}
+
+function fmtDate(iso) { return iso ? new Date(iso).toLocaleString() : "mai"; }
+function killPill(on) { return '<span class="pill ' + (on ? "on\">ATTIVO" : "off\">spento") + '</span>'; }
+
+async function refresh() {
+	overview = await api("GET", "/api/admin/overview");
+	$("orgName").textContent = overview.org.name;
+	$("configVersion").textContent = "config v" + overview.org.configVersion;
+	const kill = $("btnGlobalKill");
+	kill.hidden = false;
+	kill.textContent = overview.org.killSwitch ? "Disattiva kill switch globale" : "Kill switch globale";
+	kill.className = overview.org.killSwitch ? "secondary" : "danger";
+
+	const groupName = (id) => (overview.groups.find((g) => g.groupId === id) || { name: id }).name;
+	$("devicesBody").innerHTML = overview.devices.map((d) =>
+		"<tr><td>" + esc(d.name) + (d.revoked ? ' <span class="pill on">revocato</span>' : "") + "</td>" +
+		"<td>" + esc(groupName(d.groupId)) + "</td>" +
+		"<td>" + fmtDate(d.lastSeenAt) + "</td>" +
+		"<td>" + (d.lastConfigVersion ?? "—") + "</td>" +
+		"<td>" + killPill(d.killSwitch) + "</td>" +
+		'<td class="row">' +
+		'<button class="secondary" onclick="toggleDeviceKill(\'' + d.deviceId + "'," + d.killSwitch + ')">' + (d.killSwitch ? "riattiva" : "sospendi") + "</button>" +
+		(d.revoked ? "" : '<button class="danger" onclick="revokeDevice(\'' + d.deviceId + '\')">revoca</button>') +
+		"</td></tr>"
+	).join("") || '<tr><td colspan="6" class="muted">Nessun device registrato</td></tr>';
+
+	$("groupsBody").innerHTML = overview.groups.map((g) =>
+		"<tr><td>" + esc(g.name) + "</td><td>" + killPill(g.killSwitch) + "</td>" +
+		'<td><button class="secondary" onclick="toggleGroupKill(\'' + g.groupId + "'," + g.killSwitch + ')">' + (g.killSwitch ? "riattiva" : "sospendi") + "</button></td></tr>"
+	).join("");
+
+	const groupOptions = overview.groups.map((g) => '<option value="' + g.groupId + '">' + esc(g.name) + "</option>").join("");
+	$("enrollGroup").innerHTML = groupOptions;
+	$("auditDevice").innerHTML = '<option value="">— audit amministrativo —</option>' +
+		overview.devices.map((d) => '<option value="' + d.deviceId + '">' + esc(d.name) + "</option>").join("");
+
+	const orgConfig = await api("GET", "/api/admin/org/config");
+	$("orgPolicy").value = JSON.stringify(orgConfig.policyOverride, null, 2);
+
+	for (const id of ["devicesPanel", "groupsPanel", "enrollPanel", "policyPanel", "auditPanel"]) $(id).hidden = false;
+	$("loginPanel").hidden = true;
+}
+
+function esc(text) { const div = document.createElement("div"); div.textContent = String(text); return div.innerHTML; }
+
+window.toggleDeviceKill = async (id, current) => {
+	try { await api("PUT", "/api/admin/devices/" + id, { killSwitch: !current }); await refresh(); msg("Device aggiornato"); }
+	catch (e) { msg(e.message, true); }
+};
+window.revokeDevice = async (id) => {
+	if (!confirm("Revocare definitivamente il device? Il suo token smetterà di funzionare.")) return;
+	try { await api("PUT", "/api/admin/devices/" + id, { revoked: true }); await refresh(); msg("Device revocato"); }
+	catch (e) { msg(e.message, true); }
+};
+window.toggleGroupKill = async (id, current) => {
+	try { await api("PUT", "/api/admin/groups/" + id, { killSwitch: !current }); await refresh(); msg("Gruppo aggiornato"); }
+	catch (e) { msg(e.message, true); }
+};
+
+$("btnGlobalKill").onclick = async () => {
+	const target = !overview.org.killSwitch;
+	if (target && !confirm("Attivare il kill switch GLOBALE? Tutti gli agenti verranno sospesi.")) return;
+	try { await api("PUT", "/api/admin/org", { killSwitch: target }); await refresh(); msg("Organizzazione aggiornata"); }
+	catch (e) { msg(e.message, true); }
+};
+$("btnCreateGroup").onclick = async () => {
+	try { await api("POST", "/api/admin/groups", { name: $("newGroupName").value }); $("newGroupName").value = ""; await refresh(); msg("Gruppo creato"); }
+	catch (e) { msg(e.message, true); }
+};
+$("btnEnrollToken").onclick = async () => {
+	try {
+		const data = await api("POST", "/api/admin/enroll-tokens", { groupId: $("enrollGroup").value, ttlMinutes: Number($("enrollTtl").value) });
+		$("enrollResult").innerHTML = "Token (monouso, mostralo solo al device): <code>" + data.enrollToken + "</code>";
+	} catch (e) { msg(e.message, true); }
+};
+$("btnSavePolicy").onclick = async () => {
+	try {
+		const policyOverride = JSON.parse($("orgPolicy").value || "{}");
+		await api("PUT", "/api/admin/org", { policyOverride });
+		await refresh(); msg("Policy salvata e versionata");
+	} catch (e) { msg(e.message, true); }
+};
+$("btnLoadAudit").onclick = async () => {
+	try {
+		const deviceId = $("auditDevice").value;
+		const data = await api("GET", "/api/admin/audit?limit=100" + (deviceId ? "&deviceId=" + deviceId : ""));
+		$("auditOutput").textContent = data.events.map((e) => JSON.stringify(e)).join("\n") || "nessun evento";
+	} catch (e) { msg(e.message, true); }
+};
+$("btnLogin").onclick = async () => {
+	token = $("tokenInput").value.trim();
+	try { await refresh(); localStorage.setItem("harnessAdminToken", token); }
+	catch (e) { msg("Accesso fallito: " + e.message, true); }
+};
+$("btnLogout").onclick = () => { localStorage.removeItem("harnessAdminToken"); location.reload(); };
+
+if (token) refresh().catch(() => { $("loginPanel").hidden = false; });
+</script>
+</body>
+</html>
