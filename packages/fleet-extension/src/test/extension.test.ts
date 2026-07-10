@@ -201,6 +201,25 @@ test("la revoca degrada subito a fail-closed, senza attendere la scadenza del bu
 	assert.equal(flaky.policy.killSwitch, false);
 });
 
+test("dopo la revoca, la riabilitazione del device recupera dallo stato fail-closed", async () => {
+	const { FleetState, loadAgentConfig } = await import("../fleet-state.js");
+	const config = loadAgentConfig();
+	const identity = service.authenticateAdmin(adminToken);
+
+	// Revoca → il client va fail-closed al refresh.
+	service.updateDevice(identity, deviceId, { revoked: true });
+	const state = new FleetState(config);
+	await state.initialLoad();
+	assert.equal(state.status, "fail-closed");
+	assert.equal(state.policy.killSwitch, true);
+
+	// Riabilitazione → il refresh successivo recupera senza bisogno di re-enroll.
+	service.updateDevice(identity, deviceId, { revoked: false });
+	await state.refresh();
+	assert.equal(state.status, "ok");
+	assert.equal(state.policy.killSwitch, false);
+});
+
 test("senza config del device l'estensione blocca tutto", async () => {
 	const previous = process.env.HARNESS_AGENT_CONFIG;
 	process.env.HARNESS_AGENT_CONFIG = join(clientDir, "inesistente.json");
