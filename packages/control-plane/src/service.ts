@@ -180,6 +180,7 @@ export class ControlPlaneService {
 	// ---- Amministrazione ----------------------------------------------------
 
 	overview(identity: AdminIdentity): {
+		role: AdminRole;
 		org: { orgId: string; name: string; configVersion: number; killSwitch: boolean; configTtlMinutes: number };
 		groups: GroupInfo[];
 		devices: DeviceInfo[];
@@ -187,6 +188,7 @@ export class ControlPlaneService {
 		this.requireRole(identity, "viewer");
 		const { org, groups, devices } = this.store.state;
 		return {
+			role: identity.role,
 			org: {
 				orgId: org.orgId,
 				name: org.name,

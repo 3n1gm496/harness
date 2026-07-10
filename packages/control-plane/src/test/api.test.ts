@@ -176,6 +176,12 @@ test("RBAC: viewer non può mutare, operator non può cambiare policy", async ()
 		403,
 	);
 
+	// L'overview espone il ruolo del chiamante (usato dalla UI per RBAC lato client).
+	const viewerOverview = await call("GET", "/api/admin/overview", { token: viewerToken });
+	assert.equal(viewerOverview.data.role, "viewer");
+	const operatorOverview = await call("GET", "/api/admin/overview", { token: operatorToken });
+	assert.equal(operatorOverview.data.role, "operator");
+
 	// L'operator può usare il kill switch ma non cambiare le policy.
 	assert.equal(
 		(await call("PUT", `/api/admin/devices/${deviceId}`, { token: operatorToken, body: { killSwitch: false } }))

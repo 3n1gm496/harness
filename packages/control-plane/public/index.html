@@ -3,16 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M50 5 90 20v30c0 25-18 39-40 45C28 89 10 75 10 50V20z' fill='%234f8cff'/%3E%3Cpath d='M32 50l12 12 24-26' stroke='%23fff' stroke-width='9' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <title>Harness — Piattaforma amministrativa</title>
 <style>
 	:root { --bg:#0f1216; --panel:#171c22; --border:#2a3138; --text:#e6e9ec; --muted:#9aa4ad; --accent:#4f8cff; --danger:#e5534b; --ok:#3fb950; }
 	* { box-sizing:border-box; }
 	body { margin:0; font:14px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--text); }
-	header { display:flex; align-items:center; gap:12px; padding:14px 24px; border-bottom:1px solid var(--border); }
+	header { display:flex; align-items:center; flex-wrap:wrap; gap:12px; padding:14px 24px; border-bottom:1px solid var(--border); }
 	header h1 { font-size:16px; margin:0; }
 	header .spacer { flex:1; }
-	main { max-width:1100px; margin:0 auto; padding:24px; display:grid; gap:20px; }
-	section { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:18px; }
+	/* minmax(0,1fr): il contenuto largo (es. righe di audit nel pre) scorre
+	   dentro la propria sezione invece di allargare la colonna della griglia. */
+	main { max-width:1100px; margin:0 auto; padding:24px; display:grid; grid-template-columns:minmax(0,1fr); gap:20px; }
+	/* overflow-x: su schermi stretti le tabelle scorrono dentro la sezione
+	   invece di allargare la pagina. */
+	section { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:18px; overflow-x:auto; }
 	h2 { margin:0 0 12px; font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
 	table { width:100%; border-collapse:collapse; }
 	th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:middle; }
@@ -30,6 +35,9 @@
 	code { background:var(--bg); padding:2px 6px; border-radius:4px; font-size:12px; word-break:break-all; }
 	#msg { position:fixed; bottom:18px; right:18px; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:10px 16px; display:none; max-width:420px; }
 	pre { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; overflow:auto; max-height:320px; font-size:12px; }
+	/* Controlli mostrati solo se il ruolo lo consente (il backend è comunque l'autorità). */
+	body:not(.can-operate) .op-only { display:none !important; }
+	body:not(.can-admin) .admin-only { display:none !important; }
 </style>
 </head>
 <body>
@@ -65,13 +73,13 @@
 			<thead><tr><th>Nome</th><th>Kill switch</th><th></th></tr></thead>
 			<tbody id="groupsBody"></tbody>
 		</table>
-		<div class="row" style="margin-top:10px">
+		<div class="row admin-only" style="margin-top:10px">
 			<input id="newGroupName" placeholder="Nome nuovo gruppo">
 			<button id="btnCreateGroup">Crea gruppo</button>
 		</div>
 	</section>
 
-	<section id="enrollPanel" hidden>
+	<section id="enrollPanel" class="op-only" hidden>
 		<h2>Enrollment</h2>
 		<div class="row">
 			<select id="enrollGroup"></select>
@@ -81,7 +89,7 @@
 		<p id="enrollResult" class="muted"></p>
 	</section>
 
-	<section id="policyPanel" hidden>
+	<section id="policyPanel" class="admin-only" hidden>
 		<h2>Policy organizzazione (override JSON sul default)</h2>
 		<textarea id="orgPolicy" spellcheck="false"></textarea>
 		<div class="row" style="margin-top:10px">
@@ -90,11 +98,32 @@
 		</div>
 	</section>
 
+	<section id="tokensPanel" hidden>
+		<h2>Token amministrativi</h2>
+		<table>
+			<thead><tr><th>Nome</th><th>Ruolo</th><th>Creato</th><th>Scade</th><th></th></tr></thead>
+			<tbody id="tokensBody"></tbody>
+		</table>
+		<div class="row" style="margin-top:10px">
+			<input id="newTokenName" placeholder="Nome (es. mario.rossi)">
+			<select id="newTokenRole">
+				<option value="viewer">viewer</option>
+				<option value="operator">operator</option>
+				<option value="admin">admin</option>
+			</select>
+			<input id="newTokenTtl" type="number" value="90" min="1" max="365" style="width:90px" title="Scadenza in giorni">
+			<button id="btnCreateToken">Crea token</button>
+		</div>
+		<p id="tokenResult" class="muted"></p>
+	</section>
+
 	<section id="auditPanel" hidden>
 		<h2>Audit</h2>
 		<div class="row">
 			<select id="auditDevice"><option value="">— audit amministrativo —</option></select>
 			<button id="btnLoadAudit" class="secondary">Carica</button>
+			<button id="btnVerifyAudit" class="secondary">Verifica integrità catena</button>
+			<span id="auditVerdict"></span>
 		</div>
 		<pre id="auditOutput">…</pre>
 	</section>
@@ -125,15 +154,23 @@ async function api(method, path, body) {
 	return data;
 }
 
-function fmtDate(iso) { return iso ? new Date(iso).toLocaleString() : "mai"; }
+function fmtDate(iso) { return iso ? new Date(iso).toLocaleString("it-IT") : "mai"; }
 function killPill(on) { return '<span class="pill ' + (on ? "on\">ATTIVO" : "off\">spento") + '</span>'; }
 
 async function refresh() {
 	overview = await api("GET", "/api/admin/overview");
 	$("orgName").textContent = overview.org.name;
-	$("configVersion").textContent = "config v" + overview.org.configVersion;
+	$("configVersion").textContent = "config v" + overview.org.configVersion + " · " + overview.role;
+
+	// I controlli che mutano lo stato sono visibili solo a chi ha il ruolo
+	// adeguato; il backend resta comunque l'autorità (defense-in-depth).
+	const canOperate = overview.role === "admin" || overview.role === "operator";
+	const canAdmin = overview.role === "admin";
+	document.body.classList.toggle("can-operate", canOperate);
+	document.body.classList.toggle("can-admin", canAdmin);
+
 	const kill = $("btnGlobalKill");
-	kill.hidden = false;
+	kill.hidden = !canOperate;
 	kill.textContent = overview.org.killSwitch ? "Disattiva kill switch globale" : "Kill switch globale";
 	kill.className = overview.org.killSwitch ? "secondary" : "danger";
 
@@ -144,7 +181,7 @@ async function refresh() {
 		"<td>" + fmtDate(d.lastSeenAt) + "</td>" +
 		"<td>" + (d.lastConfigVersion ?? "—") + "</td>" +
 		"<td>" + killPill(d.killSwitch) + "</td>" +
-		'<td class="row">' +
+		'<td class="row op-only">' +
 		'<button class="secondary" onclick="toggleDeviceKill(\'' + d.deviceId + "'," + d.killSwitch + ')">' + (d.killSwitch ? "riattiva" : "sospendi") + "</button>" +
 		(d.revoked ? "" : '<button class="danger" onclick="revokeDevice(\'' + d.deviceId + '\')">revoca</button>') +
 		"</td></tr>"
@@ -152,7 +189,7 @@ async function refresh() {
 
 	$("groupsBody").innerHTML = overview.groups.map((g) =>
 		"<tr><td>" + esc(g.name) + "</td><td>" + killPill(g.killSwitch) + "</td>" +
-		'<td><button class="secondary" onclick="toggleGroupKill(\'' + g.groupId + "'," + g.killSwitch + ')">' + (g.killSwitch ? "riattiva" : "sospendi") + "</button></td></tr>"
+		'<td class="op-only"><button class="secondary" onclick="toggleGroupKill(\'' + g.groupId + "'," + g.killSwitch + ')">' + (g.killSwitch ? "riattiva" : "sospendi") + "</button></td></tr>"
 	).join("");
 
 	const groupOptions = overview.groups.map((g) => '<option value="' + g.groupId + '">' + esc(g.name) + "</option>").join("");
@@ -165,6 +202,22 @@ async function refresh() {
 
 	for (const id of ["devicesPanel", "groupsPanel", "enrollPanel", "policyPanel", "auditPanel"]) $(id).hidden = false;
 	$("loginPanel").hidden = true;
+
+	// Solo gli admin possono elencare i token: si evita del tutto la chiamata
+	// (che risponderebbe 403) per gli altri ruoli.
+	if (canAdmin) await refreshTokens();
+	else $("tokensPanel").hidden = true;
+}
+
+async function refreshTokens() {
+	const data = await api("GET", "/api/admin/admin-tokens");
+	$("tokensBody").innerHTML = data.tokens.map((t) =>
+		"<tr><td>" + esc(t.name) + "</td><td>" + esc(t.role) + "</td>" +
+		"<td>" + fmtDate(t.createdAt) + "</td>" +
+		"<td>" + (t.expiresAt ? fmtDate(t.expiresAt) : '<span class="muted">mai (bootstrap)</span>') + "</td>" +
+		'<td><button class="danger" onclick="revokeToken(\'' + t.id + '\')">revoca</button></td></tr>'
+	).join("");
+	$("tokensPanel").hidden = false;
 }
 
 function esc(text) { const div = document.createElement("div"); div.textContent = String(text); return div.innerHTML; }
@@ -211,6 +264,35 @@ $("btnLoadAudit").onclick = async () => {
 		const deviceId = $("auditDevice").value;
 		const data = await api("GET", "/api/admin/audit?limit=100" + (deviceId ? "&deviceId=" + deviceId : ""));
 		$("auditOutput").textContent = data.events.map((e) => JSON.stringify(e)).join("\n") || "nessun evento";
+	} catch (e) { msg(e.message, true); }
+};
+$("btnVerifyAudit").onclick = async () => {
+	try {
+		const deviceId = $("auditDevice").value;
+		const data = await api("GET", "/api/admin/audit/verify" + (deviceId ? "?deviceId=" + deviceId : ""));
+		const el = $("auditVerdict");
+		if (data.valid) {
+			el.innerHTML = '<span class="pill off">catena integra · ' + data.entries + ' righe</span>';
+		} else {
+			el.innerHTML = '<span class="pill on">COMPROMESSA alla riga ' + data.brokenAtLine + '</span>';
+		}
+	} catch (e) { msg(e.message, true); }
+};
+window.revokeToken = async (id) => {
+	if (!confirm("Revocare il token amministrativo? Chi lo usa perderà subito l'accesso.")) return;
+	try { await api("DELETE", "/api/admin/admin-tokens/" + id); await refreshTokens(); msg("Token revocato"); }
+	catch (e) { msg(e.message, true); }
+};
+$("btnCreateToken").onclick = async () => {
+	try {
+		const data = await api("POST", "/api/admin/admin-tokens", {
+			name: $("newTokenName").value,
+			role: $("newTokenRole").value,
+			ttlDays: Number($("newTokenTtl").value),
+		});
+		$("newTokenName").value = "";
+		$("tokenResult").innerHTML = "Token (mostrato solo ora): <code>" + data.token + "</code>";
+		await refreshTokens();
 	} catch (e) { msg(e.message, true); }
 };
 $("btnLogin").onclick = async () => {
