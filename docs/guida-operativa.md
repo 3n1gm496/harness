@@ -90,6 +90,7 @@ Linee guida: montare solo la workspace necessaria, usare un volume dedicato per 
 | Scenario | Azione |
 |---|---|
 | Incidente su un device | UI → device → **sospendi** (kill switch): tool bloccati al sync successivo, inferenza bloccata entro 60 s |
+| Device revocato | Al primo sync dopo la revoca (risposta 401/403) il client scarta subito bundle e cache e degrada a fail-closed, senza attendere la scadenza |
 | Incidente diffuso | Kill switch **globale** dalla testata della UI |
 | Device compromesso/dismesso | UI → device → **revoca**: il token smette di funzionare su config, audit e gateway |
 | Rotazione chiave di firma | Genera nuove chiavi in `keys/`, ridistribuisci la pubblica ri-arruolando i device (la chiave è pinnata per-device) |
@@ -98,7 +99,10 @@ Linee guida: montare solo la workspace necessaria, usare un volume dedicato per 
 
 ## 6. Limiti noti (da leggere)
 
-- Il parsing dei comandi bash è conservativo ma approssimato: non è un sostituto della sandbox. Un comando consentito può fare a valle cose che la policy non vede; il contenimento di rete/filesystem spetta al container.
+- Il parsing dei comandi bash è conservativo ma approssimato: non è un sostituto della sandbox. Un comando consentito può fare a valle cose che la policy non vede (incluse le redirezioni `>` verso percorsi arbitrari); il contenimento di rete/filesystem spetta al container.
+- I percorsi vengono risolti con `realpath` (i symlink che escono dalla workspace sono negati), ma race TOCTOU tra verifica ed esecuzione restano possibili: anche qui il confine è la sandbox.
+- Il gateway inoltra solo gli endpoint di inferenza (`/v1/messages`, `/v1/chat/completions`, …): il device token non dà accesso al resto dell'API del provider.
 - La prompt injection da contenuti del repository non è prevenibile a livello di harness (posizione esplicita anche di PI): default-deny + sandbox + audit sono le mitigazioni.
 - Lo shim dei tipi dell'Extension API (`packages/fleet-extension/src/pi-types.ts`) è allineato a PI v0.80.x: quando si aggiorna la versione pinnata di PI sui client, riverificarlo.
-- Lo storage del control plane è su file JSON con scritture atomiche: adatto a flotte piccole/medie e a PoC; l'interfaccia (`Store`) è pensata per migrare a Postgres senza toccare la logica.
+- Lo storage del control plane è su file JSON con scritture atomiche: adatto a flotte piccole/medie e a PoC; l'interfaccia (`Store`) è pensata per migrare a Postgres senza toccare la logica. Va eseguita **una sola istanza** del server per data dir (nessun lock multi-processo).
+- La UI amministrativa conserva il token in `localStorage` e usa script inline (CSP `unsafe-inline`): accettabile dietro rete interna/VPN; per esposizione più ampia prevedere una sessione server-side.

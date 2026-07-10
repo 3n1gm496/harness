@@ -87,6 +87,7 @@ export class ControlPlaneService {
 	createEnrollToken(identity: AdminIdentity, groupId: string, ttlMinutes: number): string {
 		this.requireRole(identity, "operator");
 		this.requireGroup(groupId);
+		this.pruneEnrollTokens();
 		const token = newSecretToken("enr");
 		const now = Date.now();
 		this.store.state.enrollTokens[hashToken(token)] = {
@@ -161,11 +162,12 @@ export class ControlPlaneService {
 		return signPayload(this.store.signingPrivateKeyPem, bundle);
 	}
 
-	ingestAudit(device: DeviceRecord, events: AuditEvent[]): number {
-		const sanitized = events.slice(0, 500).map((event) => ({
-			...event,
-			deviceId: device.deviceId, // il device non può impersonarne un altro
-		}));
+	ingestAudit(device: DeviceRecord, events: unknown[]): number {
+		const sanitized: AuditEvent[] = [];
+		for (const raw of events.slice(0, 500)) {
+			const event = sanitizeAuditEvent(raw, device.deviceId);
+			if (event) sanitized.push(event);
+		}
 		this.store.appendDeviceAudit(device.deviceId, sanitized);
 		device.lastSeenAt = new Date().toISOString();
 		this.store.save();
@@ -393,7 +395,64 @@ export class ControlPlaneService {
 		this.store.save();
 	}
 
+	/** Rimuove i token di enrollment scaduti o usati da più di 24 ore. */
+	private pruneEnrollTokens(): void {
+		const cutoff = Date.now() - 24 * 3_600_000;
+		for (const [hash, record] of Object.entries(this.store.state.enrollTokens)) {
+			if (Date.parse(record.expiresAt) < cutoff) delete this.store.state.enrollTokens[hash];
+		}
+	}
+
 	private audit(actor: string, action: string, detail: Record<string, unknown>): void {
 		this.store.appendAdminAudit({ timestamp: new Date().toISOString(), actor, action, detail });
 	}
+}
+
+const AUDIT_EVENT_TYPES = new Set<string>([
+	"policy_decision",
+	"tool_call",
+	"tool_result",
+	"user_bash",
+	"config_applied",
+	"config_error",
+	"agent_start",
+	"agent_stop",
+	"error",
+]);
+
+/**
+ * Valida e delimita un evento di audit proveniente da un device: il device è
+ * autenticato ma non fidato — l'evento deve avere una shape nota, il deviceId
+ * viene sempre forzato e il payload viene troncato per proteggere lo storage.
+ */
+function sanitizeAuditEvent(raw: unknown, deviceId: string): AuditEvent | undefined {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+	const candidate = raw as Record<string, unknown>;
+	if (typeof candidate.type !== "string" || !AUDIT_EVENT_TYPES.has(candidate.type)) return undefined;
+
+	let data: Record<string, unknown> = {};
+	if (typeof candidate.data === "object" && candidate.data !== null && !Array.isArray(candidate.data)) {
+		data = candidate.data as Record<string, unknown>;
+		try {
+			const serialized = JSON.stringify(data);
+			if (serialized.length > 8192) {
+				data = { truncated: true, preview: serialized.slice(0, 2048) };
+			}
+		} catch {
+			data = { truncated: true, preview: "[dati non serializzabili]" };
+		}
+	}
+
+	const event: AuditEvent = {
+		eventId: typeof candidate.eventId === "string" ? candidate.eventId.slice(0, 64) : newId("evt"),
+		deviceId, // il device non può impersonarne un altro
+		timestamp:
+			typeof candidate.timestamp === "string" && !Number.isNaN(Date.parse(candidate.timestamp))
+				? candidate.timestamp
+				: new Date().toISOString(),
+		type: candidate.type as AuditEvent["type"],
+		data,
+	};
+	if (typeof candidate.sessionId === "string") event.sessionId = candidate.sessionId.slice(0, 64);
+	return event;
 }

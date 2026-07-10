@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { defaultPolicy, failClosedPolicy } from "../defaults.js";
 import { evaluateBashCommand, evaluateToolCall } from "../policy.js";
@@ -78,6 +81,15 @@ test("bash: assegnazioni env in testa non aggirano l'allowlist", () => {
 	assert.equal(evaluateBashCommand(policy, "FOO=bar veleno --run").action, "deny");
 });
 
+test("bash: le duplicazioni di file descriptor non producono falsi deny", () => {
+	const policy = defaultPolicy().bash;
+	assert.equal(evaluateBashCommand(policy, "npm test 2>&1").action, "allow");
+	assert.equal(evaluateBashCommand(policy, "node script.js 2>&1 | grep errore").action, "allow");
+	assert.equal(evaluateBashCommand(policy, "echo fatto >&2").action, "allow");
+	// Ma un comando non consentito dopo il separatore resta negato.
+	assert.equal(evaluateBashCommand(policy, "ls 2>&1 && veleno").action, "deny");
+});
+
 test("bash deny-all blocca qualunque comando", () => {
 	const policy = defaultPolicy().bash;
 	policy.mode = "deny-all";
@@ -122,4 +134,38 @@ test("prefissi deny vincono anche dentro i prefissi allow", () => {
 test("/tmp è consentito dai prefissi allow di default", () => {
 	const decision = evaluateToolCall(defaultPolicy(), request("read", { path: "/tmp/scratch.txt" }));
 	assert.equal(decision.action, "allow");
+});
+
+test("un symlink dentro la workspace che punta fuori viene negato", () => {
+	const root = mkdtempSync(join(tmpdir(), "harness-symlink-"));
+	try {
+		const workspace = join(root, "workspace");
+		const outside = join(root, "fuori");
+		mkdirSync(workspace);
+		mkdirSync(outside);
+		writeFileSync(join(outside, "segreto.txt"), "x");
+		symlinkSync(outside, join(workspace, "scorciatoia"));
+
+		const policy = defaultPolicy();
+		policy.paths.allow = []; // nessuna esenzione: conta solo la workspace
+		const linked = evaluateToolCall(policy, {
+			toolName: "read",
+			input: { path: "scorciatoia/segreto.txt" },
+			cwd: workspace,
+			home: root,
+		});
+		assert.equal(linked.action, "deny");
+
+		// Un file reale nella workspace resta leggibile.
+		writeFileSync(join(workspace, "ok.txt"), "y");
+		const direct = evaluateToolCall(policy, {
+			toolName: "read",
+			input: { path: "ok.txt" },
+			cwd: workspace,
+			home: root,
+		});
+		assert.equal(direct.action, "allow");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });

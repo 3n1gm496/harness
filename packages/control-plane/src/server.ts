@@ -3,11 +3,30 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AuditEvent } from "@harness/shared";
 import type { ControlPlaneService } from "./service.js";
 import { ServiceError } from "./service.js";
 
 const MAX_BODY_BYTES = 1_048_576;
+
+/**
+ * Rate limit per-IP sull'enrollment: i token hanno 256 bit di entropia e sono
+ * monouso, quindi il brute force è impraticabile, ma un endpoint di
+ * autenticazione non va comunque lasciato senza freni.
+ */
+const ENROLL_RATE_LIMIT_PER_MINUTE = 20;
+const enrollBuckets = new Map<string, { windowStart: number; count: number }>();
+
+function checkEnrollRateLimit(ip: string): boolean {
+	const now = Date.now();
+	if (enrollBuckets.size > 10_000) enrollBuckets.clear(); // cap difensivo
+	const bucket = enrollBuckets.get(ip);
+	if (!bucket || now - bucket.windowStart >= 60_000) {
+		enrollBuckets.set(ip, { windowStart: now, count: 1 });
+		return true;
+	}
+	bucket.count += 1;
+	return bucket.count <= ENROLL_RATE_LIMIT_PER_MINUTE;
+}
 
 /**
  * Server HTTP del control plane, senza dipendenze esterne.
@@ -34,6 +53,10 @@ async function handle(service: ControlPlaneService, req: IncomingMessage, res: S
 	// ---- API device ---------------------------------------------------------
 
 	if (method === "POST" && path === "/api/enroll") {
+		if (!checkEnrollRateLimit(req.socket.remoteAddress ?? "sconosciuto")) {
+			sendJson(res, 429, { error: "troppi tentativi di enrollment, riprovare tra un minuto" });
+			return;
+		}
 		const body = await readJsonBody(req);
 		const enrollToken = requireString(body, "enrollToken");
 		const deviceName = optionalString(body, "deviceName") ?? "";
@@ -50,7 +73,7 @@ async function handle(service: ControlPlaneService, req: IncomingMessage, res: S
 	if (method === "POST" && path === "/api/device/audit") {
 		const device = service.authenticateDevice(bearer);
 		const body = await readJsonBody(req);
-		const events = Array.isArray(body.events) ? (body.events as AuditEvent[]) : [];
+		const events: unknown[] = Array.isArray(body.events) ? body.events : [];
 		sendJson(res, 200, { accepted: service.ingestAudit(device, events) });
 		return;
 	}

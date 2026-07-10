@@ -67,6 +67,15 @@ async function main(): Promise<void> {
 				stdio: "inherit",
 				env: { ...process.env, PI_SKIP_VERSION_CHECK: "1" },
 			});
+			child.on("error", (error: NodeJS.ErrnoException) => {
+				if (error.code === "ENOENT") {
+					console.error("`pi` non trovato nel PATH. Installa il coding agent:");
+					console.error("  npm install -g --ignore-scripts @earendil-works/pi-coding-agent");
+				} else {
+					console.error(`avvio di pi fallito: ${error.message}`);
+				}
+				process.exit(1);
+			});
 			child.on("exit", (code) => process.exit(code ?? 0));
 		}
 		return;

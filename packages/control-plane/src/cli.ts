@@ -18,7 +18,14 @@ function main(): void {
 	if (command === "init") {
 		const store = new Store(dataDir);
 		const service = new ControlPlaneService(store);
-		const token = service.bootstrapAdminToken(flagValue(args, "--name") ?? "founder");
+		let token: string;
+		try {
+			token = service.bootstrapAdminToken(flagValue(args, "--name") ?? "founder");
+		} catch {
+			console.error(`Data dir già inizializzata (${dataDir}): esiste già un token amministrativo.`);
+			console.error("Per crearne altri usa POST /api/admin/admin-tokens con un token admin esistente.");
+			process.exit(1);
+		}
 		console.log("Control plane inizializzato.");
 		console.log(`  Data dir:        ${dataDir}`);
 		console.log(`  Chiave pubblica: ${dataDir}/keys/config-signing.pub`);
@@ -31,6 +38,9 @@ function main(): void {
 	if (command === "serve") {
 		const port = Number(flagValue(args, "--port") ?? process.env.PORT ?? "8787");
 		const store = new Store(dataDir);
+		if (Object.keys(store.state.adminTokens).length === 0) {
+			console.warn("[control-plane] ATTENZIONE: nessun token amministrativo. Esegui prima `harness-cp init`.");
+		}
 		const service = new ControlPlaneService(store);
 		const server = createControlPlaneServer(service);
 		server.listen(port, () => {

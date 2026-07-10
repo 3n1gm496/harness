@@ -37,6 +37,23 @@ test("pattern custom malformati vengono ignorati", () => {
 	assert.equal(result.text, "testo");
 });
 
+test("i token della piattaforma harness vengono redatti", () => {
+	const input = "device token dvt_AbCdEfGhIjKlMnOpQrStUvWxYz123456 e admin adm_ZyXwVuTsRqPoNmLkJiHgFe987654";
+	const result = redactSecrets(input);
+	assert.ok(!result.text.includes("dvt_AbCdEfGhIjKlMnOpQrStUvWxYz123456"));
+	assert.ok(!result.text.includes("adm_ZyXwVuTsRqPoNmLkJiHgFe987654"));
+	assert.ok(result.matches.includes("harness-token"));
+});
+
+test("deepMerge non attraversa __proto__ (prototype pollution)", () => {
+	const malicious = JSON.parse('{"__proto__": {"polluted": true}, "constructor": {"x": 1}, "safe": 2}') as object;
+	const merged = deepMerge({ a: 1 }, malicious) as Record<string, unknown>;
+	assert.equal(merged.safe, 2);
+	assert.equal(Object.getPrototypeOf(merged), Object.prototype);
+	assert.equal((merged as { polluted?: boolean }).polluted, undefined);
+	assert.equal(({} as { polluted?: boolean }).polluted, undefined);
+});
+
 test("deepMerge sostituisce gli array invece di concatenarli", () => {
 	const merged = deepMerge({ a: { list: [1, 2, 3], keep: true } }, { a: { list: [9] } });
 	assert.deepEqual(merged.a.list, [9]);

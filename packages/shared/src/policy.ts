@@ -1,5 +1,6 @@
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { BashPolicy, PathsPolicy, PolicyDecision, PolicyDocument, ToolCallRequest } from "./types.js";
 
 /**
@@ -89,7 +90,11 @@ export function evaluateBashCommand(policy: BashPolicy, command: string): Policy
 }
 
 function splitCommandSegments(command: string): string[] {
-	return command
+	// Le duplicazioni di file descriptor (2>&1, >&2, …) contengono `&` ma non
+	// sono separatori di comando: vanno rimosse prima dello split, altrimenti
+	// producono falsi segmenti ("1") che l'allowlist nega.
+	const withoutFdRedirects = command.replaceAll(/\d*>{1,2}&\d*/g, " ");
+	return withoutFdRedirects
 		.split(/(?:\|\||&&|[;|&\n])+/)
 		.map((segment) => segment.trim())
 		// Ignora redirezioni pure e segmenti vuoti derivanti dallo split.
@@ -128,12 +133,12 @@ export function evaluatePathAccess(policy: PathsPolicy, request: ToolCallRequest
 	}
 	if (paths.length === 0) return { action: "allow" };
 
-	const denyPrefixes = policy.deny.map((p) => normalizePrefix(p, home, request.cwd));
-	const allowPrefixes = policy.allow.map((p) => normalizePrefix(p, home, request.cwd));
-	const workspace = resolve(request.cwd);
+	const denyPrefixes = policy.deny.map((p) => resolveReal(normalizePrefix(p, home, request.cwd)));
+	const allowPrefixes = policy.allow.map((p) => resolveReal(normalizePrefix(p, home, request.cwd)));
+	const workspace = resolveReal(resolve(request.cwd));
 
 	for (const rawPath of paths) {
-		const absolute = resolve(request.cwd, expandHome(rawPath, home));
+		const absolute = resolveReal(resolve(request.cwd, expandHome(rawPath, home)));
 		if (denyPrefixes.some((prefix) => isWithin(prefix, absolute))) {
 			return { action: "deny", reason: `accesso al percorso "${rawPath}" negato dalla policy` };
 		}
@@ -160,6 +165,26 @@ function expandHome(value: string, home: string): string {
 function normalizePrefix(prefix: string, home: string, cwd: string): string {
 	const expanded = expandHome(prefix, home);
 	return isAbsolute(expanded) ? resolve(expanded) : resolve(cwd, expanded);
+}
+
+/**
+ * Risolve i symlink del percorso (o del suo antenato esistente più profondo,
+ * per i path non ancora creati): un link dentro la workspace che punta fuori
+ * deve essere valutato per la sua destinazione reale, non per il nome.
+ */
+function resolveReal(absolute: string): string {
+	let current = absolute;
+	let suffix = "";
+	for (;;) {
+		try {
+			return suffix === "" ? realpathSync(current) : join(realpathSync(current), suffix);
+		} catch {
+			const parent = dirname(current);
+			if (parent === current) return absolute; // nessun antenato esistente
+			suffix = suffix === "" ? basename(current) : join(basename(current), suffix);
+			current = parent;
+		}
+	}
 }
 
 function isWithin(prefix: string, target: string): boolean {

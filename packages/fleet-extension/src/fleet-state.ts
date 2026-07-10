@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AuditEvent, ConfigBundle, PolicyDocument } from "@harness/shared";
@@ -93,6 +93,15 @@ export class FleetState {
 				headers: { authorization: `Bearer ${this.config.deviceToken}` },
 				signal: AbortSignal.timeout(15_000),
 			});
+			if (response.status === 401 || response.status === 403) {
+				// Rifiuto definitivo (token non valido o device revocato): il
+				// bundle in cache non va più onorato, si degrada subito.
+				this.bundle = undefined;
+				this.dropCache();
+				this.lastError = `device non autorizzato (HTTP ${response.status})`;
+				this.setStatus("fail-closed");
+				return;
+			}
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
 			const data = (await response.json()) as { token?: string };
 			if (typeof data.token !== "string") throw new Error("risposta senza token");
@@ -125,6 +134,14 @@ export class FleetState {
 		const tmpPath = `${path}.tmp`;
 		writeFileSync(tmpPath, token, { mode: 0o600 });
 		renameSync(tmpPath, path);
+	}
+
+	private dropCache(): void {
+		try {
+			rmSync(this.bundleCachePath, { force: true });
+		} catch {
+			// la cache orfana verrà comunque rifiutata alla scadenza
+		}
 	}
 
 	private setStatus(status: FleetStatus): void {

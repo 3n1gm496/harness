@@ -165,6 +165,42 @@ test("estensione end-to-end contro un control plane reale", async (t) => {
 	});
 });
 
+test("la revoca degrada subito a fail-closed, senza attendere la scadenza del bundle", async () => {
+	const { FleetState } = await import("../fleet-state.js");
+	const { loadAgentConfig } = await import("../fleet-state.js");
+	const config = loadAgentConfig();
+
+	// Primo load: bundle valido (con scadenza lontana) in cache.
+	const state = new FleetState(config);
+	await state.initialLoad();
+	assert.equal(state.status, "ok");
+	assert.equal(state.policy.killSwitch, false);
+
+	// Il control plane ora risponde 403 (device revocato): la policy in cache
+	// non deve più essere onorata.
+	const denyingFetch: typeof fetch = async () => new Response("{}", { status: 403 });
+	await state.refresh(denyingFetch);
+	assert.equal(state.status, "fail-closed");
+	assert.equal(state.policy.killSwitch, true);
+
+	// Anche una nuova istanza non deve ripartire dalla cache locale.
+	const restarted = new FleetState(config);
+	await restarted.initialLoad(denyingFetch);
+	assert.equal(restarted.status, "fail-closed");
+	assert.equal(restarted.policy.killSwitch, true);
+
+	// Un errore di rete transitorio invece NON butta via la config valida.
+	const flaky = new FleetState(config);
+	await flaky.initialLoad(); // ripopola la cache dal server reale
+	assert.equal(flaky.status, "ok");
+	const offlineFetch: typeof fetch = async () => {
+		throw new Error("rete irraggiungibile");
+	};
+	await flaky.refresh(offlineFetch);
+	assert.equal(flaky.status, "cached");
+	assert.equal(flaky.policy.killSwitch, false);
+});
+
 test("senza config del device l'estensione blocca tutto", async () => {
 	const previous = process.env.HARNESS_AGENT_CONFIG;
 	process.env.HARNESS_AGENT_CONFIG = join(clientDir, "inesistente.json");

@@ -92,6 +92,42 @@ test("il token può arrivare anche come x-api-key", async () => {
 	assert.equal(response.status, 200);
 });
 
+test("endpoint fuori dall'allowlist di inferenza → 403", async () => {
+	for (const path of ["/anthropic/v1/files", "/anthropic/v1/organizations/me", "/anthropic/v1/messagesX"]) {
+		const response = await fetch(`${gatewayUrl}${path}`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${deviceToken}` },
+			body: "{}",
+		});
+		assert.equal(response.status, 403, `atteso 403 per ${path}`);
+	}
+});
+
+test("l'header anthropic-beta viene inoltrato al provider", async () => {
+	let seenBeta: string | undefined;
+	const original = upstream.listeners("request");
+	upstream.removeAllListeners("request");
+	upstream.on("request", (req, res) => {
+		seenBeta = req.headers["anthropic-beta"] as string | undefined;
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end("{}");
+	});
+	try {
+		await fetch(`${gatewayUrl}/anthropic/v1/messages`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${deviceToken}`,
+				"anthropic-beta": "prompt-caching-2024-07-31",
+			},
+			body: "{}",
+		});
+		assert.equal(seenBeta, "prompt-caching-2024-07-31");
+	} finally {
+		upstream.removeAllListeners("request");
+		for (const listener of original) upstream.on("request", listener as () => void);
+	}
+});
+
 test("provider non configurato → 503", async () => {
 	const response = await fetch(`${gatewayUrl}/openai/v1/chat/completions`, {
 		method: "POST",

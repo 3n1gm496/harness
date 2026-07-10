@@ -32,6 +32,16 @@ interface IntrospectionEntry {
 	expiresAt: number;
 }
 
+/**
+ * Solo gli endpoint di inferenza sono inoltrabili: il device token non deve
+ * diventare una chiave passe-partout verso l'intera API del provider
+ * (billing, gestione file, admin, …).
+ */
+const ALLOWED_UPSTREAM_PATHS: Record<"anthropic" | "openai", RegExp[]> = {
+	anthropic: [/^\/v1\/messages$/, /^\/v1\/messages\/count_tokens$/],
+	openai: [/^\/v1\/chat\/completions$/, /^\/v1\/completions$/, /^\/v1\/embeddings$/, /^\/v1\/responses$/],
+};
+
 export function createGatewayServer(options: GatewayOptions): Server {
 	const introspectionCache = new Map<string, IntrospectionEntry>();
 	const rateBuckets = new Map<string, { windowStart: number; count: number }>();
@@ -42,6 +52,9 @@ export function createGatewayServer(options: GatewayOptions): Server {
 	async function introspect(deviceToken: string): Promise<IntrospectionEntry> {
 		const cached = introspectionCache.get(deviceToken);
 		if (cached && cached.expiresAt > Date.now()) return cached;
+		// Cap difensivo: token invalidi spammati non devono far crescere la
+		// cache senza limite.
+		if (introspectionCache.size > 5_000) introspectionCache.clear();
 		const response = await fetch(`${options.controlPlaneUrl}/api/introspect`, {
 			method: "POST",
 			headers: {
@@ -101,6 +114,10 @@ export function createGatewayServer(options: GatewayOptions): Server {
 			sendJson(res, 503, { error: `provider ${providerName} non configurato sul gateway` });
 			return;
 		}
+		if (!ALLOWED_UPSTREAM_PATHS[providerName].some((pattern) => pattern.test(upstreamPath))) {
+			sendJson(res, 403, { error: `endpoint non consentito dal gateway: ${upstreamPath}` });
+			return;
+		}
 
 		// Il device token può arrivare come Bearer o come x-api-key (per gli SDK
 		// che usano il formato Anthropic).
@@ -128,6 +145,9 @@ export function createGatewayServer(options: GatewayOptions): Server {
 			headers["x-api-key"] = provider.apiKey;
 			const version = headerValue(req, "anthropic-version");
 			if (version) headers["anthropic-version"] = version;
+			// Le funzionalità beta (prompt caching, ecc.) viaggiano in questo header.
+			const beta = headerValue(req, "anthropic-beta");
+			if (beta) headers["anthropic-beta"] = beta;
 		} else {
 			headers.authorization = `Bearer ${provider.apiKey}`;
 		}

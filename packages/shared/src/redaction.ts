@@ -21,6 +21,9 @@ const BUILTIN_PATTERNS: BuiltinPattern[] = [
 	{ label: "slack-token", regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
 	{ label: "google-api-key", regex: /\bAIza[0-9A-Za-z_-]{30,}\b/g },
 	{ label: "jwt", regex: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
+	// Token della piattaforma harness stessa (admin, device, enrollment, gateway):
+	// non devono mai finire nel contesto del modello né nei log di sessione.
+	{ label: "harness-token", regex: /\b(?:adm|dvt|enr|gwt)_[A-Za-z0-9_-]{20,}\b/g },
 	{
 		label: "private-key-block",
 		regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,

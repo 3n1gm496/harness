@@ -130,6 +130,33 @@ test("l'audit dei device viene accettato e riletto, con deviceId forzato", async
 	assert.equal(events[0]?.deviceId, deviceId); // lo spoofing è stato neutralizzato
 });
 
+test("l'audit ingest scarta eventi malformati e tronca payload enormi", async () => {
+	const huge = "x".repeat(20_000);
+	const ingest = await call("POST", "/api/device/audit", {
+		token: deviceToken,
+		body: {
+			events: [
+				"non-un-oggetto",
+				{ type: "tipo_inventato", data: {} },
+				{ type: "tool_call", data: { blob: huge } },
+				{ type: "policy_decision", timestamp: "data-non-valida", data: { ok: true } },
+			],
+		},
+	});
+	assert.equal(ingest.status, 200);
+	assert.equal(ingest.data.accepted, 2); // solo i due eventi con tipo noto
+
+	const audit = await call("GET", `/api/admin/audit?deviceId=${deviceId}&limit=2`, { token: adminToken });
+	const events = audit.data.events as { type: string; timestamp: string; data: Record<string, unknown> }[];
+	const truncated = events.find((event) => event.type === "tool_call");
+	assert.ok(truncated);
+	assert.equal(truncated.data.truncated, true);
+	assert.ok(JSON.stringify(truncated.data).length < 4096);
+	const fixedTimestamp = events.find((event) => event.type === "policy_decision");
+	assert.ok(fixedTimestamp);
+	assert.ok(!Number.isNaN(Date.parse(fixedTimestamp.timestamp)));
+});
+
 test("RBAC: viewer non può mutare, operator non può cambiare policy", async () => {
 	const viewerResult = await call("POST", "/api/admin/admin-tokens", {
 		token: adminToken,
