@@ -151,6 +151,52 @@ test("device revocato → 401 dopo la scadenza della cache", async () => {
 	await new Promise((resolve) => setTimeout(resolve, 80));
 });
 
+test("le risposte in streaming (SSE) vengono inoltrate chunk per chunk", async () => {
+	// Upstream che emette eventi SSE ritardati, come farebbe un provider in stream.
+	const sse = createServer((_req, res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		let n = 0;
+		const timer = setInterval(() => {
+			res.write(`data: {"chunk":${n}}\n\n`);
+			if (++n === 4) {
+				clearInterval(timer);
+				res.end("data: [DONE]\n\n");
+			}
+		}, 10);
+	});
+	await new Promise<void>((resolve) => sse.listen(0, resolve));
+	const sseUrl = `http://127.0.0.1:${(sse.address() as AddressInfo).port}`;
+
+	const identity = service.authenticateAdmin(adminToken);
+	const gatewayToken = service.createGatewayToken(identity, "gw-sse");
+	const streamGateway = createGatewayServer({
+		controlPlaneUrl: `http://127.0.0.1:${(controlPlane.address() as AddressInfo).port}`,
+		gatewayToken,
+		providers: { anthropic: { baseUrl: sseUrl, apiKey: "k" } },
+		log: () => {},
+	});
+	await new Promise<void>((resolve) => streamGateway.listen(0, resolve));
+	const streamUrl = `http://127.0.0.1:${(streamGateway.address() as AddressInfo).port}`;
+
+	try {
+		const response = await fetch(`${streamUrl}/anthropic/v1/messages`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${deviceToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ model: "x", stream: true }),
+		});
+		assert.equal(response.headers.get("content-type"), "text/event-stream");
+		let full = "";
+		for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+			full += Buffer.from(chunk).toString("utf8");
+		}
+		assert.equal((full.match(/"chunk":/g) ?? []).length, 4);
+		assert.ok(full.includes("[DONE]"));
+	} finally {
+		await new Promise((resolve) => streamGateway.close(resolve));
+		await new Promise((resolve) => sse.close(resolve));
+	}
+});
+
 test("rate limit per device → 429", async () => {
 	let got429 = false;
 	for (let i = 0; i < 10; i += 1) {
