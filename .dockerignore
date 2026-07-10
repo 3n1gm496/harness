@@ -1,0 +1,14 @@
+# Non copiare nell'immagine artefatti di build dell'host: vanno rigenerati
+# nel container. Copiarli gonfia l'immagine e — nel caso di node_modules e
+# .tsbuildinfo — può produrre build incoerenti o binari nativi non compatibili.
+node_modules
+**/node_modules
+dist
+**/dist
+*.tsbuildinfo
+**/*.tsbuildinfo
+.data
+**/.data
+.git
+*.log
+.env

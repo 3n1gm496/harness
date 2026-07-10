@@ -9,6 +9,11 @@ FROM node:22-bookworm-slim
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /app /app
+# La dir dati deve esistere ed essere scrivibile dall'utente non-root: senza
+# questo il processo (o un named volume montato su un path inesistente) parte
+# di proprietà di root e il control plane non può scrivere il proprio stato.
+RUN mkdir -p /data && chown node:node /data
+VOLUME ["/data"]
 USER node
 # Control plane (default). Per il gateway: command ["node", "packages/llm-gateway/dist/cli.js"]
 EXPOSE 8787 8788

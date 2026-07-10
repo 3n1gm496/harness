@@ -116,6 +116,14 @@ test("maybeRotateToken ruota su richiesta e non ruota se il token è recente", a
 	assert.equal(state.status, "ok");
 });
 
+test("loadAgentConfig senza file dà un messaggio d'aiuto, non un ENOENT grezzo", async () => {
+	const { loadAgentConfig } = await import("@harness/fleet-extension");
+	assert.throws(
+		() => loadAgentConfig(join(clientDir, "non-esiste.json")),
+		/device non arruolato.*harness-agent enroll/s,
+	);
+});
+
 test("buildPiArgs carica l'estensione fleet e passa gli argomenti extra", () => {
 	const args = buildPiArgs("/opt/harness/fleet/dist/index.js", ["--mode", "rpc"]);
 	assert.deepEqual(args, ["-e", "/opt/harness/fleet/dist/index.js", "--mode", "rpc"]);

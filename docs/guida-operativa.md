@@ -103,6 +103,8 @@ docker run --rm -it \
 
 Linee guida: montare solo la workspace necessaria, usare un volume dedicato per `/home/node`, limitare l'egress di rete del container a control plane e gateway (network policy/firewall), nessuna API key provider nell'ambiente del container.
 
+I container girano come utente non-root: l'immagine backend crea `/data` di proprietà di `node` e la dichiara `VOLUME`, così un named volume vi si monta con i permessi corretti. Un `.dockerignore` esclude `node_modules`, `dist` e `.tsbuildinfo` dell'host dal contesto di build (immagini più snelle, nessun binario nativo host-specific).
+
 ## 5. Operazioni di sicurezza
 
 | Scenario | Azione |

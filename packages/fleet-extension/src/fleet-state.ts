@@ -28,6 +28,11 @@ export function defaultAgentConfigPath(): string {
 }
 
 export function loadAgentConfig(path: string = defaultAgentConfigPath()): AgentConfig {
+	if (!existsSync(path)) {
+		throw new Error(
+			`device non arruolato: nessuna configurazione in ${path}. Esegui prima "harness-agent enroll --url <control-plane> --token <enroll-token>".`,
+		);
+	}
 	const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<AgentConfig>;
 	for (const key of ["controlPlaneUrl", "deviceId", "deviceToken", "publicKeyPem"] as const) {
 		if (typeof raw[key] !== "string" || raw[key] === "") {
