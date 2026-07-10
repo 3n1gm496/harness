@@ -117,6 +117,18 @@
 		<p id="tokenResult" class="muted"></p>
 	</section>
 
+	<section id="signingPanel" class="admin-only" hidden>
+		<h2>Chiavi di firma dei bundle</h2>
+		<table>
+			<thead><tr><th>Key ID</th><th>Creata</th><th>Stato</th><th></th></tr></thead>
+			<tbody id="signingBody"></tbody>
+		</table>
+		<div class="row" style="margin-top:10px">
+			<button id="btnAddKey">Aggiungi chiave (fase 1)</button>
+			<span class="muted">add → attendi un sync dei device → promote → retire. Saltare le attese manda fail-closed i device non sincronizzati.</span>
+		</div>
+	</section>
+
 	<section id="auditPanel" hidden>
 		<h2>Audit</h2>
 		<div class="row">
@@ -205,9 +217,35 @@ async function refresh() {
 
 	// Solo gli admin possono elencare i token: si evita del tutto la chiamata
 	// (che risponderebbe 403) per gli altri ruoli.
-	if (canAdmin) await refreshTokens();
-	else $("tokensPanel").hidden = true;
+	if (canAdmin) { await refreshTokens(); await refreshSigningKeys(); }
+	else { $("tokensPanel").hidden = true; $("signingPanel").hidden = true; }
 }
+
+async function refreshSigningKeys() {
+	try {
+		const data = await api("GET", "/api/admin/signing-keys");
+		$("signingBody").innerHTML = data.keys.map((k) =>
+			"<tr><td><code>" + esc(k.keyId) + "</code></td><td>" + fmtDate(k.createdAt) + "</td>" +
+			"<td>" + (k.active ? '<span class="pill off">attiva (firma)</span>' : '<span class="muted">fidata</span>') + "</td>" +
+			"<td>" + (k.active
+				? ""
+				: '<button class="secondary" onclick="promoteKey(\'' + k.keyId + '\')">promuovi</button> ' +
+				  '<button class="danger" onclick="retireKey(\'' + k.keyId + '\')">ritira</button>') +
+			"</td></tr>"
+		).join("");
+		$("signingPanel").hidden = false;
+	} catch { $("signingPanel").hidden = true; }
+}
+window.promoteKey = async (id) => {
+	if (!confirm("Promuovere questa chiave ad attiva? I device non ancora sincronizzati con essa andranno fail-closed.")) return;
+	try { await api("POST", "/api/admin/signing-keys/" + id + "/promote"); await refreshSigningKeys(); msg("Chiave promossa"); }
+	catch (e) { msg(e.message, true); }
+};
+window.retireKey = async (id) => {
+	if (!confirm("Ritirare questa chiave? I bundle firmati con essa non saranno più verificabili.")) return;
+	try { await api("DELETE", "/api/admin/signing-keys/" + id); await refreshSigningKeys(); msg("Chiave ritirata"); }
+	catch (e) { msg(e.message, true); }
+};
 
 async function refreshTokens() {
 	const data = await api("GET", "/api/admin/admin-tokens");
@@ -299,6 +337,10 @@ $("btnLogin").onclick = async () => {
 	token = $("tokenInput").value.trim();
 	try { await refresh(); localStorage.setItem("harnessAdminToken", token); }
 	catch (e) { msg("Accesso fallito: " + e.message, true); }
+};
+$("btnAddKey").onclick = async () => {
+	try { const r = await api("POST", "/api/admin/signing-keys"); await refreshSigningKeys(); msg("Chiave aggiunta: " + r.keyId); }
+	catch (e) { msg(e.message, true); }
 };
 $("btnLogout").onclick = () => { localStorage.removeItem("harnessAdminToken"); location.reload(); };
 

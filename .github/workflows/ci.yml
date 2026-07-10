@@ -8,6 +8,23 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: harness
+          POSTGRES_PASSWORD: harness
+          POSTGRES_DB: harness
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U harness"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Abilita il test live dell'adapter Postgres (altrimenti si auto-salta).
+      HARNESS_TEST_PG_URL: postgresql://harness:harness@localhost:5432/harness
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -18,7 +35,7 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Build
         run: npm run build
-      - name: Test
+      - name: Test (incluso adapter Postgres e mTLS)
         run: npm test
       - name: Audit dipendenze di produzione
         run: npm audit --omit=dev

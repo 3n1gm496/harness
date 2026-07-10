@@ -103,6 +103,27 @@ export function verifyConfigBundle(
 	return { valid: true, payload: bundle };
 }
 
+/**
+ * Verifica un bundle contro un insieme di chiavi pubbliche fidate: valido se
+ * una qualunque di esse ne verifica la firma. Sostiene la rotazione della
+ * chiave di firma, in cui vecchia e nuova coesistono per un periodo di grazia.
+ */
+export function verifyConfigBundleMulti(
+	publicKeyPems: string[],
+	token: string,
+	now: Date = new Date(),
+	clockSkewMs = 60_000,
+): VerifyResult<ConfigBundle> {
+	if (publicKeyPems.length === 0) return { valid: false, error: "nessuna chiave pubblica fidata" };
+	let lastError = "nessuna chiave ha verificato la firma";
+	for (const pem of publicKeyPems) {
+		const result = verifyConfigBundle(pem, token, now, clockSkewMs);
+		if (result.valid) return result;
+		lastError = result.error;
+	}
+	return { valid: false, error: lastError };
+}
+
 function base64url(value: string): string {
 	return Buffer.from(value, "utf8").toString("base64url");
 }

@@ -68,7 +68,22 @@ export function createControlPlaneServer(
 			sendJson(res, status, { error: message });
 		});
 	};
-	return options.tls ? createHttpsServer(options.tls, listener) : createServer(listener);
+	if (options.tls) {
+		// requestCert richiede (senza imporre) il certificato client, così i
+		// device legati a un fingerprint possono presentarlo; il binding vero e
+		// proprio è verificato a livello applicativo in authenticateDevice.
+		return createHttpsServer({ ...options.tls, requestCert: true, rejectUnauthorized: false }, listener);
+	}
+	return createServer(listener);
+}
+
+/** Fingerprint SHA-256 (hex) del certificato client della connessione, se presente. */
+function peerCertFingerprint(req: IncomingMessage): string | undefined {
+	const socket = req.socket as import("node:tls").TLSSocket;
+	if (typeof socket.getPeerCertificate !== "function") return undefined;
+	const cert = socket.getPeerCertificate();
+	if (!cert || Object.keys(cert).length === 0) return undefined;
+	return cert.fingerprint256 || undefined;
 }
 
 async function handle(service: ControlPlaneService, req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -87,18 +102,23 @@ async function handle(service: ControlPlaneService, req: IncomingMessage, res: S
 		const body = await readJsonBody(req);
 		const enrollToken = requireString(body, "enrollToken");
 		const deviceName = optionalString(body, "deviceName") ?? "";
-		sendJson(res, 200, service.enrollDevice(enrollToken, deviceName));
+		// Il device può legarsi al proprio certificato client già all'enrollment,
+		// presentandolo via mTLS oppure indicandone il fingerprint nel body.
+		const certFingerprint = peerCertFingerprint(req) ?? optionalString(body, "certFingerprint");
+		sendJson(res, 200, service.enrollDevice(enrollToken, deviceName, certFingerprint));
 		return;
 	}
 
+	const fp = peerCertFingerprint(req);
+
 	if (method === "GET" && path === "/api/device/config") {
-		const device = service.authenticateDevice(bearer);
+		const device = service.authenticateDevice(bearer, fp);
 		sendJson(res, 200, { token: service.issueConfigBundle(device) });
 		return;
 	}
 
 	if (method === "POST" && path === "/api/device/audit") {
-		const device = service.authenticateDevice(bearer);
+		const device = service.authenticateDevice(bearer, fp);
 		const body = await readJsonBody(req);
 		const events: unknown[] = Array.isArray(body.events) ? body.events : [];
 		sendJson(res, 200, { accepted: service.ingestAudit(device, events) });
@@ -106,8 +126,17 @@ async function handle(service: ControlPlaneService, req: IncomingMessage, res: S
 	}
 
 	if (method === "POST" && path === "/api/device/rotate-token") {
-		const device = service.authenticateDevice(bearer);
+		const device = service.authenticateDevice(bearer, fp);
 		sendJson(res, 200, { deviceToken: service.rotateDeviceToken(device) });
+		return;
+	}
+
+	if (method === "POST" && path === "/api/device/bind-cert") {
+		// Trust on first use: autentica col token (se già legato, il fingerprint
+		// deve comunque combaciare) e lega il device al certificato presentato.
+		const device = service.authenticateDevice(bearer, fp);
+		service.bindDeviceCertificate(device, fp);
+		sendJson(res, 200, { ok: true });
 		return;
 	}
 
@@ -176,9 +205,33 @@ async function handle(service: ControlPlaneService, req: IncomingMessage, res: S
 			sendJson(res, 200, service.effectivePolicy(identity, decodeURIComponent(effectiveMatch[1] as string)));
 			return;
 		}
+		if (method === "GET" && path === "/api/admin/signing-keys") {
+			sendJson(res, 200, { keys: service.listSigningKeys(identity) });
+			return;
+		}
+		if (method === "POST" && path === "/api/admin/signing-keys") {
+			sendJson(res, 200, service.addSigningKey(identity));
+			return;
+		}
+		const promoteMatch = /^\/api\/admin\/signing-keys\/([^/]+)\/promote$/.exec(path);
+		if (promoteMatch && method === "POST") {
+			service.promoteSigningKey(identity, decodeURIComponent(promoteMatch[1] as string));
+			sendJson(res, 200, { ok: true });
+			return;
+		}
+		const retireMatch = /^\/api\/admin\/signing-keys\/([^/]+)$/.exec(path);
+		if (retireMatch && method === "DELETE") {
+			service.retireSigningKey(identity, decodeURIComponent(retireMatch[1] as string));
+			sendJson(res, 200, { ok: true });
+			return;
+		}
 		if (method === "GET" && path === "/api/admin/audit/verify") {
 			const deviceId = url.searchParams.get("deviceId") ?? undefined;
 			sendJson(res, 200, await service.verifyAudit(identity, deviceId));
+			return;
+		}
+		if (method === "GET" && path === "/api/admin/audit/anchor") {
+			sendJson(res, 200, await service.exportAuditAnchor(identity));
 			return;
 		}
 		if (method === "GET" && path === "/api/admin/admin-tokens") {

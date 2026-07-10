@@ -33,7 +33,10 @@ Harness AI aziendale basato su [PI Coding Agent](https://pi.dev/), con piattafor
 - **Zero segreti sui client**: inferenza via gateway con introspezione dei device token; revoca e kill switch si propagano anche all'inferenza.
 - **Audit completo e tamper-evident**: ogni decisione di policy, redaction e comando utente è tracciata e centralizzata in log a catena di hash (manomissioni sempre rilevabili, `harness-cp verify-audit`); audit amministrativo separato per le modifiche di config.
 - **Ciclo di vita dei segreti**: token amministrativi con scadenza e revoca, rotazione automatica dei device token ogni 30 giorni, TLS nativo con HSTS su control plane e gateway.
-- **Supply chain minima**: zero dipendenze runtime esterne (solo built-in Node), install con `--ignore-scripts`, CI con audit.
+- **Identità forte**: autenticazione admin via **OIDC/JWT** (RS256/ES256) oltre ai token statici; binding opzionale dei device al **certificato client mTLS** (un token rubato è inutile senza la chiave privata).
+- **Rotazione della chiave di firma senza re-enrollment**: procedura a tre fasi (add → promote → retire) con cross-firma; le chiavi valide viaggiano nei bundle e i client le apprendono prima del cambio.
+- **Non-ripudiabilità dell'audit**: export di un **anchor firmato** con le teste delle catene, ancorabile su storage WORM esterno.
+- **Supply chain minima**: zero dipendenze runtime esterne nel core (solo built-in Node); Postgres è un backend di stato **opzionale** per flotte grandi (`DATABASE_URL`, locking ottimistico). Install con `--ignore-scripts`, CI con audit.
 - **Sandbox obbligatoria**: PI non ha sandbox propria; il client va eseguito in container (`deploy/Dockerfile.agent`). La policy sui tool è defense-in-depth, non il confine di sicurezza.
 
 ## Quick start

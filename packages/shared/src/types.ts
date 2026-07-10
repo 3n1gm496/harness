@@ -69,6 +69,14 @@ export interface ConfigBundle {
 	policy: PolicyDocument;
 	/** Sottoinsieme gestito di settings di PI (defaultProvider, defaultModel, ecc.). */
 	piSettings: Record<string, unknown>;
+	/**
+	 * Tutte le chiavi pubbliche di firma attualmente valide. Il client, dopo
+	 * aver verificato il bundle con una chiave già fidata, aggiorna il proprio
+	 * set pinnato con questo elenco: così una nuova chiave viene distribuita
+	 * (cross-firmata dalla vecchia) prima che la vecchia sia ritirata, e la
+	 * rotazione avviene senza re-enrollment. Opzionale per retrocompatibilità.
+	 */
+	trustedPublicKeys?: string[];
 }
 
 export type AuditEventType =
@@ -89,6 +97,21 @@ export interface AuditEvent {
 	type: AuditEventType;
 	sessionId?: string;
 	data: Record<string, unknown>;
+}
+
+/**
+ * Anchor di audit firmato: fotografia delle teste delle catene di audit in un
+ * istante, firmata dal control plane. Ancorandolo su storage esterno WORM si
+ * ottiene non-ripudiabilità: chi verifica in seguito confronta le catene con
+ * le teste ancorate e rileva qualunque manomissione, anche da parte di chi ha
+ * accesso in scrittura ai file di audit.
+ */
+export interface AuditAnchor {
+	schema: "harness/audit-anchor@1";
+	orgId: string;
+	generatedAt: string;
+	admin: { head: string; entries: number };
+	devices: { deviceId: string; head: string; entries: number }[];
 }
 
 export type AdminRole = "admin" | "operator" | "viewer";

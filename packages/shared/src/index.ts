@@ -6,3 +6,4 @@ export * from "./policy.js";
 export * from "./redaction.js";
 export * from "./ids.js";
 export * from "./audit-chain.js";
+export * from "./jwt.js";

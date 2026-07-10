@@ -220,6 +220,37 @@ test("dopo la revoca, la riabilitazione del device recupera dallo stato fail-clo
 	assert.equal(state.policy.killSwitch, false);
 });
 
+test("rotazione chiave di firma end-to-end: il client apprende B e sopravvive al ritiro di A", async () => {
+	const { FleetState, loadAgentConfig } = await import("../fleet-state.js");
+	const identity = service.authenticateAdmin(adminToken);
+
+	// Il client parte fidando solo la chiave A (quella dell'enrollment).
+	const config = loadAgentConfig();
+	config.publicKeyPems = [config.publicKeyPem];
+	const state = new FleetState(config, process.env.HARNESS_AGENT_CONFIG);
+	await state.initialLoad();
+	assert.equal(state.status, "ok");
+
+	// Fase 1 — add: nuova chiave B (non ancora firmante). Il client, al sync,
+	// riceve un bundle ancora firmato con A che elenca anche B, e la apprende.
+	const keyB = service.addSigningKey(identity);
+	await state.refresh();
+	assert.equal(state.status, "ok");
+	assert.equal((config.publicKeyPems ?? []).length, 2);
+
+	// Fase 2 — promote: B firma. Il client fida già B ⇒ resta ok.
+	service.promoteSigningKey(identity, keyB.keyId);
+	await state.refresh();
+	assert.equal(state.status, "ok");
+
+	// Fase 3 — retire A: i bundle sono firmati con B, il client resta ok.
+	const keyAId = service.listSigningKeys(identity).find((k) => !k.active)?.keyId as string;
+	service.retireSigningKey(identity, keyAId);
+	await state.refresh();
+	assert.equal(state.status, "ok");
+	assert.equal((config.publicKeyPems ?? []).length, 1);
+});
+
 test("senza config del device l'estensione blocca tutto", async () => {
 	const previous = process.env.HARNESS_AGENT_CONFIG;
 	process.env.HARNESS_AGENT_CONFIG = join(clientDir, "inesistente.json");

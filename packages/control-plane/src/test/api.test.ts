@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
-import { verifyConfigBundle } from "@harness/shared";
+import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
+import { verifyConfigBundle, verifyConfigBundleMulti, verifyToken } from "@harness/shared";
 import { ControlPlaneService } from "../service.js";
 import { createControlPlaneServer } from "../server.js";
 import { Store } from "../store.js";
@@ -286,6 +287,168 @@ test("la catena di audit è integra e la manomissione viene rilevata", async () 
 	const tampered = await call("GET", `/api/admin/audit/verify?deviceId=${deviceId}`, { token: adminToken });
 	assert.equal(tampered.data.valid, false);
 	assert.equal((tampered.data as { brokenAtLine: number }).brokenAtLine, 1);
+});
+
+test("rotazione della chiave di firma in tre fasi, senza re-enrollment", async () => {
+	// Il device fida solo la chiave A, pinnata all'enrollment.
+	const keyA = publicKeyPem;
+	let pinned = [keyA];
+
+	function clientSync(token: string): boolean {
+		return true && verifyAndLearn(token);
+	}
+	function verifyAndLearn(bundleToken: string): boolean {
+		const v = verifyConfigBundleMulti(pinned, bundleToken);
+		if (!v.valid) return false;
+		if (v.payload.trustedPublicKeys) pinned = v.payload.trustedPublicKeys;
+		return true;
+	}
+
+	// Stato iniziale: bundle firmato con A, verificabile.
+	assert.equal(clientSync((await call("GET", "/api/device/config", { token: deviceToken })).data.token as string), true);
+	assert.deepEqual(pinned, [keyA]);
+
+	// Fase 1 — add: nuova chiave B, NON ancora firmante. Il bundle resta
+	// firmato con A (che il client fida) e ora elenca anche B.
+	const add = await call("POST", "/api/admin/signing-keys", { token: adminToken });
+	assert.equal(add.status, 200);
+	const keyBId = add.data.keyId as string;
+	assert.equal(clientSync((await call("GET", "/api/device/config", { token: deviceToken })).data.token as string), true);
+	assert.equal(pinned.length, 2); // il client ha appreso B
+
+	// Fase 2 — promote: B diventa firmante. Il client fida già B ⇒ verifica ok.
+	assert.equal((await call("POST", `/api/admin/signing-keys/${keyBId}/promote`, { token: adminToken })).status, 200);
+	assert.equal(clientSync((await call("GET", "/api/device/config", { token: deviceToken })).data.token as string), true);
+
+	// Fase 3 — retire A: il client ora fida [A,B] ma i bundle sono firmati con B,
+	// quindi resta valido anche dopo il ritiro di A.
+	const keys = (await call("GET", "/api/admin/signing-keys", { token: adminToken })).data.keys as {
+		keyId: string;
+		active: boolean;
+	}[];
+	const keyAId = keys.find((k) => !k.active)?.keyId as string;
+	assert.equal((await call("DELETE", `/api/admin/signing-keys/${keyAId}`, { token: adminToken })).status, 200);
+	assert.equal(clientSync((await call("GET", "/api/device/config", { token: deviceToken })).data.token as string), true);
+	assert.equal(pinned.length, 1); // solo B resta fidata
+
+	// Non si può ritirare l'unica chiave rimasta.
+	const soloKey = (await call("GET", "/api/admin/signing-keys", { token: adminToken })).data.keys as { keyId: string }[];
+	assert.equal((await call("DELETE", `/api/admin/signing-keys/${soloKey[0]?.keyId}`, { token: adminToken })).status, 400);
+});
+
+test("binding mTLS: la logica richiede il certificato legato", () => {
+	// Test unitario della logica su un service isolato.
+	const dir = mkdtempSync(join(tmpdir(), "harness-mtls-"));
+	try {
+		const svc = new ControlPlaneService(new Store(dir));
+		const admin = svc.bootstrapAdminToken("t");
+		const identity = svc.authenticateAdmin(admin);
+		const groupId = svc.overview(identity).groups[0]?.groupId as string;
+
+		// Device legato a un fingerprint fin dall'enrollment.
+		const enr = svc.createEnrollToken(identity, groupId, 10);
+		const bound = svc.enrollDevice(enr, "bound", "AA:BB:CC:DD");
+
+		// Senza certificato → 403.
+		assert.throws(() => svc.authenticateDevice(bound.deviceToken), /certificato client mTLS richiesto/);
+		// Certificato sbagliato → 403.
+		assert.throws(() => svc.authenticateDevice(bound.deviceToken, "99:88:77"), /non corrisponde/);
+		// Certificato giusto (normalizzazione dei due-punti/maiuscole) → ok.
+		assert.equal(svc.authenticateDevice(bound.deviceToken, "aabbccdd").deviceId, bound.deviceId);
+
+		// Device non legato: funziona con solo token, e può legarsi TOFU.
+		const enr2 = svc.createEnrollToken(identity, groupId, 10);
+		const free = svc.enrollDevice(enr2, "free");
+		const dev = svc.authenticateDevice(free.deviceToken);
+		assert.equal(dev.deviceId, free.deviceId);
+		svc.bindDeviceCertificate(dev, "12:34:56:78");
+		assert.throws(() => svc.authenticateDevice(free.deviceToken), /richiesto/);
+		assert.equal(svc.authenticateDevice(free.deviceToken, "12345678").deviceId, free.deviceId);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("export dell'anchor di audit firmato, verificabile e coerente con le catene", async () => {
+	const result = await call("GET", "/api/admin/audit/anchor", { token: adminToken });
+	assert.equal(result.status, 200);
+	const anchorToken = result.data.anchor as string;
+	const anchorPubKey = result.data.publicKeyPem as string;
+
+	// L'anchor è un JWS firmato dal control plane: la firma è verificabile.
+	const verified = verifyToken<{
+		schema: string;
+		admin: { head: string; entries: number };
+		devices: { deviceId: string; head: string }[];
+	}>(anchorPubKey, anchorToken);
+	assert.equal(verified.valid, true);
+	if (!verified.valid) return;
+	assert.equal(verified.payload.schema, "harness/audit-anchor@1");
+
+	// L'anchor fotografa la testa dell'audit amministrativo (non manomesso) e
+	// include ogni device noto con la propria testa (hash sha256, 64 hex).
+	assert.equal(verified.payload.admin.head.length, 64);
+	assert.ok(verified.payload.admin.entries > 0);
+	const deviceStream = verified.payload.devices.find((d) => d.deviceId === deviceId);
+	assert.ok(deviceStream, "l'anchor deve elencare il device arruolato");
+	assert.equal(deviceStream.head.length, 64);
+});
+
+test("autenticazione admin via OIDC/JWT con mappatura del ruolo dal claim", async () => {
+	const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+	const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
+	const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+	const issuer = "https://sso.azienda.it";
+	const audience = "harness-cp";
+
+	const oidcDir = mkdtempSync(join(tmpdir(), "harness-oidc-"));
+	const oidcStore = new Store(oidcDir);
+	const oidcService = new ControlPlaneService(oidcStore, {
+		oidc: { issuer, audience, keys: [{ alg: "RS256", publicKeyPem }] },
+	});
+	const oidcServer = createControlPlaneServer(oidcService);
+	await new Promise<void>((resolve) => oidcServer.listen(0, resolve));
+	const oidcUrl = `http://127.0.0.1:${(oidcServer.address() as AddressInfo).port}`;
+
+	function jwt(claims: Record<string, unknown>): string {
+		const h = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
+		const p = Buffer.from(JSON.stringify(claims)).toString("base64url");
+		const sig = cryptoSign("RSA-SHA256", Buffer.from(`${h}.${p}`, "utf8"), privateKeyPem).toString("base64url");
+		return `${h}.${p}.${sig}`;
+	}
+	const exp = Math.floor(Date.now() / 1000) + 3600;
+
+	async function callOidc(bearer: string): Promise<number> {
+		const r = await fetch(`${oidcUrl}/api/admin/overview`, { headers: { authorization: `Bearer ${bearer}` } });
+		return r.status;
+	}
+
+	try {
+		// JWT valido con ruolo admin → accesso pieno.
+		const adminJwt = jwt({ iss: issuer, aud: audience, exp, harness_role: "admin", email: "capo@azienda.it" });
+		assert.equal(await callOidc(adminJwt), 200);
+
+		// JWT con ruolo viewer → legge ma non muta.
+		const viewerJwt = jwt({ iss: issuer, aud: audience, exp, harness_role: "viewer", email: "occhi@azienda.it" });
+		assert.equal(await callOidc(viewerJwt), 200);
+		const mutate = await fetch(`${oidcUrl}/api/admin/org`, {
+			method: "PUT",
+			headers: { authorization: `Bearer ${viewerJwt}`, "content-type": "application/json" },
+			body: JSON.stringify({ killSwitch: true }),
+		});
+		assert.equal(mutate.status, 403);
+
+		// JWT senza claim di ruolo → 403.
+		const noRole = jwt({ iss: issuer, aud: audience, exp, email: "x@azienda.it" });
+		assert.equal(await callOidc(noRole), 403);
+
+		// JWT scaduto oltre la tolleranza di clock skew (60s) → 401.
+		const expired = jwt({ iss: issuer, aud: audience, exp: Math.floor(Date.now() / 1000) - 120, harness_role: "admin" });
+		assert.equal(await callOidc(expired), 401);
+	} finally {
+		await new Promise((resolve) => oidcServer.close(resolve));
+		rmSync(oidcDir, { recursive: true, force: true });
+	}
 });
 
 test("la UI statica viene servita", async () => {

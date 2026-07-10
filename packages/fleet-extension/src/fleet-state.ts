@@ -2,15 +2,21 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AuditEvent, ConfigBundle, PolicyDocument } from "@harness/shared";
-import { failClosedPolicy, newId, verifyConfigBundle } from "@harness/shared";
+import { failClosedPolicy, newId, verifyConfigBundleMulti } from "@harness/shared";
 
 /** File di identità del device scritto dall'agent-client in fase di enrollment. */
 export interface AgentConfig {
 	controlPlaneUrl: string;
 	deviceId: string;
 	deviceToken: string;
-	/** Chiave pubblica di firma dei bundle, pinnata all'enrollment. */
+	/** Chiave pubblica di firma pinnata all'enrollment (chiave iniziale). */
 	publicKeyPem: string;
+	/**
+	 * Set di chiavi pubbliche fidate, aggiornato automaticamente dai bundle
+	 * (`trustedPublicKeys`) per sostenere la rotazione della chiave di firma
+	 * senza re-enrollment. Se assente si usa `publicKeyPem`.
+	 */
+	publicKeyPems?: string[];
 	/** Intervallo di sync della configurazione in secondi (default 60). */
 	syncIntervalSeconds?: number;
 	/** Intervallo di flush dell'audit in secondi (default 10). */
@@ -51,6 +57,7 @@ export type FleetStatus = "ok" | "cached" | "fail-closed";
  */
 export class FleetState {
 	readonly config: AgentConfig;
+	private readonly configPath: string;
 	private bundle: ConfigBundle | undefined;
 	private policyOverride: PolicyDocument | undefined;
 	private auditBuffer: AuditEvent[] = [];
@@ -59,8 +66,41 @@ export class FleetState {
 	lastError = "";
 	onStatusChange: ((state: FleetState) => void) | undefined;
 
-	constructor(config: AgentConfig) {
+	constructor(config: AgentConfig, configPath: string = defaultAgentConfigPath()) {
 		this.config = config;
+		this.configPath = configPath;
+		if (!this.config.publicKeyPems || this.config.publicKeyPems.length === 0) {
+			this.config.publicKeyPems = [this.config.publicKeyPem];
+		}
+	}
+
+	/** Insieme delle chiavi pubbliche attualmente fidate dal client. */
+	private pinnedKeys(): string[] {
+		return this.config.publicKeyPems && this.config.publicKeyPems.length > 0
+			? this.config.publicKeyPems
+			: [this.config.publicKeyPem];
+	}
+
+	/**
+	 * Aggiorna il set di chiavi fidate dai `trustedPublicKeys` di un bundle già
+	 * verificato e lo persiste, così la rotazione della chiave di firma non
+	 * richiede re-enrollment. La chiave di enrollment resta sempre inclusa
+	 * finché il server non la ritira.
+	 */
+	private updateTrustedKeys(bundle: ConfigBundle): void {
+		if (!bundle.trustedPublicKeys || bundle.trustedPublicKeys.length === 0) return;
+		const next = [...bundle.trustedPublicKeys];
+		const current = this.pinnedKeys();
+		if (next.length === current.length && next.every((k) => current.includes(k))) return;
+		this.config.publicKeyPems = next;
+		try {
+			const tmp = `${this.configPath}.tmp`;
+			mkdirSync(dirname(this.configPath), { recursive: true });
+			writeFileSync(tmp, JSON.stringify(this.config, null, "\t"), { mode: 0o600 });
+			renameSync(tmp, this.configPath);
+		} catch {
+			// La persistenza è best-effort: in memoria il set è comunque aggiornato.
+		}
 	}
 
 	get policy(): PolicyDocument {
@@ -89,9 +129,10 @@ export class FleetState {
 	private loadFromCache(): void {
 		if (!existsSync(this.bundleCachePath)) return;
 		const token = readFileSync(this.bundleCachePath, "utf8").trim();
-		const verified = verifyConfigBundle(this.config.publicKeyPem, token);
+		const verified = verifyConfigBundleMulti(this.pinnedKeys(), token);
 		if (verified.valid && verified.payload.deviceId === this.config.deviceId) {
 			this.bundle = verified.payload;
+			this.updateTrustedKeys(verified.payload);
 			this.setStatus("cached");
 		}
 	}
@@ -115,13 +156,14 @@ export class FleetState {
 			const data = (await response.json()) as { token?: string };
 			if (typeof data.token !== "string") throw new Error("risposta senza token");
 
-			const verified = verifyConfigBundle(this.config.publicKeyPem, data.token);
+			const verified = verifyConfigBundleMulti(this.pinnedKeys(), data.token);
 			if (!verified.valid) throw new Error(`bundle rifiutato: ${verified.error}`);
 			if (verified.payload.deviceId !== this.config.deviceId) {
 				throw new Error("bundle emesso per un altro device");
 			}
 
 			this.bundle = verified.payload;
+			this.updateTrustedKeys(verified.payload);
 			this.writeCache(data.token);
 			this.lastError = "";
 			this.setStatus("ok");

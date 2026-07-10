@@ -5,9 +5,18 @@ import type {
 	DeepPartial,
 	DeviceInfo,
 	GroupInfo,
+	JwtVerifyKey,
 	PolicyDocument,
 } from "@harness/shared";
-import { deepMerge, lockedPiSettings, newId, newSecretToken, resolvePolicy, signPayload } from "@harness/shared";
+import {
+	deepMerge,
+	lockedPiSettings,
+	newId,
+	newSecretToken,
+	resolvePolicy,
+	signPayload,
+	verifyJwt,
+} from "@harness/shared";
 import type { AdminTokenRecord, DeviceRecord, GroupRecord, Store } from "./store.js";
 import { hashToken } from "./store.js";
 
@@ -24,6 +33,21 @@ export interface AdminIdentity {
 	role: AdminRole;
 }
 
+/**
+ * Configurazione OIDC opzionale: se presente, il control plane accetta anche
+ * JWT firmati dal provider aziendale come credenziali amministrative, mappando
+ * un claim al ruolo.
+ */
+export interface OidcConfig {
+	issuer: string;
+	audience: string;
+	keys: JwtVerifyKey[];
+	/** Claim che porta il ruolo (default "harness_role"). Valore: admin|operator|viewer. */
+	roleClaim?: string;
+	/** Claim usato come nome dell'identità nell'audit (default "email", poi "sub"). */
+	nameClaim?: string;
+}
+
 const ROLE_LEVEL: Record<AdminRole, number> = { viewer: 1, operator: 2, admin: 3 };
 
 /**
@@ -32,12 +56,24 @@ const ROLE_LEVEL: Record<AdminRole, number> = { viewer: 1, operator: 2, admin: 3
  * amministrativo.
  */
 export class ControlPlaneService {
-	constructor(private readonly store: Store) {}
+	private readonly oidc: OidcConfig | undefined;
+
+	constructor(
+		private readonly store: Store,
+		options: { oidc?: OidcConfig } = {},
+	) {
+		this.oidc = options.oidc;
+	}
 
 	// ---- Autenticazione -----------------------------------------------------
 
 	authenticateAdmin(token: string | undefined): AdminIdentity {
 		if (!token) throw new ServiceError(401, "token amministrativo mancante");
+		// I token statici hanno prefisso "adm_"; qualunque altra cosa è trattata
+		// come JWT OIDC, se l'OIDC è configurato.
+		if (!token.startsWith("adm_") && this.oidc) {
+			return this.authenticateOidc(token);
+		}
 		const record: AdminTokenRecord | undefined = this.store.state.adminTokens[hashToken(token)];
 		if (!record) throw new ServiceError(401, "token amministrativo non valido");
 		if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
@@ -46,19 +82,60 @@ export class ControlPlaneService {
 		return { name: record.name, role: record.role };
 	}
 
+	private authenticateOidc(token: string): AdminIdentity {
+		const oidc = this.oidc as OidcConfig;
+		const result = verifyJwt(token, { keys: oidc.keys, issuer: oidc.issuer, audience: oidc.audience });
+		if (!result.valid) throw new ServiceError(401, `JWT non valido: ${result.error}`);
+		const roleClaim = oidc.roleClaim ?? "harness_role";
+		const roleValue = result.claims[roleClaim];
+		if (roleValue !== "admin" && roleValue !== "operator" && roleValue !== "viewer") {
+			throw new ServiceError(403, `claim "${roleClaim}" assente o non valido nel token`);
+		}
+		const nameClaim = oidc.nameClaim ?? "email";
+		const name =
+			(typeof result.claims[nameClaim] === "string" && (result.claims[nameClaim] as string)) ||
+			(typeof result.claims.sub === "string" && result.claims.sub) ||
+			"oidc-user";
+		return { name, role: roleValue };
+	}
+
 	requireRole(identity: AdminIdentity, minimum: AdminRole): void {
 		if (ROLE_LEVEL[identity.role] < ROLE_LEVEL[minimum]) {
 			throw new ServiceError(403, `operazione riservata al ruolo ${minimum} o superiore`);
 		}
 	}
 
-	authenticateDevice(token: string | undefined): DeviceRecord {
+	/**
+	 * Autentica un device via token e, se il device è legato a un certificato
+	 * mTLS, verifica che il fingerprint presentato combaci. `presentedFingerprint`
+	 * è estratto dal server dal certificato client della connessione TLS.
+	 */
+	authenticateDevice(token: string | undefined, presentedFingerprint?: string): DeviceRecord {
 		if (!token) throw new ServiceError(401, "token device mancante");
 		const tokenHash = hashToken(token);
 		const device = Object.values(this.store.state.devices).find((d) => d.tokenHash === tokenHash);
 		if (!device) throw new ServiceError(401, "token device non valido");
 		if (device.revoked) throw new ServiceError(403, "device revocato");
+		if (device.certFingerprint) {
+			const presented = normalizeFingerprint(presentedFingerprint);
+			if (!presented) throw new ServiceError(403, "certificato client mTLS richiesto per questo device");
+			if (presented !== device.certFingerprint) {
+				throw new ServiceError(403, "il certificato client non corrisponde a quello legato al device");
+			}
+		}
 		return device;
+	}
+
+	/**
+	 * Lega (o ri-lega) il device al certificato client presentato — trust on
+	 * first use: da qui in poi le sue richieste richiedono quel certificato.
+	 */
+	bindDeviceCertificate(device: DeviceRecord, presentedFingerprint: string | undefined): void {
+		const presented = normalizeFingerprint(presentedFingerprint);
+		if (!presented) throw new ServiceError(400, "nessun certificato client presentato da legare");
+		device.certFingerprint = presented;
+		this.store.save();
+		this.audit("system", "device_cert_bound", { deviceId: device.deviceId });
 	}
 
 	authenticateGateway(token: string | undefined): string {
@@ -103,7 +180,11 @@ export class ControlPlaneService {
 		return token;
 	}
 
-	enrollDevice(enrollToken: string, deviceName: string): { deviceId: string; deviceToken: string; publicKeyPem: string } {
+	enrollDevice(
+		enrollToken: string,
+		deviceName: string,
+		certFingerprint?: string,
+	): { deviceId: string; deviceToken: string; publicKeyPem: string } {
 		const tokenHash = hashToken(enrollToken);
 		const record = this.store.state.enrollTokens[tokenHash];
 		if (!record) throw new ServiceError(401, "token di enrollment non valido");
@@ -123,6 +204,8 @@ export class ControlPlaneService {
 			policyOverride: {},
 			piSettingsOverride: {},
 		};
+		const boundFp = normalizeFingerprint(certFingerprint);
+		if (boundFp) device.certFingerprint = boundFp;
 		this.store.state.devices[deviceId] = device;
 		record.usedBy = deviceId;
 		this.store.save();
@@ -157,6 +240,7 @@ export class ControlPlaneService {
 			expiresAt: new Date(now + org.configTtlMinutes * 60_000).toISOString(),
 			policy,
 			piSettings,
+			trustedPublicKeys: this.store.trustedPublicKeys(),
 		};
 
 		device.lastSeenAt = new Date(now).toISOString();
@@ -407,6 +491,75 @@ export class ControlPlaneService {
 		return deviceId ? this.store.verifyDeviceAudit(deviceId) : this.store.verifyAdminAudit();
 	}
 
+	/**
+	 * Produce un anchor di audit firmato (JWS) con le teste di tutte le catene.
+	 * Va esportato periodicamente su storage WORM esterno; la firma usa la
+	 * chiave attiva del control plane, verificabile con `trustedPublicKeys`.
+	 */
+	async exportAuditAnchor(identity: AdminIdentity): Promise<{ anchor: string; publicKeyPem: string }> {
+		this.requireRole(identity, "viewer");
+		const heads = await this.store.auditHeads();
+		const anchor: import("@harness/shared").AuditAnchor = {
+			schema: "harness/audit-anchor@1",
+			orgId: this.store.state.org.orgId,
+			generatedAt: new Date().toISOString(),
+			admin: heads.admin,
+			devices: heads.devices,
+		};
+		this.audit(identity.name, "audit_anchor_exported", {
+			adminEntries: heads.admin.entries,
+			deviceCount: heads.devices.length,
+		});
+		return {
+			anchor: signPayload(this.store.signingPrivateKeyPem, anchor),
+			publicKeyPem: this.store.signingPublicKeyPem,
+		};
+	}
+
+	// ---- Chiavi di firma -----------------------------------------------------
+
+	listSigningKeys(identity: AdminIdentity): { keyId: string; createdAt: string; active: boolean }[] {
+		this.requireRole(identity, "viewer");
+		return this.store.listSigningKeys();
+	}
+
+	/**
+	 * Rotazione della chiave di firma in tre fasi, senza re-enrollment:
+	 *   add     → nuova chiave fidata ma non ancora firmante; viaggia nei bundle
+	 *             (`trustedPublicKeys`) firmati dalla chiave attuale, i device la apprendono
+	 *   promote → la nuova chiave diventa firmante (i device la fidano già)
+	 *   retire  → la vecchia chiave esce dal set fidato
+	 */
+	addSigningKey(identity: AdminIdentity): { keyId: string } {
+		this.requireRole(identity, "admin");
+		const key = this.store.addSigningKey();
+		this.bumpConfig(); // ridistribuisce i bundle con la nuova chiave elencata
+		this.audit(identity.name, "signing_key_added", { keyId: key.keyId });
+		return { keyId: key.keyId };
+	}
+
+	promoteSigningKey(identity: AdminIdentity, keyId: string): void {
+		this.requireRole(identity, "admin");
+		try {
+			this.store.promoteSigningKey(keyId);
+		} catch (error) {
+			throw new ServiceError(400, error instanceof Error ? error.message : "promozione chiave fallita");
+		}
+		this.bumpConfig();
+		this.audit(identity.name, "signing_key_promoted", { keyId });
+	}
+
+	retireSigningKey(identity: AdminIdentity, keyId: string): void {
+		this.requireRole(identity, "admin");
+		try {
+			this.store.retireSigningKey(keyId);
+		} catch (error) {
+			throw new ServiceError(400, error instanceof Error ? error.message : "ritiro chiave fallito");
+		}
+		this.bumpConfig();
+		this.audit(identity.name, "signing_key_retired", { keyId });
+	}
+
 	createGatewayToken(identity: AdminIdentity, name: string): string {
 		this.requireRole(identity, "admin");
 		const token = newSecretToken("gwt");
@@ -465,6 +618,13 @@ export class ControlPlaneService {
 	private audit(actor: string, action: string, detail: Record<string, unknown>): void {
 		this.store.appendAdminAudit({ timestamp: new Date().toISOString(), actor, action, detail });
 	}
+}
+
+/** Normalizza un fingerprint (rimuove i due-punti, minuscolo) per confronto stabile. */
+function normalizeFingerprint(fingerprint: string | undefined): string | undefined {
+	if (!fingerprint) return undefined;
+	const normalized = fingerprint.replaceAll(":", "").trim().toLowerCase();
+	return normalized === "" ? undefined : normalized;
 }
 
 const AUDIT_EVENT_TYPES = new Set<string>([

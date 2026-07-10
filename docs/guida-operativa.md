@@ -47,7 +47,56 @@ harness-cp verify-audit --device dev_...                            # audit di u
 # oppure via API: GET /api/admin/audit/verify?deviceId=...
 ```
 
-Per la non-ripudiabilità completa, esporta periodicamente l'hash di testa su un sistema esterno (WORM/S3 object lock).
+Per la **non-ripudiabilità completa**, esporta periodicamente un anchor firmato delle teste delle catene e archivialo su storage WORM esterno (S3 object-lock, ecc.):
+
+```bash
+harness-cp export-audit-anchor --data-dir .data/control-plane > anchor-$(date +%s).jws
+# oppure via API: GET /api/admin/audit/anchor
+```
+
+L'anchor è un JWS firmato dal control plane: chi verifica in seguito ne controlla la firma (chiave in `trustedPublicKeys`) e confronta le teste ancorate con le catene correnti, scoprendo qualunque troncamento o manomissione anche da parte di chi ha accesso in scrittura ai file di audit.
+
+### Autenticazione admin via OIDC/JWT
+
+Oltre ai token statici `adm_...`, il control plane accetta JWT firmati dal vostro provider OIDC. Abilitalo via ambiente:
+
+```bash
+HARNESS_OIDC_ISSUER=https://sso.azienda.it \
+HARNESS_OIDC_AUDIENCE=harness-control-plane \
+HARNESS_OIDC_KEYS_FILE=/etc/harness/oidc-keys.json \   # [{ "kid": "...", "alg": "RS256", "publicKeyPem": "..." }]
+HARNESS_OIDC_ROLE_CLAIM=harness_role \                  # claim → admin|operator|viewer (default "harness_role")
+node packages/control-plane/dist/cli.js serve
+```
+
+Sono verificati firma (RS256/ES256), issuer, audience e scadenza; il claim di ruolo mappa sul ruolo RBAC. Così l'accesso amministrativo passa dall'IdP aziendale (MFA, offboarding automatico) invece che da segreti condivisi.
+
+### Rotazione della chiave di firma dei bundle
+
+Senza re-enrollment dei device, in tre fasi:
+
+```bash
+# 1. add — nuova chiave fidata ma non ancora firmante (i device la apprendono dai bundle)
+curl -X POST .../api/admin/signing-keys -H "authorization: Bearer $ADMIN"
+#    → attendi un ciclo di sync dei device (default 60 s, con margine)
+# 2. promote — la nuova chiave diventa firmante (i device la fidano già)
+curl -X POST .../api/admin/signing-keys/$KEY_ID/promote -H "authorization: Bearer $ADMIN"
+# 3. retire — ritira la vecchia chiave
+curl -X DELETE .../api/admin/signing-keys/$OLD_KEY_ID -H "authorization: Bearer $ADMIN"
+```
+
+I client verificano i bundle contro l'insieme di chiavi fidate e aggiornano il pin da `trustedPublicKeys`; saltare le attese (o promuovere prima che i device apprendano la nuova chiave) manda fail-closed i device non ancora sincronizzati.
+
+### Binding mTLS dei device
+
+Per legare un device al suo certificato client (un token rubato senza chiave privata diventa inutile): servi il control plane in TLS (`HARNESS_TLS_*`) e arruola presentando il certificato client, oppure passa `certFingerprint` (SHA-256 hex) nel body di enrollment. Da quel momento le richieste `/api/device/*` di quel device richiedono il certificato combaciante. I device senza binding restano compatibili (solo token) e possono legarsi in trust-on-first-use via `POST /api/device/bind-cert`.
+
+### Storage Postgres (flotte grandi)
+
+Il default è il file store locale (zero dipendenze). Per alta disponibilità/multi-istanza, imposta `DATABASE_URL`: lo stato e le chiavi di firma vengono persistiti su Postgres (riga JSONB singleton con **locking ottimistico**; l'audit resta su file append-only, adatto all'archiviazione WORM). Richiede la dipendenza opzionale `pg`.
+
+```bash
+DATABASE_URL=postgresql://user:pass@db:5432/harness node packages/control-plane/dist/cli.js serve
+```
 
 ## 3. Gateway LLM
 

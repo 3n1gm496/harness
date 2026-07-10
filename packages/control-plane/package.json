@@ -16,5 +16,11 @@
 	},
 	"dependencies": {
 		"@harness/shared": "0.1.0"
+	},
+	"optionalDependencies": {
+		"pg": "^8.13.1"
+	},
+	"devDependencies": {
+		"@types/pg": "^8.11.10"
 	}
 }

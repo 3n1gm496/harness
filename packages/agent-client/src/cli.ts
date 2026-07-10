@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { defaultAgentConfigPath, loadAgentConfig } from "@harness/fleet-extension";
-import { verifyConfigBundle } from "@harness/shared";
+import { verifyConfigBundleMulti } from "@harness/shared";
 import { readFileSync } from "node:fs";
 import { applyManagedPiSettings, buildPiArgs, enroll, maybeRotateToken, syncConfig } from "./client.js";
 
@@ -62,7 +62,7 @@ async function main(): Promise<void> {
 		}
 
 		const cachedToken = readFileSync(state.bundleCachePath, "utf8").trim();
-		const verified = verifyConfigBundle(config.publicKeyPem, cachedToken);
+		const verified = verifyConfigBundleMulti(config.publicKeyPems ?? [config.publicKeyPem], cachedToken);
 		if (verified.valid) {
 			const settingsPath = applyManagedPiSettings(verified.payload);
 			console.log(`Settings PI gestiti applicati a ${settingsPath}`);

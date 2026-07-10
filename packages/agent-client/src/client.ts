@@ -37,6 +37,7 @@ export async function enroll(options: EnrollOptions, fetchImpl: typeof fetch = f
 		deviceId: enrollment.deviceId,
 		deviceToken: enrollment.deviceToken,
 		publicKeyPem: enrollment.publicKeyPem,
+		publicKeyPems: [enrollment.publicKeyPem],
 		tokenIssuedAt: new Date().toISOString(),
 	};
 	writeAgentConfig(options.configPath ?? defaultAgentConfigPath(), config);
