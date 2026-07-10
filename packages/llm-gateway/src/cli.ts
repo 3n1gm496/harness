@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import { createGatewayServer, type GatewayOptions } from "./gateway.js";
 
 /**
@@ -43,11 +44,17 @@ function main(): void {
 	if (process.env.RATE_LIMIT_PER_MINUTE) {
 		options.rateLimitPerMinute = Number(process.env.RATE_LIMIT_PER_MINUTE);
 	}
+	if (process.env.HARNESS_TLS_CERT_FILE && process.env.HARNESS_TLS_KEY_FILE) {
+		options.tls = {
+			cert: readFileSync(process.env.HARNESS_TLS_CERT_FILE, "utf8"),
+			key: readFileSync(process.env.HARNESS_TLS_KEY_FILE, "utf8"),
+		};
+	}
 
 	const port = Number(process.env.PORT ?? "8788");
 	const server = createGatewayServer(options);
 	server.listen(port, () => {
-		console.log(`[llm-gateway] in ascolto su http://localhost:${port}`);
+		console.log(`[llm-gateway] in ascolto su ${options.tls ? "https" : "http"}://localhost:${port}`);
 	});
 	const shutdown = () => server.close(() => process.exit(0));
 	process.on("SIGINT", shutdown);

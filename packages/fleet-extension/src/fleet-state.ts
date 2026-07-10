@@ -17,6 +17,10 @@ export interface AgentConfig {
 	auditFlushSeconds?: number;
 	/** Percorso della cache locale del bundle firmato. */
 	bundleCachePath?: string;
+	/** Data di emissione del device token corrente (per la rotazione). */
+	tokenIssuedAt?: string;
+	/** Giorni oltre i quali il client ruota automaticamente il device token (default 30). */
+	rotateAfterDays?: number;
 }
 
 export function defaultAgentConfigPath(): string {

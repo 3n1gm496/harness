@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AdminRole, AuditEvent, DeepPartial, PolicyDocument } from "@harness/shared";
-import { generateSigningKeyPair, newId } from "@harness/shared";
+import type { AdminRole, AuditEvent, ChainVerification, ChainedEntry, DeepPartial, PolicyDocument } from "@harness/shared";
+import { CHAIN_GENESIS, chainEntry, generateSigningKeyPair, newId, verifyChain } from "@harness/shared";
 
 export interface OrgRecord {
 	orgId: string;
@@ -50,6 +50,8 @@ export interface AdminTokenRecord {
 	name: string;
 	role: AdminRole;
 	createdAt: string;
+	/** Assente = senza scadenza (solo il token di bootstrap). */
+	expiresAt?: string;
 }
 
 export interface GatewayTokenRecord {
@@ -148,30 +150,79 @@ export class Store {
 		renameSync(tmpPath, this.statePath);
 	}
 
+	/** Ultimo hash della catena per file di audit, per l'append incrementale. */
+	private chainTips = new Map<string, string>();
+
 	appendDeviceAudit(deviceId: string, events: AuditEvent[]): void {
 		if (events.length === 0) return;
-		const safeId = deviceId.replaceAll(/[^A-Za-z0-9_-]/g, "_");
-		const lines = events.map((event) => JSON.stringify(event)).join("\n");
-		appendFileSync(join(this.auditDir, `${safeId}.jsonl`), `${lines}\n`, { mode: 0o600 });
+		this.appendChained(this.deviceAuditPath(deviceId), events);
 	}
 
 	async readDeviceAudit(deviceId: string, limit: number): Promise<AuditEvent[]> {
-		const safeId = deviceId.replaceAll(/[^A-Za-z0-9_-]/g, "_");
-		const path = join(this.auditDir, `${safeId}.jsonl`);
-		if (!existsSync(path)) return [];
-		const content = await readFile(path, "utf8");
-		const lines = content.split("\n").filter((line) => line.trim() !== "");
-		return lines.slice(-limit).map((line) => JSON.parse(line) as AuditEvent);
+		return (await this.readChained<AuditEvent>(this.deviceAuditPath(deviceId), limit)).map((line) => line.entry);
 	}
 
 	appendAdminAudit(entry: AdminAuditEntry): void {
-		appendFileSync(this.adminAuditPath, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+		this.appendChained(this.adminAuditPath, [entry]);
 	}
 
 	async readAdminAudit(limit: number): Promise<AdminAuditEntry[]> {
-		if (!existsSync(this.adminAuditPath)) return [];
-		const content = await readFile(this.adminAuditPath, "utf8");
+		return (await this.readChained<AdminAuditEntry>(this.adminAuditPath, limit)).map((line) => line.entry);
+	}
+
+	/** Verifica l'integrità dell'intera catena di un log di audit. */
+	async verifyDeviceAudit(deviceId: string): Promise<ChainVerification> {
+		return this.verifyChainedFile(this.deviceAuditPath(deviceId));
+	}
+
+	async verifyAdminAudit(): Promise<ChainVerification> {
+		return this.verifyChainedFile(this.adminAuditPath);
+	}
+
+	private deviceAuditPath(deviceId: string): string {
+		const safeId = deviceId.replaceAll(/[^A-Za-z0-9_-]/g, "_");
+		return join(this.auditDir, `${safeId}.jsonl`);
+	}
+
+	private appendChained(path: string, entries: unknown[]): void {
+		let prev = this.chainTip(path);
+		const lines: string[] = [];
+		for (const entry of entries) {
+			const chained = chainEntry(prev, entry);
+			lines.push(JSON.stringify(chained));
+			prev = chained.hash;
+		}
+		appendFileSync(path, `${lines.join("\n")}\n`, { mode: 0o600 });
+		this.chainTips.set(path, prev);
+	}
+
+	/** Recupera (o ricostruisce dall'ultima riga) la testa della catena di un file. */
+	private chainTip(path: string): string {
+		const cached = this.chainTips.get(path);
+		if (cached !== undefined) return cached;
+		if (!existsSync(path)) return CHAIN_GENESIS;
+		const content = readFileSync(path, "utf8");
 		const lines = content.split("\n").filter((line) => line.trim() !== "");
-		return lines.slice(-limit).map((line) => JSON.parse(line) as AdminAuditEntry);
+		const last = lines.at(-1);
+		if (!last) return CHAIN_GENESIS;
+		try {
+			return (JSON.parse(last) as ChainedEntry<unknown>).hash;
+		} catch {
+			return CHAIN_GENESIS;
+		}
+	}
+
+	private async readChained<T>(path: string, limit: number): Promise<ChainedEntry<T>[]> {
+		if (!existsSync(path)) return [];
+		const content = await readFile(path, "utf8");
+		const lines = content.split("\n").filter((line) => line.trim() !== "");
+		return lines.slice(-limit).map((line) => JSON.parse(line) as ChainedEntry<T>);
+	}
+
+	private async verifyChainedFile(path: string): Promise<ChainVerification> {
+		if (!existsSync(path)) return { valid: true, entries: 0 };
+		const content = await readFile(path, "utf8");
+		const lines = content.split("\n").filter((line) => line.trim() !== "");
+		return verifyChain(lines);
 	}
 }

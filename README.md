@@ -31,7 +31,8 @@ Harness AI aziendale basato su [PI Coding Agent](https://pi.dev/), con piattafor
 - **Config firmata e fail-closed**: i client applicano solo bundle firmati Ed25519 con chiave pinnata all'enrollment; bundle scaduto o firma invalida ⇒ agente bloccato.
 - **Default-deny**: tool sconosciuti negati, bash in allowlist per segmenti, filesystem limitato alla workspace.
 - **Zero segreti sui client**: inferenza via gateway con introspezione dei device token; revoca e kill switch si propagano anche all'inferenza.
-- **Audit completo**: ogni decisione di policy, redaction e comando utente è tracciata e centralizzata; audit amministrativo separato per le modifiche di config.
+- **Audit completo e tamper-evident**: ogni decisione di policy, redaction e comando utente è tracciata e centralizzata in log a catena di hash (manomissioni sempre rilevabili, `harness-cp verify-audit`); audit amministrativo separato per le modifiche di config.
+- **Ciclo di vita dei segreti**: token amministrativi con scadenza e revoca, rotazione automatica dei device token ogni 30 giorni, TLS nativo con HSTS su control plane e gateway.
 - **Supply chain minima**: zero dipendenze runtime esterne (solo built-in Node), install con `--ignore-scripts`, CI con audit.
 - **Sandbox obbligatoria**: PI non ha sandbox propria; il client va eseguito in container (`deploy/Dockerfile.agent`). La policy sui tool è defense-in-depth, non il confine di sicurezza.
 

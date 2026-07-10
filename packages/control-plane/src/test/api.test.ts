@@ -219,6 +219,67 @@ test("introspezione gateway: attivo, poi disattivo dopo revoca", async () => {
 	// Senza token gateway l'introspezione è vietata.
 	const unauthorized = await call("POST", "/api/introspect", { body: { deviceToken } });
 	assert.equal(unauthorized.status, 401);
+
+	await call("PUT", `/api/admin/devices/${deviceId}`, { token: adminToken, body: { revoked: false } });
+});
+
+test("rotazione device token: il vecchio muore, il nuovo funziona", async () => {
+	const rotate = await call("POST", "/api/device/rotate-token", { token: deviceToken });
+	assert.equal(rotate.status, 200);
+	const newToken = rotate.data.deviceToken as string;
+	assert.ok(newToken.startsWith("dvt_"));
+	assert.notEqual(newToken, deviceToken);
+
+	const withOld = await call("GET", "/api/device/config", { token: deviceToken });
+	assert.equal(withOld.status, 401);
+	const withNew = await call("GET", "/api/device/config", { token: newToken });
+	assert.equal(withNew.status, 200);
+	deviceToken = newToken;
+});
+
+test("token admin con TTL scaduto viene rifiutato; revoca dell'ultimo admin negata", async () => {
+	const created = await call("POST", "/api/admin/admin-tokens", {
+		token: adminToken,
+		body: { name: "effimero", role: "operator", ttlDays: 1 },
+	});
+	assert.equal(created.status, 200);
+
+	const list = await call("GET", "/api/admin/admin-tokens", { token: adminToken });
+	assert.equal(list.status, 200);
+	const tokens = list.data.tokens as { id: string; name: string; role: string; expiresAt?: string }[];
+	const ephemeral = tokens.find((t) => t.name === "effimero");
+	assert.ok(ephemeral?.expiresAt);
+
+	// Revoca del token effimero: ok.
+	const revoked = await call("DELETE", `/api/admin/admin-tokens/${ephemeral.id}`, { token: adminToken });
+	assert.equal(revoked.status, 200);
+	// Revocare l'ultimo admin attivo è vietato.
+	const bootstrap = tokens.find((t) => t.role === "admin");
+	assert.ok(bootstrap);
+	const denied = await call("DELETE", `/api/admin/admin-tokens/${bootstrap.id}`, { token: adminToken });
+	assert.equal(denied.status, 409);
+});
+
+test("la catena di audit è integra e la manomissione viene rilevata", async () => {
+	const intact = await call("GET", `/api/admin/audit/verify?deviceId=${deviceId}`, { token: adminToken });
+	assert.equal(intact.status, 200);
+	assert.equal(intact.data.valid, true);
+	assert.ok((intact.data.entries as number) > 0);
+
+	// Manomissione: si altera una riga in mezzo al file.
+	const { readFileSync: readSync, writeFileSync: writeSync, readdirSync } = await import("node:fs");
+	const { join: joinPath } = await import("node:path");
+	const auditDir = joinPath(dataDir, "audit");
+	const file = joinPath(auditDir, readdirSync(auditDir)[0] as string);
+	const lines = readSync(file, "utf8").trim().split("\n");
+	const target = JSON.parse(lines[0] as string) as { entry: { type: string } };
+	target.entry.type = "manomesso";
+	lines[0] = JSON.stringify(target);
+	writeSync(file, `${lines.join("\n")}\n`);
+
+	const tampered = await call("GET", `/api/admin/audit/verify?deviceId=${deviceId}`, { token: adminToken });
+	assert.equal(tampered.data.valid, false);
+	assert.equal((tampered.data as { brokenAtLine: number }).brokenAtLine, 1);
 });
 
 test("la UI statica viene servita", async () => {

@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { defaultAgentConfigPath, loadAgentConfig } from "@harness/fleet-extension";
 import { verifyConfigBundle } from "@harness/shared";
 import { readFileSync } from "node:fs";
-import { applyManagedPiSettings, buildPiArgs, enroll, syncConfig } from "./client.js";
+import { applyManagedPiSettings, buildPiArgs, enroll, maybeRotateToken, syncConfig } from "./client.js";
 
 /**
  * CLI del client gestito.
@@ -35,8 +35,19 @@ async function main(): Promise<void> {
 		return;
 	}
 
+	if (command === "rotate-token") {
+		const config = loadAgentConfig();
+		const rotated = await maybeRotateToken(config, defaultAgentConfigPath(), { force: true });
+		console.log(rotated ? "Device token ruotato." : "Rotazione non riuscita (control plane irraggiungibile?).");
+		process.exit(rotated ? 0 : 1);
+	}
+
 	if (command === "sync" || command === "status" || command === "run") {
 		const config = loadAgentConfig();
+		if (command !== "status") {
+			const rotated = await maybeRotateToken(config, defaultAgentConfigPath());
+			if (rotated) console.log("Device token ruotato automaticamente (rotazione periodica).");
+		}
 		const state = await syncConfig(config);
 		console.log(`Device:  ${config.deviceId}`);
 		console.log(`Stato:   ${state.status}${state.lastError ? ` (${state.lastError})` : ""}`);
@@ -81,7 +92,7 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	console.error("Comandi: enroll | sync | status | run");
+	console.error("Comandi: enroll | sync | status | run | rotate-token");
 	process.exit(2);
 }
 

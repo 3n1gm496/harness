@@ -31,7 +31,23 @@ La UI amministrativa è su `http://localhost:8787/`. Accedi con il token generat
 - generare token di enrollment monouso;
 - consultare l'audit per device e l'audit amministrativo.
 
-Ruoli: `admin` (tutto), `operator` (kill switch, enrollment), `viewer` (sola lettura). Nuovi token si creano con `POST /api/admin/admin-tokens`.
+Ruoli: `admin` (tutto), `operator` (kill switch, enrollment), `viewer` (sola lettura). Nuovi token si creano con `POST /api/admin/admin-tokens` (`ttlDays`, default 90: **i token amministrativi scadono**); si elencano con `GET /api/admin/admin-tokens` e si revocano con `DELETE /api/admin/admin-tokens/:id` — la revoca dell'ultimo admin attivo è rifiutata.
+
+### TLS
+
+Imposta `HARNESS_TLS_CERT_FILE` e `HARNESS_TLS_KEY_FILE` (PEM) per servire HTTPS con HSTS direttamente da control plane e gateway; in alternativa termina TLS su un reverse proxy. Senza TLS il server avvisa all'avvio. Le richieste sono loggate in JSON strutturato (`method`, `path`, `status`, `durationMs`).
+
+### Audit tamper-evident
+
+I log di audit (per device e amministrativo) sono catene di hash: ogni riga incorpora l'hash della precedente, quindi modifiche o cancellazioni retroattive rompono la catena in modo rilevabile.
+
+```bash
+harness-cp verify-audit --data-dir .data/control-plane              # audit amministrativo
+harness-cp verify-audit --device dev_...                            # audit di un device
+# oppure via API: GET /api/admin/audit/verify?deviceId=...
+```
+
+Per la non-ripudiabilità completa, esporta periodicamente l'hash di testa su un sistema esterno (WORM/S3 object lock).
 
 ## 3. Gateway LLM
 
@@ -61,6 +77,8 @@ harness-agent run      # sync + avvio di pi con l'estensione fleet caricata
 ```
 
 L'enrollment scrive `~/.harness/agent.json` (0600) con l'identità del device e la **chiave pubblica di firma pinnata**. Da quel momento il client applica solo bundle firmati con quella chiave.
+
+Il device token **ruota automaticamente** ogni 30 giorni (`rotateAfterDays` in agent.json) a ogni `sync`/`run`, o su richiesta con `harness-agent rotate-token`; il vecchio token smette immediatamente di valere su control plane e gateway.
 
 ### Comportamento a runtime (estensione fleet)
 

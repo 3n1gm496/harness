@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
 import { ControlPlaneService, Store, createControlPlaneServer } from "@harness/control-plane";
 import { verifyConfigBundle } from "@harness/shared";
-import { applyManagedPiSettings, buildPiArgs, enroll, syncConfig } from "../client.js";
+import { applyManagedPiSettings, buildPiArgs, enroll, maybeRotateToken, syncConfig } from "../client.js";
 
 let dataDir: string;
 let clientDir: string;
@@ -95,6 +95,25 @@ test("enrollment con token non valido fallisce", async () => {
 		}),
 		/enrollment fallito/,
 	);
+});
+
+test("maybeRotateToken ruota su richiesta e non ruota se il token è recente", async () => {
+	const configPath = join(clientDir, "agent.json");
+	const config = JSON.parse(readFileSync(configPath, "utf8")) as Parameters<typeof maybeRotateToken>[0];
+	const oldToken = config.deviceToken;
+
+	// Token appena emesso: nessuna rotazione spontanea.
+	assert.equal(await maybeRotateToken(config, configPath), false);
+
+	// Rotazione forzata: nuovo token persistito, il vecchio non vale più.
+	assert.equal(await maybeRotateToken(config, configPath, { force: true }), true);
+	assert.notEqual(config.deviceToken, oldToken);
+	const persisted = JSON.parse(readFileSync(configPath, "utf8")) as { deviceToken: string; tokenIssuedAt: string };
+	assert.equal(persisted.deviceToken, config.deviceToken);
+	assert.ok(persisted.tokenIssuedAt);
+
+	const state = await syncConfig({ ...config, bundleCachePath: join(clientDir, "bundle2.jws") });
+	assert.equal(state.status, "ok");
 });
 
 test("buildPiArgs carica l'estensione fleet e passa gli argomenti extra", () => {

@@ -40,6 +40,9 @@ export class ControlPlaneService {
 		if (!token) throw new ServiceError(401, "token amministrativo mancante");
 		const record: AdminTokenRecord | undefined = this.store.state.adminTokens[hashToken(token)];
 		if (!record) throw new ServiceError(401, "token amministrativo non valido");
+		if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
+			throw new ServiceError(401, "token amministrativo scaduto");
+		}
 		return { name: record.name, role: record.role };
 	}
 
@@ -338,14 +341,68 @@ export class ControlPlaneService {
 		return this.store.readAdminAudit(Math.min(Math.max(limit, 1), 1000));
 	}
 
-	createAdminToken(identity: AdminIdentity, name: string, role: AdminRole): string {
+	createAdminToken(identity: AdminIdentity, name: string, role: AdminRole, ttlDays = 90): string {
 		this.requireRole(identity, "admin");
 		if (!["admin", "operator", "viewer"].includes(role)) throw new ServiceError(400, "ruolo non valido");
+		if (ttlDays < 1 || ttlDays > 365) throw new ServiceError(400, "ttlDays deve essere tra 1 e 365");
 		const token = newSecretToken("adm");
-		this.store.state.adminTokens[hashToken(token)] = { name, role, createdAt: new Date().toISOString() };
+		this.store.state.adminTokens[hashToken(token)] = {
+			name,
+			role,
+			createdAt: new Date().toISOString(),
+			expiresAt: new Date(Date.now() + ttlDays * 86_400_000).toISOString(),
+		};
 		this.store.save();
-		this.audit(identity.name, "admin_token_created", { name, role });
+		this.audit(identity.name, "admin_token_created", { name, role, ttlDays });
 		return token;
+	}
+
+	listAdminTokens(identity: AdminIdentity): { id: string; name: string; role: AdminRole; createdAt: string; expiresAt?: string }[] {
+		this.requireRole(identity, "admin");
+		return Object.entries(this.store.state.adminTokens).map(([hash, record]) => {
+			const item: { id: string; name: string; role: AdminRole; createdAt: string; expiresAt?: string } = {
+				id: hash.slice(0, 12),
+				name: record.name,
+				role: record.role,
+				createdAt: record.createdAt,
+			};
+			if (record.expiresAt !== undefined) item.expiresAt = record.expiresAt;
+			return item;
+		});
+	}
+
+	revokeAdminToken(identity: AdminIdentity, id: string): void {
+		this.requireRole(identity, "admin");
+		const match = Object.keys(this.store.state.adminTokens).find((hash) => hash.startsWith(id));
+		if (!match) throw new ServiceError(404, "token amministrativo non trovato");
+		const target = this.store.state.adminTokens[match] as AdminTokenRecord;
+		const remainingAdmins = Object.entries(this.store.state.adminTokens).filter(
+			([hash, record]) =>
+				hash !== match &&
+				record.role === "admin" &&
+				(!record.expiresAt || Date.parse(record.expiresAt) > Date.now()),
+		);
+		if (target.role === "admin" && remainingAdmins.length === 0) {
+			throw new ServiceError(409, "impossibile revocare l'ultimo token admin attivo");
+		}
+		delete this.store.state.adminTokens[match];
+		this.store.save();
+		this.audit(identity.name, "admin_token_revoked", { id, name: target.name, role: target.role });
+	}
+
+	/** Rotazione del token di un device autenticato: il vecchio smette subito di valere. */
+	rotateDeviceToken(device: DeviceRecord): string {
+		const token = newSecretToken("dvt");
+		device.tokenHash = hashToken(token);
+		device.lastSeenAt = new Date().toISOString();
+		this.store.save();
+		this.audit("system", "device_token_rotated", { deviceId: device.deviceId });
+		return token;
+	}
+
+	async verifyAudit(identity: AdminIdentity, deviceId?: string): Promise<import("@harness/shared").ChainVerification> {
+		this.requireRole(identity, "viewer");
+		return deviceId ? this.store.verifyDeviceAudit(deviceId) : this.store.verifyAdminAudit();
 	}
 
 	createGatewayToken(identity: AdminIdentity, name: string): string {

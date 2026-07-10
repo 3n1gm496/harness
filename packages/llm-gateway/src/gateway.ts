@@ -1,5 +1,6 @@
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { Readable } from "node:stream";
 
 /**
@@ -24,6 +25,8 @@ export interface GatewayOptions {
 	/** TTL della cache di introspezione in millisecondi (default 60s). */
 	introspectionTtlMs?: number;
 	log?: (entry: Record<string, unknown>) => void;
+	/** Certificato e chiave PEM: se presenti il gateway parla HTTPS. */
+	tls?: { cert: string; key: string };
 }
 
 interface IntrospectionEntry {
@@ -42,7 +45,7 @@ const ALLOWED_UPSTREAM_PATHS: Record<"anthropic" | "openai", RegExp[]> = {
 	openai: [/^\/v1\/chat\/completions$/, /^\/v1\/completions$/, /^\/v1\/embeddings$/, /^\/v1\/responses$/],
 };
 
-export function createGatewayServer(options: GatewayOptions): Server {
+export function createGatewayServer(options: GatewayOptions): Server | HttpsServer {
 	const introspectionCache = new Map<string, IntrospectionEntry>();
 	const rateBuckets = new Map<string, { windowStart: number; count: number }>();
 	const rateLimit = options.rateLimitPerMinute ?? 60;
@@ -88,12 +91,13 @@ export function createGatewayServer(options: GatewayOptions): Server {
 		return bucket.count <= rateLimit;
 	}
 
-	return createServer((req, res) => {
+	const listener = (req: IncomingMessage, res: ServerResponse): void => {
 		void handle(req, res).catch((error) => {
 			log({ ts: new Date().toISOString(), level: "error", error: String(error) });
 			sendJson(res, 502, { error: "errore del gateway" });
 		});
-	});
+	};
+	return options.tls ? createHttpsServer(options.tls, listener) : createServer(listener);
 
 	async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const url = new URL(req.url ?? "/", "http://localhost");

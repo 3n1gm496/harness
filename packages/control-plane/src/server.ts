@@ -1,10 +1,18 @@
 import { readFileSync } from "node:fs";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ControlPlaneService } from "./service.js";
 import { ServiceError } from "./service.js";
+
+export interface ControlPlaneServerOptions {
+	/** Certificato e chiave PEM: se presenti il server parla HTTPS con HSTS. */
+	tls?: { cert: string; key: string };
+	/** Logger strutturato delle richieste (una entry per risposta). */
+	log?: (entry: Record<string, unknown>) => void;
+}
 
 const MAX_BODY_BYTES = 1_048_576;
 
@@ -33,15 +41,34 @@ function checkEnrollRateLimit(ip: string): boolean {
  * Espone le API device (/api/enroll, /api/device/*), le API amministrative
  * (/api/admin/*), l'introspezione per il gateway e la UI statica su /.
  */
-export function createControlPlaneServer(service: ControlPlaneService): Server {
-	return createServer((req, res) => {
+export function createControlPlaneServer(
+	service: ControlPlaneService,
+	options: ControlPlaneServerOptions = {},
+): Server | HttpsServer {
+	const listener = (req: IncomingMessage, res: ServerResponse): void => {
+		const started = Date.now();
+		if (options.tls) {
+			res.setHeader("strict-transport-security", "max-age=31536000; includeSubDomains");
+		}
+		if (options.log) {
+			res.on("finish", () => {
+				options.log?.({
+					ts: new Date().toISOString(),
+					method: req.method,
+					path: (req.url ?? "/").split("?")[0],
+					status: res.statusCode,
+					durationMs: Date.now() - started,
+				});
+			});
+		}
 		void handle(service, req, res).catch((error) => {
 			const status = error instanceof ServiceError ? error.status : 500;
 			const message = error instanceof Error ? error.message : "errore interno";
 			if (!(error instanceof ServiceError)) console.error("[control-plane] errore:", error);
 			sendJson(res, status, { error: message });
 		});
-	});
+	};
+	return options.tls ? createHttpsServer(options.tls, listener) : createServer(listener);
 }
 
 async function handle(service: ControlPlaneService, req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -75,6 +102,12 @@ async function handle(service: ControlPlaneService, req: IncomingMessage, res: S
 		const body = await readJsonBody(req);
 		const events: unknown[] = Array.isArray(body.events) ? body.events : [];
 		sendJson(res, 200, { accepted: service.ingestAudit(device, events) });
+		return;
+	}
+
+	if (method === "POST" && path === "/api/device/rotate-token") {
+		const device = service.authenticateDevice(bearer);
+		sendJson(res, 200, { deviceToken: service.rotateDeviceToken(device) });
 		return;
 	}
 
@@ -143,6 +176,21 @@ async function handle(service: ControlPlaneService, req: IncomingMessage, res: S
 			sendJson(res, 200, service.effectivePolicy(identity, decodeURIComponent(effectiveMatch[1] as string)));
 			return;
 		}
+		if (method === "GET" && path === "/api/admin/audit/verify") {
+			const deviceId = url.searchParams.get("deviceId") ?? undefined;
+			sendJson(res, 200, await service.verifyAudit(identity, deviceId));
+			return;
+		}
+		if (method === "GET" && path === "/api/admin/admin-tokens") {
+			sendJson(res, 200, { tokens: service.listAdminTokens(identity) });
+			return;
+		}
+		const adminTokenMatch = /^\/api\/admin\/admin-tokens\/([^/]+)$/.exec(path);
+		if (adminTokenMatch && method === "DELETE") {
+			service.revokeAdminToken(identity, decodeURIComponent(adminTokenMatch[1] as string));
+			sendJson(res, 200, { ok: true });
+			return;
+		}
 		if (method === "GET" && path === "/api/admin/audit") {
 			const deviceId = url.searchParams.get("deviceId");
 			const limit = Number(url.searchParams.get("limit") ?? "100");
@@ -156,7 +204,8 @@ async function handle(service: ControlPlaneService, req: IncomingMessage, res: S
 		if (method === "POST" && path === "/api/admin/admin-tokens") {
 			const body = await readJsonBody(req);
 			const role = requireString(body, "role") as "admin" | "operator" | "viewer";
-			sendJson(res, 200, { token: service.createAdminToken(identity, requireString(body, "name"), role) });
+			const ttlDays = typeof body.ttlDays === "number" ? body.ttlDays : 90;
+			sendJson(res, 200, { token: service.createAdminToken(identity, requireString(body, "name"), role, ttlDays) });
 			return;
 		}
 		if (method === "POST" && path === "/api/admin/gateway-tokens") {

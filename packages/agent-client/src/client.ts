@@ -37,13 +37,52 @@ export async function enroll(options: EnrollOptions, fetchImpl: typeof fetch = f
 		deviceId: enrollment.deviceId,
 		deviceToken: enrollment.deviceToken,
 		publicKeyPem: enrollment.publicKeyPem,
+		tokenIssuedAt: new Date().toISOString(),
 	};
-	const path = options.configPath ?? defaultAgentConfigPath();
+	writeAgentConfig(options.configPath ?? defaultAgentConfigPath(), config);
+	return config;
+}
+
+function writeAgentConfig(path: string, config: AgentConfig): void {
 	mkdirSync(dirname(path), { recursive: true });
 	const tmpPath = `${path}.tmp`;
 	writeFileSync(tmpPath, JSON.stringify(config, null, "\t"), { mode: 0o600 });
 	renameSync(tmpPath, path);
-	return config;
+}
+
+/**
+ * Ruota il device token se più vecchio di `rotateAfterDays` (default 30) o se
+ * forzato. Il vecchio token smette immediatamente di valere sul control plane
+ * e sul gateway; il nuovo viene persistito atomicamente in agent.json.
+ */
+export async function maybeRotateToken(
+	config: AgentConfig,
+	configPath: string,
+	options: { force?: boolean } = {},
+	fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+	const maxAgeDays = config.rotateAfterDays ?? 30;
+	const issuedAt = config.tokenIssuedAt ? Date.parse(config.tokenIssuedAt) : 0;
+	const expired = Date.now() - issuedAt > maxAgeDays * 86_400_000;
+	if (!options.force && !expired) return false;
+
+	const response = await fetchImpl(`${config.controlPlaneUrl}/api/device/rotate-token`, {
+		method: "POST",
+		headers: { authorization: `Bearer ${config.deviceToken}` },
+		signal: AbortSignal.timeout(15_000),
+	});
+	if (!response.ok) {
+		// La rotazione è best-effort: un control plane irraggiungibile non deve
+		// impedire l'avvio (la scadenza vera è governata dal bundle firmato).
+		return false;
+	}
+	const data = (await response.json()) as { deviceToken?: string };
+	if (typeof data.deviceToken !== "string") return false;
+
+	config.deviceToken = data.deviceToken;
+	config.tokenIssuedAt = new Date().toISOString();
+	writeAgentConfig(configPath, config);
+	return true;
 }
 
 /**
