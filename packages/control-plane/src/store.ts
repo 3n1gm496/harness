@@ -21,6 +21,22 @@ import {
 	sealPrivateKey,
 	verifyChain,
 } from "@harness/shared";
+import { isNormalized } from "./state-store.js";
+
+/** Confronta due mappe per chiave e invoca upsert sui cambiati, del sui rimossi. */
+function diffMaps<T>(
+	before: Record<string, T>,
+	after: Record<string, T>,
+	onUpsert: (value: T, key: string) => void,
+	onDelete: (key: string) => void,
+): void {
+	for (const [key, value] of Object.entries(after)) {
+		if (JSON.stringify(before[key]) !== JSON.stringify(value)) onUpsert(value, key);
+	}
+	for (const key of Object.keys(before)) {
+		if (!(key in after)) onDelete(key);
+	}
+}
 
 export interface OrgRecord {
 	orgId: string;
@@ -186,7 +202,18 @@ export class Store {
 		} else {
 			await backend.save({ state: store.state, signingKeys: store.sealKeys(store.signingKeys) });
 		}
+		store.lastPersisted = store.snapshotStrings(store.state, store.sealKeys(store.signingKeys));
+		// Convergenza multi-istanza: ricarica periodicamente lo stato dal backend.
+		if (isNormalized(backend)) {
+			store.refreshTimer = setInterval(() => void store.refreshFromBackend(), 2000);
+			store.refreshTimer.unref();
+		}
 		return store;
+	}
+
+	/** Solo per test: forza un refresh immediato dal backend. */
+	async refreshNow(): Promise<void> {
+		await this.refreshFromBackend();
 	}
 
 	/** Sigilla le chiavi private per la persistenza (no-op se KEK assente). */
@@ -208,10 +235,31 @@ export class Store {
 		});
 	}
 
+	/** Snapshot dell'ultimo stato persistito, per calcolare i diff mirati. */
+	private lastPersisted: { state: string; signingKeys: string } | undefined;
+	private refreshTimer: NodeJS.Timeout | undefined;
+
 	private mirrorNow(): void {
 		if (!this.mirror) return;
 		const backend = this.mirror;
-		const snapshot = structuredClone({ state: this.state, signingKeys: this.sealKeys(this.signingKeys) });
+		const sealedKeys = this.sealKeys(this.signingKeys);
+
+		if (isNormalized(backend) && this.lastPersisted) {
+			const diff = this.computeDiff(this.lastPersisted, this.state, sealedKeys);
+			this.lastPersisted = this.snapshotStrings(this.state, sealedKeys);
+			this.pending = this.pending
+				.then(() => backend.applyDiff(diff))
+				.then(() => {
+					this.lastMirrorError = "";
+				})
+				.catch((error: unknown) => {
+					this.lastMirrorError = error instanceof Error ? error.message : String(error);
+				});
+			return;
+		}
+
+		const snapshot = structuredClone({ state: this.state, signingKeys: sealedKeys });
+		this.lastPersisted = this.snapshotStrings(this.state, sealedKeys);
 		this.pending = this.pending
 			.then(() => backend.save(snapshot))
 			.then(() => {
@@ -222,12 +270,69 @@ export class Store {
 			});
 	}
 
+	private snapshotStrings(state: ControlPlaneState, signingKeys: SigningKeyRecord[]): { state: string; signingKeys: string } {
+		return { state: JSON.stringify(state), signingKeys: JSON.stringify(signingKeys) };
+	}
+
+	/** Calcola le scritture mirate confrontando lo stato precedente e quello attuale. */
+	private computeDiff(
+		prev: { state: string; signingKeys: string },
+		curr: ControlPlaneState,
+		sealedKeys: SigningKeyRecord[],
+	): import("./state-store.js").StateDiff {
+		const before = JSON.parse(prev.state) as ControlPlaneState;
+		const diff: import("./state-store.js").StateDiff = {
+			groupsUpsert: [],
+			groupsDelete: [],
+			devicesUpsert: [],
+			devicesDelete: [],
+			adminTokensUpsert: [],
+			adminTokensDelete: [],
+			gatewayTokensUpsert: [],
+			enrollTokensUpsert: [],
+			enrollTokensDelete: [],
+		};
+		if (JSON.stringify(before.org) !== JSON.stringify(curr.org)) diff.org = curr.org;
+		diffMaps(before.groups, curr.groups, (v) => diff.groupsUpsert.push(v), (k) => diff.groupsDelete.push(k));
+		diffMaps(before.devices, curr.devices, (v) => diff.devicesUpsert.push(v), (k) => diff.devicesDelete.push(k));
+		diffMaps(
+			before.adminTokens,
+			curr.adminTokens,
+			(v, k) => diff.adminTokensUpsert.push([k, v]),
+			(k) => diff.adminTokensDelete.push(k),
+		);
+		diffMaps(before.gatewayTokens, curr.gatewayTokens, (v, k) => diff.gatewayTokensUpsert.push([k, v]), () => {});
+		diffMaps(
+			before.enrollTokens,
+			curr.enrollTokens,
+			(v, k) => diff.enrollTokensUpsert.push([k, v]),
+			(k) => diff.enrollTokensDelete.push(k),
+		);
+		if (prev.signingKeys !== JSON.stringify(sealedKeys)) diff.signingKeys = sealedKeys;
+		return diff;
+	}
+
+	/** Ricarica lo stato dal backend (convergenza multi-istanza). */
+	private async refreshFromBackend(): Promise<void> {
+		if (!this.mirror) return;
+		try {
+			const snapshot = await this.mirror.load();
+			if (!snapshot) return;
+			this.state = snapshot.state;
+			this.signingKeys = this.openKeys(snapshot.signingKeys);
+			this.lastPersisted = this.snapshotStrings(this.state, this.sealKeys(this.signingKeys));
+		} catch (error) {
+			this.lastMirrorError = error instanceof Error ? error.message : String(error);
+		}
+	}
+
 	/** Attende il completamento delle scritture write-behind verso il backend. */
 	async flush(): Promise<void> {
 		await this.pending;
 	}
 
 	async close(): Promise<void> {
+		if (this.refreshTimer) clearInterval(this.refreshTimer);
 		await this.flush();
 		if (this.mirror) await this.mirror.close();
 	}
@@ -377,29 +482,56 @@ export class Store {
 	/** Ultimo hash della catena per file di audit, per l'append incrementale. */
 	private chainTips = new Map<string, string>();
 
+	/** Backend normalizzato attivo (Postgres), se presente: audit centralizzato in DB. */
+	private normalizedBackend(): import("./state-store.js").NormalizedStateStore | undefined {
+		return this.mirror && isNormalized(this.mirror) ? this.mirror : undefined;
+	}
+
 	appendDeviceAudit(deviceId: string, events: AuditEvent[]): void {
 		if (events.length === 0) return;
+		const backend = this.normalizedBackend();
+		if (backend) {
+			this.pending = this.pending.then(() => backend.appendAudit(deviceId, events)).catch((error: unknown) => {
+				this.lastMirrorError = error instanceof Error ? error.message : String(error);
+			});
+			return;
+		}
 		this.appendChained(this.deviceAuditPath(deviceId), events);
 	}
 
 	async readDeviceAudit(deviceId: string, limit: number): Promise<AuditEvent[]> {
+		const backend = this.normalizedBackend();
+		if (backend) return (await backend.readAudit(deviceId, limit)) as AuditEvent[];
 		return (await this.readChained<AuditEvent>(this.deviceAuditPath(deviceId), limit)).map((line) => line.entry);
 	}
 
 	appendAdminAudit(entry: AdminAuditEntry): void {
+		const backend = this.normalizedBackend();
+		if (backend) {
+			this.pending = this.pending.then(() => backend.appendAudit("admin", [entry])).catch((error: unknown) => {
+				this.lastMirrorError = error instanceof Error ? error.message : String(error);
+			});
+			return;
+		}
 		this.appendChained(this.adminAuditPath, [entry]);
 	}
 
 	async readAdminAudit(limit: number): Promise<AdminAuditEntry[]> {
+		const backend = this.normalizedBackend();
+		if (backend) return (await backend.readAudit("admin", limit)) as AdminAuditEntry[];
 		return (await this.readChained<AdminAuditEntry>(this.adminAuditPath, limit)).map((line) => line.entry);
 	}
 
 	/** Verifica l'integrità dell'intera catena di un log di audit. */
 	async verifyDeviceAudit(deviceId: string): Promise<ChainVerification> {
+		const backend = this.normalizedBackend();
+		if (backend) return backend.verifyAudit(deviceId);
 		return this.verifyChainedFile(this.deviceAuditPath(deviceId));
 	}
 
 	async verifyAdminAudit(): Promise<ChainVerification> {
+		const backend = this.normalizedBackend();
+		if (backend) return backend.verifyAudit("admin");
 		return this.verifyChainedFile(this.adminAuditPath);
 	}
 
@@ -413,6 +545,8 @@ export class Store {
 		admin: { head: string; entries: number };
 		devices: { deviceId: string; head: string; entries: number }[];
 	}> {
+		const backend = this.normalizedBackend();
+		if (backend) return backend.auditHeads(Object.keys(this.state.devices));
 		const admin = await this.chainHeadAndCount(this.adminAuditPath);
 		const devices: { deviceId: string; head: string; entries: number }[] = [];
 		for (const deviceId of Object.keys(this.state.devices)) {

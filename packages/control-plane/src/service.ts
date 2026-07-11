@@ -245,9 +245,21 @@ export class ControlPlaneService {
 
 		device.lastSeenAt = new Date(now).toISOString();
 		device.lastConfigVersion = org.configVersion;
-		this.store.save();
+		// Il heartbeat (lastSeenAt/lastConfigVersion) è persistito con throttling
+		// per non amplificare le scritture a ogni poll di ogni device.
+		this.touchDevice(device.deviceId);
 		return signPayload(this.store.signingPrivateKeyPem, bundle);
 	}
+
+	/** Persiste l'aggiornamento di heartbeat di un device al più ogni 30s. */
+	private touchDevice(deviceId: string): void {
+		const now = Date.now();
+		const last = this.lastSeenPersist.get(deviceId) ?? 0;
+		if (now - last < 30_000) return;
+		this.lastSeenPersist.set(deviceId, now);
+		this.store.save();
+	}
+	private readonly lastSeenPersist = new Map<string, number>();
 
 	ingestAudit(device: DeviceRecord, events: unknown[]): number {
 		const sanitized: AuditEvent[] = [];
@@ -257,7 +269,7 @@ export class ControlPlaneService {
 		}
 		this.store.appendDeviceAudit(device.deviceId, sanitized);
 		device.lastSeenAt = new Date().toISOString();
-		this.store.save();
+		this.touchDevice(device.deviceId);
 		return sanitized.length;
 	}
 

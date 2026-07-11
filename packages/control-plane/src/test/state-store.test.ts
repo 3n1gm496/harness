@@ -78,46 +78,77 @@ test("le chiavi di firma sono incluse nello snapshot durevole", async () => {
 
 // Test live contro Postgres, eseguito solo se HARNESS_TEST_PG_URL è impostata.
 const PG_URL = process.env.HARNESS_TEST_PG_URL;
-test("PostgresStateStore: round-trip e locking ottimistico (live)", { skip: !PG_URL }, async () => {
-	const url = PG_URL as string;
-	const a = new PostgresStateStore(url);
-	try {
-		// Pulizia iniziale della riga singleton.
-		// biome-ignore lint/suspicious/noExplicitAny: accesso interno per reset di test
-		await (a as any).ensureReady();
+
+async function resetPgSchema(url: string): Promise<void> {
+	const s = new PostgresStateStore(url);
+	// biome-ignore lint/suspicious/noExplicitAny: reset schema di test
+	await (s as any).ensureReady();
+	for (const t of [
+		"cp_org",
+		"cp_groups",
+		"cp_devices",
+		"cp_admin_tokens",
+		"cp_gateway_tokens",
+		"cp_enroll_tokens",
+		"cp_signing_keys",
+		"cp_audit_events",
+		"cp_audit_heads",
+	]) {
 		// biome-ignore lint/suspicious/noExplicitAny: query di reset
-		await (a as any).query("DELETE FROM control_plane_state");
-		// biome-ignore lint/suspicious/noExplicitAny: reset del contatore di versione in memoria
-		(a as any).version = 0;
+		await (s as any).query(`DELETE FROM ${t}`);
+	}
+	await s.close();
+}
 
-		assert.equal(await a.load(), null);
+test("Postgres normalizzato: scritture mirate e multi-istanza convergente (live)", { skip: !PG_URL }, async () => {
+	const url = PG_URL as string;
+	await resetPgSchema(url);
+	const dirA = mkdtempSync(join(tmpdir(), "harness-pg-a-"));
+	const dirB = mkdtempSync(join(tmpdir(), "harness-pg-b-"));
+	const storeA = await Store.openWithBackend(dirA, new PostgresStateStore(url), KEK);
+	const storeB = await Store.openWithBackend(dirB, new PostgresStateStore(url), KEK);
+	try {
+		const svcA = new ControlPlaneService(storeA);
+		const admin = svcA.bootstrapAdminToken("root");
+		const idA = svcA.authenticateAdmin(admin);
+		const groupId = svcA.overview(idA).groups[0]?.groupId as string;
 
-		const snap = {
-			state: { marker: "uno" } as unknown as import("../store.js").ControlPlaneState,
-			signingKeys: [],
-		};
-		await a.save(snap);
-		const loaded = await a.load();
-		assert.deepEqual((loaded?.state as unknown as { marker: string }).marker, "uno");
+		// Istanza A arruola un device; B lo vede dopo un refresh (convergenza).
+		const enr = svcA.createEnrollToken(idA, groupId, 10);
+		const dev = svcA.enrollDevice(enr, "d-mtls");
+		await storeA.flush();
+		await storeB.refreshNow();
+		assert.ok(storeB.state.devices[dev.deviceId], "l'istanza B deve vedere il device creato da A");
 
-		// Locking ottimistico: una seconda connessione che ha una versione
-		// obsoleta deve fallire lo save, non sovrascrivere silenziosamente.
-		const b = new PostgresStateStore(url);
-		try {
-			await b.load(); // b legge version corrente
-			await a.save({ ...snap, state: { marker: "due" } as never }); // a avanza la versione
-			await assert.rejects(
-				b.save({ ...snap, state: { marker: "tre" } as never }),
-				/conflitto di versione/,
-			);
-			// Dopo il conflitto b si è riallineato e può riscrivere.
-			await b.save({ ...snap, state: { marker: "quattro" } as never });
-			const final = await a.load();
-			assert.equal((final?.state as unknown as { marker: string }).marker, "quattro");
-		} finally {
-			await b.close();
-		}
+		// Mutazioni concorrenti su device diversi non si sovrascrivono (row-level).
+		const enr2 = svcA.createEnrollToken(idA, groupId, 10);
+		const dev2 = svcA.enrollDevice(enr2, "d2");
+		await storeA.flush();
+		await storeB.refreshNow();
+		const svcB = new ControlPlaneService(storeB);
+		// B sospende dev2 mentre A lo lascia attivo: scrittura mirata su dev2.
+		svcB.updateDevice(svcB.authenticateAdmin(admin), dev2.deviceId, { killSwitch: true });
+		await storeB.flush();
+		await storeA.refreshNow();
+		assert.equal(storeA.state.devices[dev2.deviceId]?.killSwitch, true);
+		assert.equal(storeA.state.devices[dev.deviceId]?.killSwitch, false);
+
+		// Audit centralizzato: A scrive, B lo legge dallo stesso DB, catena integra.
+		storeA.appendDeviceAudit(dev.deviceId, [
+			{ eventId: "e1", deviceId: dev.deviceId, timestamp: new Date().toISOString(), type: "agent_start", data: {} },
+			{ eventId: "e2", deviceId: dev.deviceId, timestamp: new Date().toISOString(), type: "policy_decision", data: {} },
+		]);
+		await storeA.flush();
+		const events = await storeB.readDeviceAudit(dev.deviceId, 10);
+		assert.equal(events.length, 2);
+		const verify = await storeB.verifyDeviceAudit(dev.deviceId);
+		assert.equal(verify.valid, true);
+		const heads = await storeB.auditHeads();
+		assert.ok(heads.devices.find((d) => d.deviceId === dev.deviceId)?.entries === 2);
 	} finally {
-		await a.close();
+		await storeA.close();
+		await storeB.close();
+		rmSync(dirA, { recursive: true, force: true });
+		rmSync(dirB, { recursive: true, force: true });
 	}
 });

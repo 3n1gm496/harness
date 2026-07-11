@@ -92,7 +92,7 @@ Per legare un device al suo certificato client (un token rubato senza chiave pri
 
 ### Storage Postgres (flotte grandi)
 
-Il default è il file store locale (zero dipendenze). Per alta disponibilità/multi-istanza, imposta `DATABASE_URL`: lo stato e le chiavi di firma vengono persistiti su Postgres (riga JSONB singleton con **locking ottimistico**; l'audit resta su file append-only, adatto all'archiviazione WORM). Richiede la dipendenza opzionale `pg`.
+Il default è il file store locale (zero dipendenze, singola istanza). Per alta disponibilità/scala, imposta `DATABASE_URL`: lo stato è **normalizzato** (una riga per entità — org, gruppi, device, token, chiavi) con **scritture mirate** (niente riscrittura del blob), e l'**audit è centralizzato** nel DB (`cp_audit_events` con testa di catena per-stream serializzata via lock di riga). Più istanze condividono lo stesso DB: convergono via reload periodico, le scritture sono row-level (niente conflitti globali), l'audit è unico e non frammentato. Richiede la dipendenza opzionale `pg` e `HARNESS_SIGNING_KEK` (obbligatoria: le chiavi private sono cifrate a riposo anche nel DB). L'heartbeat dei device (`lastSeenAt`) è persistito con throttling (≤ ogni 30s per device).
 
 ```bash
 DATABASE_URL=postgresql://user:pass@db:5432/harness node packages/control-plane/dist/cli.js serve
@@ -173,5 +173,5 @@ I container girano come utente non-root: l'immagine backend crea `/data` di prop
 - Il gateway inoltra solo gli endpoint di inferenza (`/v1/messages`, `/v1/chat/completions`, …): il device token non dà accesso al resto dell'API del provider.
 - La prompt injection da contenuti del repository non è prevenibile a livello di harness (posizione esplicita anche di PI): default-deny + sandbox + audit sono le mitigazioni.
 - Lo shim dei tipi dell'Extension API (`packages/fleet-extension/src/pi-types.ts`) è allineato a PI v0.80.x: quando si aggiorna la versione pinnata di PI sui client, riverificarlo.
-- Lo storage del control plane è su file JSON con scritture atomiche: adatto a flotte piccole/medie e a PoC; l'interfaccia (`Store`) è pensata per migrare a Postgres senza toccare la logica. Va eseguita **una sola istanza** del server per data dir (nessun lock multi-processo).
+- Lo storage a file JSON (default) è per singola istanza; per multi-istanza/HA usa il backend Postgres normalizzato (`DATABASE_URL`). In file mode va eseguita **una sola istanza** per data dir.
 - La UI amministrativa conserva il token in `localStorage` e usa script inline (CSP `unsafe-inline`): accettabile dietro rete interna/VPN; per esposizione più ampia prevedere una sessione server-side.
