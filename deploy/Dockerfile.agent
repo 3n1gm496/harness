@@ -13,6 +13,12 @@ RUN apt-get update \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 COPY --from=build /app /opt/harness
+# Marker della sandbox sanzionata: la sua presenza attesta che l'agente gira
+# dentro questo container ufficiale. La policy di default (sandbox.required)
+# rifiuta l'esecuzione senza questo marker. Va mantenuto read-only e non
+# replicato fuori dall'immagine. Per un valore per-immagine, sovrascrivere
+# markerValue nella policy e scrivere qui lo stesso valore.
+RUN printf '%s' "" > /opt/harness/sandbox-marker && chmod 0444 /opt/harness/sandbox-marker
 ENV PATH="/opt/harness/node_modules/.bin:${PATH}" \
 	PI_SKIP_VERSION_CHECK=1
 USER node

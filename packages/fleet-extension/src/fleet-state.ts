@@ -27,6 +27,13 @@ export interface AgentConfig {
 	tokenIssuedAt?: string;
 	/** Giorni oltre i quali il client ruota automaticamente il device token (default 30). */
 	rotateAfterDays?: number;
+	/**
+	 * Massima configVersion mai accettata. Il client rifiuta bundle con versione
+	 * inferiore: impedisce a un attaccante locale di riproporre un bundle più
+	 * vecchio ma ancora valido (es. pre-kill-switch o con policy più permissiva)
+	 * sostituendo la cache e bloccando la rete.
+	 */
+	minConfigVersion?: number;
 }
 
 export function defaultAgentConfigPath(): string {
@@ -93,14 +100,33 @@ export class FleetState {
 		const current = this.pinnedKeys();
 		if (next.length === current.length && next.every((k) => current.includes(k))) return;
 		this.config.publicKeyPems = next;
+		this.persistConfig();
+	}
+
+	private persistConfig(): void {
 		try {
 			const tmp = `${this.configPath}.tmp`;
 			mkdirSync(dirname(this.configPath), { recursive: true });
 			writeFileSync(tmp, JSON.stringify(this.config, null, "\t"), { mode: 0o600 });
 			renameSync(tmp, this.configPath);
 		} catch {
-			// La persistenza è best-effort: in memoria il set è comunque aggiornato.
+			// La persistenza è best-effort: in memoria lo stato è comunque aggiornato.
 		}
+	}
+
+	/**
+	 * Applica la monotonia della versione di config: rifiuta bundle con
+	 * `configVersion` inferiore al massimo mai accettato (anti-rollback). Su
+	 * accettazione di una versione più alta, aggiorna e persiste il minimo.
+	 */
+	private acceptVersion(bundle: ConfigBundle): boolean {
+		const floor = this.config.minConfigVersion ?? 0;
+		if (bundle.configVersion < floor) return false;
+		if (bundle.configVersion > floor) {
+			this.config.minConfigVersion = bundle.configVersion;
+			this.persistConfig();
+		}
+		return true;
 	}
 
 	get policy(): PolicyDocument {
@@ -130,7 +156,11 @@ export class FleetState {
 		if (!existsSync(this.bundleCachePath)) return;
 		const token = readFileSync(this.bundleCachePath, "utf8").trim();
 		const verified = verifyConfigBundleMulti(this.pinnedKeys(), token);
-		if (verified.valid && verified.payload.deviceId === this.config.deviceId) {
+		if (
+			verified.valid &&
+			verified.payload.deviceId === this.config.deviceId &&
+			this.acceptVersion(verified.payload)
+		) {
 			this.bundle = verified.payload;
 			this.updateTrustedKeys(verified.payload);
 			this.setStatus("cached");
@@ -160,6 +190,11 @@ export class FleetState {
 			if (!verified.valid) throw new Error(`bundle rifiutato: ${verified.error}`);
 			if (verified.payload.deviceId !== this.config.deviceId) {
 				throw new Error("bundle emesso per un altro device");
+			}
+			if (!this.acceptVersion(verified.payload)) {
+				throw new Error(
+					`bundle con versione ${verified.payload.configVersion} < minimo accettato ${this.config.minConfigVersion} (rollback rifiutato)`,
+				);
 			}
 
 			this.bundle = verified.payload;

@@ -7,3 +7,7 @@ export * from "./redaction.js";
 export * from "./ids.js";
 export * from "./audit-chain.js";
 export * from "./jwt.js";
+export * from "./bash-parse.js";
+export * from "./keystore.js";
+export * from "./tls.js";
+export * from "./sandbox.js";

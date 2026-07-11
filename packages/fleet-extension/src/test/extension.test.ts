@@ -86,6 +86,10 @@ before(async () => {
 		{ mode: 0o600 },
 	);
 	process.env.HARNESS_AGENT_CONFIG = agentConfigPath;
+
+	// La maggior parte dei test verifica l'enforcement della policy, non la
+	// sandbox: la si disabilita via override org (il default richiede sandbox).
+	service.updateOrg(identity, { policyOverride: { sandbox: { required: false } } });
 });
 
 after(async () => {
@@ -249,6 +253,83 @@ test("rotazione chiave di firma end-to-end: il client apprende B e sopravvive al
 	await state.refresh();
 	assert.equal(state.status, "ok");
 	assert.equal((config.publicKeyPems ?? []).length, 1);
+});
+
+test("sandbox obbligatoria: senza marker tutto è bloccato, col marker si opera", async () => {
+	const identity = service.authenticateAdmin(adminToken);
+	const markerPath = join(clientDir, "sandbox-marker");
+	service.updateOrg(identity, {
+		policyOverride: { sandbox: { required: true, markerPath, markerValue: "ok" } },
+	});
+	try {
+		// Marker assente ⇒ ogni tool call è bloccata.
+		const pi = new FakePi();
+		await fleetExtension(pi);
+		const blocked = await pi.emit<ToolCallHandlerResult>(
+			"tool_call",
+			{ toolName: "read", toolCallId: "s1", input: { path: "src/a.ts" } } satisfies ToolCallEvent,
+			ctx,
+		);
+		assert.equal(blocked?.block, true);
+		assert.match(blocked?.reason ?? "", /sandbox/);
+
+		// Marker presente col valore atteso ⇒ enforcement normale (tool consentito).
+		writeFileSync(markerPath, "ok\n");
+		const pi2 = new FakePi();
+		await fleetExtension(pi2);
+		const allowed = await pi2.emit<ToolCallHandlerResult>(
+			"tool_call",
+			{ toolName: "read", toolCallId: "s2", input: { path: "src/a.ts" } } satisfies ToolCallEvent,
+			ctx,
+		);
+		assert.equal(allowed, undefined);
+	} finally {
+		service.updateOrg(identity, { policyOverride: { sandbox: { required: false } } });
+	}
+});
+
+test("anti-rollback: un bundle con configVersion inferiore viene rifiutato", async () => {
+	const { FleetState, loadAgentConfig } = await import("../fleet-state.js");
+	const { readFileSync: readSync } = await import("node:fs");
+	const identity = service.authenticateAdmin(adminToken);
+
+	const config = loadAgentConfig();
+	config.bundleCachePath = join(clientDir, "rollback-bundle.jws");
+	delete config.minConfigVersion;
+
+	// Accetta la versione corrente (vN) e cattura il token firmato.
+	const state = new FleetState(config, process.env.HARNESS_AGENT_CONFIG);
+	await state.initialLoad();
+	assert.equal(state.status, "ok");
+	const vOld = state.configVersion as number;
+	const oldToken = readSync(state.bundleCachePath, "utf8").trim();
+
+	// Il control plane avanza la versione; il client la accetta (vNew > vN).
+	service.updateOrg(identity, { name: "org-bumped" });
+	await state.refresh();
+	const vNew = state.configVersion as number;
+	assert.ok(vNew > vOld);
+
+	// Attacco rollback: il server (o la cache) ripropone il vecchio bundle vN,
+	// ancora firmato e non scaduto. Deve essere RIFIUTATO, restando su vNew.
+	const rollbackFetch: typeof fetch = async () =>
+		new Response(JSON.stringify({ token: oldToken }), { status: 200 });
+	await state.refresh(rollbackFetch);
+	assert.equal(state.configVersion, vNew);
+	assert.match(state.lastError, /rollback/);
+
+	// Anche via cache: una nuova istanza con minConfigVersion=vNew e cache=vN
+	// non deve onorare il bundle più vecchio.
+	writeFileSync(state.bundleCachePath, oldToken);
+	const config2 = loadAgentConfig();
+	config2.bundleCachePath = state.bundleCachePath;
+	config2.minConfigVersion = vNew;
+	const offline = new FleetState(config2, process.env.HARNESS_AGENT_CONFIG);
+	const offlineFetch: typeof fetch = async () => {
+		throw new Error("offline");
+	};
+	await offline.initialLoad(offlineFetch);
+	assert.equal(offline.status, "fail-closed");
 });
 
 test("senza config del device l'estensione blocca tutto", async () => {

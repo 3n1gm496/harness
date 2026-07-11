@@ -1,4 +1,4 @@
-import { evaluateBashCommand, evaluateToolCall, redactSecrets } from "@harness/shared";
+import { evaluateBashCommand, evaluateToolCall, isSandboxSatisfied, redactSecrets } from "@harness/shared";
 import type { ContentBlock, ExtensionAPI, PiExtensionContext } from "./pi-types.js";
 import { FleetState, loadAgentConfig } from "./fleet-state.js";
 
@@ -63,6 +63,21 @@ export default async function fleetExtension(pi: ExtensionAPI): Promise<void> {
 	});
 
 	pi.on("tool_call", (event, ctx) => {
+		// Barriera sandbox: se la policy richiede il contenimento e il marker
+		// dell'ambiente sanzionato non c'è, si blocca tutto (fail-closed).
+		if (!isSandboxSatisfied(state.policy.sandbox)) {
+			state.pushAudit("policy_decision", {
+				toolName: event.toolName,
+				toolCallId: event.toolCallId,
+				action: "deny",
+				reason: "sandbox obbligatoria assente",
+			});
+			return {
+				block: true,
+				reason:
+					"[policy aziendale] l'agente deve girare dentro l'ambiente contenuto sanzionato (marker sandbox assente)",
+			};
+		}
 		const decision = evaluateToolCall(state.policy, {
 			toolName: event.toolName,
 			input: event.input,
@@ -107,6 +122,16 @@ export default async function fleetExtension(pi: ExtensionAPI): Promise<void> {
 	// I comandi `!` dell'utente seguono la stessa policy bash dell'agente.
 	pi.on("user_bash", (event) => {
 		const policy = state.policy;
+		if (!isSandboxSatisfied(policy.sandbox)) {
+			return {
+				result: {
+					output: "[policy aziendale] comando bloccato: sandbox obbligatoria assente",
+					exitCode: 1,
+					cancelled: false,
+					truncated: false,
+				},
+			};
+		}
 		const decision = policy.killSwitch
 			? ({ action: "deny", reason: "kill switch attivo" } as const)
 			: evaluateBashCommand(policy.bash, event.command);

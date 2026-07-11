@@ -570,13 +570,23 @@ export class ControlPlaneService {
 	}
 
 	/** Introspezione dei device token per il gateway LLM. */
-	introspectDeviceToken(deviceToken: string): { active: boolean; deviceId?: string; groupId?: string } {
+	introspectDeviceToken(
+		deviceToken: string,
+		presentedFingerprint?: string,
+	): { active: boolean; deviceId?: string; groupId?: string } {
 		const tokenHash = hashToken(deviceToken);
 		const device = Object.values(this.store.state.devices).find((d) => d.tokenHash === tokenHash);
 		if (!device || device.revoked) return { active: false };
 		const killSwitch =
 			device.killSwitch || this.store.state.org.killSwitch || this.store.state.groups[device.groupId]?.killSwitch;
 		if (killSwitch) return { active: false };
+		// Se il device è legato a un certificato mTLS, il fingerprint presentato
+		// (estratto dal gateway dalla connessione col device) deve combaciare:
+		// un token rubato senza la chiave privata non basta per l'inferenza.
+		if (device.certFingerprint) {
+			const presented = presentedFingerprint?.replaceAll(":", "").trim().toLowerCase();
+			if (!presented || presented !== device.certFingerprint) return { active: false };
+		}
 		return { active: true, deviceId: device.deviceId, groupId: device.groupId };
 	}
 

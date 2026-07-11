@@ -46,6 +46,22 @@ export interface RedactionPolicy {
 	patterns: string[];
 }
 
+export interface SandboxPolicy {
+	/**
+	 * Se true, l'agente si rifiuta di operare fuori da un ambiente contenuto
+	 * sanzionato: verifica la presenza di un file marker scritto solo
+	 * dall'immagine container ufficiale. Assente ⇒ fail-closed totale.
+	 */
+	required: boolean;
+	/** Percorso del file marker (default `/run/harness-sandbox`). */
+	markerPath: string;
+	/**
+	 * Valore atteso nel marker. Vuoto = basta l'esistenza del file. Un valore
+	 * per-immagine rende più difficile falsificare il marker fuori dal container.
+	 */
+	markerValue: string;
+}
+
 export interface PolicyDocument {
 	version: 1;
 	/** Se true, ogni tool call è bloccata e l'agente è di fatto fermo. */
@@ -54,6 +70,7 @@ export interface PolicyDocument {
 	bash: BashPolicy;
 	paths: PathsPolicy;
 	redaction: RedactionPolicy;
+	sandbox: SandboxPolicy;
 }
 
 /** Bundle di configurazione firmato distribuito dal control plane ai device. */

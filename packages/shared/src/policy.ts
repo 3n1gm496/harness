@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { parseBashCommand, stripLeadingAssignments } from "./bash-parse.js";
 import type { BashPolicy, PathsPolicy, PolicyDecision, PolicyDocument, ToolCallRequest } from "./types.js";
 
 /**
@@ -68,54 +69,108 @@ export function evaluateBashCommand(policy: BashPolicy, command: string): Policy
 		}
 	}
 
-	if (policy.mode === "denylist") return { action: "allow" };
+	const parsed = parseBashCommand(trimmed);
+	if (parsed.unbalanced) {
+		return { action: "deny", reason: "comando non analizzabile (virgolette o parentesi sbilanciate)" };
+	}
+	if (parsed.commands.length === 0) return { action: "deny", reason: "comando non analizzabile" };
 
-	// Modalità allowlist.
-	if (!policy.allowSubstitution && /\$\(|`/.test(trimmed)) {
-		return { action: "deny", reason: "command substitution non consentita dalla policy" };
+	// Regole per-comando sempre applicate (anche in denylist): bloccano
+	// l'esecuzione di codice arbitrario via interpreti inline, wrapper e
+	// sostituzioni, che nessun uso legittimo di un coding-agent richiede.
+	for (const parsedCommand of parsed.commands) {
+		if (parsedCommand.hasProcessSubstitution) {
+			return { action: "deny", reason: "process substitution <(...)/>(...) non consentita" };
+		}
+		if (parsedCommand.hasCommandSubstitution && !policy.allowSubstitution) {
+			return { action: "deny", reason: "command substitution $(...)/backtick non consentita" };
+		}
+		const argv = stripLeadingAssignments(parsedCommand.argv);
+		const danger = dangerousInvocation(argv);
+		if (danger) return { action: "deny", reason: danger };
 	}
 
-	const segments = splitCommandSegments(trimmed);
-	if (segments.length === 0) return { action: "deny", reason: "comando non analizzabile" };
+	if (policy.mode === "denylist") return { action: "allow" };
 
-	for (const segment of segments) {
-		if (!isSegmentAllowed(policy.allow, segment)) {
+	// Modalità allowlist: ogni comando deve corrispondere a un prefisso.
+	for (const parsedCommand of parsed.commands) {
+		const argv = stripLeadingAssignments(parsedCommand.argv);
+		if (argv.length === 0) continue; // solo assegnazioni/redirezioni: innocuo
+		if (!isArgvAllowed(policy.allow, argv)) {
 			return {
 				action: "deny",
-				reason: `segmento "${truncate(segment, 80)}" non corrisponde ad alcun prefisso consentito`,
+				reason: `comando "${truncate(argv.join(" "), 80)}" non corrisponde ad alcun prefisso consentito`,
 			};
 		}
 	}
 	return { action: "allow" };
 }
 
-function splitCommandSegments(command: string): string[] {
-	// Le duplicazioni di file descriptor (2>&1, >&2, …) contengono `&` ma non
-	// sono separatori di comando: vanno rimosse prima dello split, altrimenti
-	// producono falsi segmenti ("1") che l'allowlist nega.
-	const withoutFdRedirects = command.replaceAll(/\d*>{1,2}&\d*/g, " ");
-	return withoutFdRedirects
-		.split(/(?:\|\||&&|[;|&\n])+/)
-		.map((segment) => segment.trim())
-		// Ignora redirezioni pure e segmenti vuoti derivanti dallo split.
-		.filter((segment) => segment !== "" && !/^[<>]/.test(segment));
+/** Nome base del comando (senza percorso): `/usr/bin/node` → `node`. */
+function commandName(argv: string[]): string {
+	const first = argv[0] ?? "";
+	const slash = first.lastIndexOf("/");
+	return slash === -1 ? first : first.slice(slash + 1);
 }
 
-function isSegmentAllowed(allow: string[], segment: string): boolean {
-	// Rimuove assegnazioni di variabili d'ambiente in testa (FOO=bar cmd ...).
-	let normalized = segment;
-	for (;;) {
-		const match = /^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+/.exec(normalized);
-		if (!match) break;
-		normalized = normalized.slice(match[0].length);
+/**
+ * Rileva invocazioni che eseguono codice arbitrario in modo diretto —
+ * interpreti con eval inline, wrapper che rilanciano comandi, awk/find/sed nelle
+ * forme che eseguono processi. NON blocca `node file.js`, `npm test`, `make`:
+ * quelli sono esecuzione legittima di un coding-agent, contenuta dalla sandbox
+ * (che è il vero confine). Chiude i bypass banali "one-liner".
+ */
+export function dangerousInvocation(argv: string[]): string | null {
+	if (argv.length === 0) return null;
+	const cmd = commandName(argv);
+	const args = argv.slice(1);
+	const has = (...flags: string[]) => args.some((a) => flags.includes(a));
+
+	// Shell: eseguono qualunque cosa.
+	if (["sh", "bash", "zsh", "dash", "ksh", "ash"].includes(cmd)) {
+		if (has("-c") || args.some((a) => a === "-" )) return `shell inline (${cmd} -c) non consentita`;
+		// `bash script.sh` esegue uno script del repo: exec arbitrario → deny.
+		return `esecuzione di shell (${cmd}) non consentita: usa i tool dedicati`;
 	}
-	if (normalized === "") return false;
+	// Interpreti con valutazione inline.
+	if (["node", "nodejs", "bun", "deno"].includes(cmd) && has("-e", "--eval", "-p", "--print", "eval")) {
+		return `esecuzione inline (${cmd} -e/-p) non consentita`;
+	}
+	if (["python", "python3", "python2"].includes(cmd) && has("-c")) {
+		return "esecuzione inline (python -c) non consentita";
+	}
+	if (cmd === "perl" && has("-e", "-E")) return "esecuzione inline (perl -e) non consentita";
+	if (cmd === "ruby" && has("-e")) return "esecuzione inline (ruby -e) non consentita";
+	if (cmd === "php" && has("-r")) return "esecuzione inline (php -r) non consentita";
+	// awk: system()/pipe eseguono comandi.
+	if (["awk", "gawk", "mawk"].includes(cmd) && args.some((a) => /system\s*\(|\|\s*(&|getline|")/.test(a))) {
+		return "awk con system()/pipe non consentito";
+	}
+	// find: azioni che eseguono comandi o scrivono file.
+	if (cmd === "find" && has("-exec", "-execdir", "-ok", "-okdir", "-fprintf", "-fprint", "-delete")) {
+		return "find con -exec/-delete non consentito";
+	}
+	// sed: comando `e` (shell), scrittura file, in-place.
+	if (["sed", "gsed"].includes(cmd)) {
+		if (has("-i", "--in-place") || args.some((a) => a.startsWith("-i"))) return "sed -i (in-place) non consentito";
+		if (args.some((a) => /(^|;|\})\s*[ewW]\b/.test(a))) return "sed con comando e/w non consentito";
+	}
+	// Wrapper che rilanciano un comando arbitrario.
+	if (["xargs", "env", "nice", "nohup", "timeout", "watch", "setsid", "stdbuf", "ionice", "chroot"].includes(cmd)) {
+		return `wrapper di esecuzione (${cmd}) non consentito`;
+	}
+	// eval/exec/source come primo token (se mai passassero come comando).
+	if (["eval", "exec", "source", "."].includes(cmd)) return `costrutto "${cmd}" non consentito`;
+	return null;
+}
+
+function isArgvAllowed(allow: string[], argv: string[]): boolean {
+	const normalized = argv.join(" ");
 	return allow.some((prefix) => {
 		if (normalized === prefix) return true;
 		if (!normalized.startsWith(prefix)) return false;
-		// Il carattere successivo al prefisso deve essere un separatore di
-		// argomento, così "git" non autorizza "gitx" e "npm run" non autorizza
-		// "npm run-script-malizioso" solo se il prefisso finisce a metà parola.
+		// Il carattere dopo il prefisso deve essere un separatore di argomento,
+		// così "git" non autorizza "gitx" e "npm run" non autorizza "npm runx".
 		const next = normalized.charAt(prefix.length);
 		return next === " " || next === "\t";
 	});

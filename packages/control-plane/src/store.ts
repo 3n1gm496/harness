@@ -2,8 +2,25 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AdminRole, AuditEvent, ChainVerification, ChainedEntry, DeepPartial, PolicyDocument } from "@harness/shared";
-import { CHAIN_GENESIS, chainEntry, generateSigningKeyPair, newId, verifyChain } from "@harness/shared";
+import type {
+	AdminRole,
+	AuditEvent,
+	ChainVerification,
+	ChainedEntry,
+	DeepPartial,
+	Kek,
+	PolicyDocument,
+} from "@harness/shared";
+import {
+	CHAIN_GENESIS,
+	chainEntry,
+	generateSigningKeyPair,
+	isSealed,
+	newId,
+	openPrivateKey,
+	sealPrivateKey,
+	verifyChain,
+} from "@harness/shared";
 
 export interface OrgRecord {
 	orgId: string;
@@ -114,8 +131,12 @@ export class Store {
 	private pending: Promise<void> = Promise.resolve();
 	lastMirrorError = "";
 
-	constructor(dataDir: string) {
+	/** KEK per l'envelope encryption delle chiavi private a riposo (opzionale in file mode). */
+	private readonly kek: Kek | undefined;
+
+	constructor(dataDir: string, options: { kek?: Kek } = {}) {
 		this.dataDir = dataDir;
+		this.kek = options.kek;
 		this.statePath = join(dataDir, "state.json");
 		this.auditDir = join(dataDir, "audit");
 		this.adminAuditPath = join(dataDir, "admin-audit.jsonl");
@@ -124,6 +145,14 @@ export class Store {
 		mkdirSync(join(dataDir, "keys"), { recursive: true });
 
 		this.signingKeys = this.loadSigningKeys();
+		if (!this.kek) {
+			console.warn(
+				"[control-plane] ATTENZIONE: HARNESS_SIGNING_KEK non impostata — le chiavi private di firma sono a riposo in chiaro (0600). Imponila in produzione.",
+			);
+		} else {
+			// Migrazione: se le chiavi erano in chiaro, risigillale ora.
+			this.persistSigningKeys(this.signingKeys);
+		}
 
 		this.state = existsSync(this.statePath)
 			? (JSON.parse(readFileSync(this.statePath, "utf8")) as ControlPlaneState)
@@ -141,23 +170,48 @@ export class Store {
 	static async openWithBackend(
 		dataDir: string,
 		backend: import("./state-store.js").DurableStateStore,
+		options: { kek?: Kek } = {},
 	): Promise<Store> {
-		const store = new Store(dataDir);
+		if (!options.kek) {
+			throw new Error(
+				"backend Postgres richiede HARNESS_SIGNING_KEK: senza, le chiavi private finirebbero in chiaro nel database",
+			);
+		}
+		const store = new Store(dataDir, { kek: options.kek });
 		store.mirror = backend;
 		const snapshot = await backend.load();
 		if (snapshot) {
 			store.state = snapshot.state;
-			store.signingKeys = snapshot.signingKeys;
+			store.signingKeys = store.openKeys(snapshot.signingKeys);
 		} else {
-			await backend.save({ state: store.state, signingKeys: store.signingKeys });
+			await backend.save({ state: store.state, signingKeys: store.sealKeys(store.signingKeys) });
 		}
 		return store;
+	}
+
+	/** Sigilla le chiavi private per la persistenza (no-op se KEK assente). */
+	private sealKeys(keys: SigningKeyRecord[]): SigningKeyRecord[] {
+		if (!this.kek) return keys;
+		const kek = this.kek;
+		return keys.map((k) => ({
+			...k,
+			privateKeyPem: isSealed(k.privateKeyPem) ? k.privateKeyPem : sealPrivateKey(kek, k.privateKeyPem),
+		}));
+	}
+
+	/** Apre le chiavi private lette da persistenza (decifra se sigillate). */
+	private openKeys(keys: SigningKeyRecord[]): SigningKeyRecord[] {
+		return keys.map((k) => {
+			if (!isSealed(k.privateKeyPem)) return k;
+			if (!this.kek) throw new Error("chiave di firma sigillata ma HARNESS_SIGNING_KEK non impostata");
+			return { ...k, privateKeyPem: openPrivateKey(this.kek, k.privateKeyPem) };
+		});
 	}
 
 	private mirrorNow(): void {
 		if (!this.mirror) return;
 		const backend = this.mirror;
-		const snapshot = structuredClone({ state: this.state, signingKeys: this.signingKeys });
+		const snapshot = structuredClone({ state: this.state, signingKeys: this.sealKeys(this.signingKeys) });
 		this.pending = this.pending
 			.then(() => backend.save(snapshot))
 			.then(() => {
@@ -182,7 +236,8 @@ export class Store {
 
 	private loadSigningKeys(): SigningKeyRecord[] {
 		if (existsSync(this.signingKeysPath)) {
-			return JSON.parse(readFileSync(this.signingKeysPath, "utf8")) as SigningKeyRecord[];
+			const stored = JSON.parse(readFileSync(this.signingKeysPath, "utf8")) as SigningKeyRecord[];
+			return this.openKeys(stored);
 		}
 		// Migrazione dalla chiave singola legacy, se presente.
 		const legacyPriv = join(this.dataDir, "keys", "config-signing.key");
@@ -215,7 +270,8 @@ export class Store {
 
 	private persistSigningKeys(keys: SigningKeyRecord[]): void {
 		const tmp = `${this.signingKeysPath}.tmp`;
-		writeFileSync(tmp, JSON.stringify(keys, null, "\t"), { mode: 0o600 });
+		// Sigilla le chiavi private prima di scriverle su disco.
+		writeFileSync(tmp, JSON.stringify(this.sealKeys(keys), null, "\t"), { mode: 0o600 });
 		renameSync(tmp, this.signingKeysPath);
 		this.mirrorNow();
 	}

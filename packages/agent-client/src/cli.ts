@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { defaultAgentConfigPath, loadAgentConfig } from "@harness/fleet-extension";
-import { verifyConfigBundleMulti } from "@harness/shared";
+import { isSandboxSatisfied, verifyConfigBundleMulti } from "@harness/shared";
 import { readFileSync } from "node:fs";
 import { applyManagedPiSettings, buildPiArgs, enroll, maybeRotateToken, syncConfig } from "./client.js";
 
@@ -69,6 +69,15 @@ async function main(): Promise<void> {
 		}
 
 		if (command === "run") {
+			// Barriera sandbox: non lanciare pi fuori dall'ambiente contenuto
+			// sanzionato se la policy lo richiede.
+			if (!isSandboxSatisfied(state.policy.sandbox)) {
+				console.error(
+					"Avvio rifiutato: la policy richiede l'esecuzione dentro l'ambiente contenuto sanzionato " +
+						`(marker "${state.policy.sandbox.markerPath}" assente). Esegui dentro il container ufficiale (deploy/Dockerfile.agent).`,
+				);
+				process.exit(1);
+			}
 			const require = createRequire(import.meta.url);
 			const extensionPath = require.resolve("@harness/fleet-extension");
 			const separatorIndex = args.indexOf("--");

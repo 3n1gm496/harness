@@ -59,7 +59,6 @@ export function defaultPolicy(): PolicyDocument {
 				"awk",
 				"sort",
 				"uniq",
-				"xargs",
 			],
 			deny: [
 				"\\brm\\s+-[a-z]*r[a-z]*f",
@@ -90,6 +89,11 @@ export function defaultPolicy(): PolicyDocument {
 		redaction: {
 			enabled: true,
 			patterns: [],
+		},
+		sandbox: {
+			required: true,
+			markerPath: "/opt/harness/sandbox-marker",
+			markerValue: "",
 		},
 	};
 }

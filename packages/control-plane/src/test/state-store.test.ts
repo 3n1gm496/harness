@@ -2,17 +2,40 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { generateKek, signPayload } from "@harness/shared";
 import { ControlPlaneService } from "../service.js";
 import { InMemoryStateStore, PostgresStateStore } from "../state-store.js";
 import { Store } from "../store.js";
+
+const KEK = { kek: { key: Buffer.from(generateKek(), "base64") } };
+
+test("con KEK le chiavi private sono sigillate su disco ma usabili in memoria", () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-kek-"));
+	try {
+		const store = new Store(dir, KEK);
+		// Su disco: nessuna chiave privata in chiaro.
+		const onDisk = readFileSync(join(dir, "keys", "signing-keys.json"), "utf8");
+		assert.ok(!onDisk.includes("PRIVATE KEY"), "la chiave privata non deve essere in chiaro su disco");
+		assert.ok(onDisk.includes("harness-sealed:v1:"), "la chiave deve essere sigillata");
+		// In memoria: la chiave è usabile per firmare.
+		const token = signPayload(store.signingPrivateKeyPem, { ok: true });
+		assert.equal(token.split(".").length, 3);
+		// Riaprendo con la stessa KEK, la chiave si decifra e resta stabile.
+		const reopened = new Store(dir, KEK);
+		assert.equal(reopened.signingPublicKeyPem, store.signingPublicKeyPem);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
 
 test("Store con backend in-memory: idratazione e write-behind", async () => {
 	const dir1 = mkdtempSync(join(tmpdir(), "harness-ss-a-"));
 	const backend = new InMemoryStateStore();
 	try {
 		// Prima apertura: backend vuoto → lo stato locale viene salvato nel backend.
-		const store = await Store.openWithBackend(dir1, backend);
+		const store = await Store.openWithBackend(dir1, backend, KEK);
 		const service = new ControlPlaneService(store);
 		const admin = service.bootstrapAdminToken("capo");
 		const identity = service.authenticateAdmin(admin);
@@ -23,7 +46,7 @@ test("Store con backend in-memory: idratazione e write-behind", async () => {
 		// viene idratato dal backend, non dal file locale.
 		const dir2 = mkdtempSync(join(tmpdir(), "harness-ss-b-"));
 		try {
-			const store2 = await Store.openWithBackend(dir2, backend);
+			const store2 = await Store.openWithBackend(dir2, backend, KEK);
 			const groups = Object.values(store2.state.groups).map((g) => g.name);
 			assert.ok(groups.includes("produzione"));
 			assert.equal(store2.state.org.orgId, store.state.org.orgId);
@@ -39,7 +62,7 @@ test("le chiavi di firma sono incluse nello snapshot durevole", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "harness-ss-keys-"));
 	const backend = new InMemoryStateStore();
 	try {
-		const store = await Store.openWithBackend(dir, backend);
+		const store = await Store.openWithBackend(dir, backend, KEK);
 		const service = new ControlPlaneService(store);
 		const admin = service.bootstrapAdminToken("k");
 		const identity = service.authenticateAdmin(admin);

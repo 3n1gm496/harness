@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { peerCertFingerprint } from "@harness/shared";
 import type { ControlPlaneService } from "./service.js";
 import { ServiceError } from "./service.js";
 
@@ -77,15 +78,6 @@ export function createControlPlaneServer(
 	return createServer(listener);
 }
 
-/** Fingerprint SHA-256 (hex) del certificato client della connessione, se presente. */
-function peerCertFingerprint(req: IncomingMessage): string | undefined {
-	const socket = req.socket as import("node:tls").TLSSocket;
-	if (typeof socket.getPeerCertificate !== "function") return undefined;
-	const cert = socket.getPeerCertificate();
-	if (!cert || Object.keys(cert).length === 0) return undefined;
-	return cert.fingerprint256 || undefined;
-}
-
 async function handle(service: ControlPlaneService, req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const url = new URL(req.url ?? "/", "http://localhost");
 	const method = req.method ?? "GET";
@@ -146,7 +138,10 @@ async function handle(service: ControlPlaneService, req: IncomingMessage, res: S
 		service.authenticateGateway(bearer);
 		const body = await readJsonBody(req);
 		const deviceToken = requireString(body, "deviceToken");
-		sendJson(res, 200, service.introspectDeviceToken(deviceToken));
+		// Il gateway inoltra il fingerprint del cert presentato dal device: il
+		// control plane lo confronta col binding mTLS del device.
+		const presentedFingerprint = optionalString(body, "presentedFingerprint");
+		sendJson(res, 200, service.introspectDeviceToken(deviceToken, presentedFingerprint));
 		return;
 	}
 

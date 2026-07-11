@@ -2,6 +2,7 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { Readable } from "node:stream";
+import { peerCertFingerprint } from "@harness/shared";
 
 /**
  * Gateway LLM: i client si autenticano con il token di device (verificato via
@@ -52,8 +53,11 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 	const ttl = options.introspectionTtlMs ?? 60_000;
 	const log = options.log ?? ((entry) => console.log(JSON.stringify(entry)));
 
-	async function introspect(deviceToken: string): Promise<IntrospectionEntry> {
-		const cached = introspectionCache.get(deviceToken);
+	async function introspect(deviceToken: string, presentedFingerprint?: string): Promise<IntrospectionEntry> {
+		// La cache è per (token, fingerprint): lo stesso token con un cert diverso
+		// non deve riusare un esito positivo precedente.
+		const cacheKey = `${deviceToken}|${presentedFingerprint ?? ""}`;
+		const cached = introspectionCache.get(cacheKey);
 		if (cached && cached.expiresAt > Date.now()) return cached;
 		// Cap difensivo: token invalidi spammati non devono far crescere la
 		// cache senza limite.
@@ -64,7 +68,7 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 				authorization: `Bearer ${options.gatewayToken}`,
 				"content-type": "application/json",
 			},
-			body: JSON.stringify({ deviceToken }),
+			body: JSON.stringify({ deviceToken, presentedFingerprint }),
 			signal: AbortSignal.timeout(10_000),
 		});
 		if (!response.ok) throw new Error(`introspezione fallita: HTTP ${response.status}`);
@@ -76,7 +80,7 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 			expiresAt: Date.now() + (data.active ? ttl : Math.min(ttl, 10_000)),
 		};
 		if (data.deviceId !== undefined) entry.deviceId = data.deviceId;
-		introspectionCache.set(deviceToken, entry);
+		introspectionCache.set(cacheKey, entry);
 		return entry;
 	}
 
@@ -97,7 +101,12 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 			sendJson(res, 502, { error: "errore del gateway" });
 		});
 	};
-	return options.tls ? createHttpsServer(options.tls, listener) : createServer(listener);
+	if (options.tls) {
+		// requestCert: i device legati a un certificato mTLS lo presentano; il
+		// binding è verificato dal control plane via introspezione.
+		return createHttpsServer({ ...options.tls, requestCert: true, rejectUnauthorized: false }, listener);
+	}
+	return createServer(listener);
 
 	async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const url = new URL(req.url ?? "/", "http://localhost");
@@ -130,7 +139,7 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 			sendJson(res, 401, { error: "token device mancante" });
 			return;
 		}
-		const introspection = await introspect(deviceToken);
+		const introspection = await introspect(deviceToken, peerCertFingerprint(req));
 		if (!introspection.active || !introspection.deviceId) {
 			sendJson(res, 401, { error: "device non autorizzato (token non valido, revocato o sospeso)" });
 			return;

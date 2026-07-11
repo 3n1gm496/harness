@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { Kek } from "@harness/shared";
+import { loadKekFromEnv } from "@harness/shared";
 import { ControlPlaneService } from "./service.js";
 import { createControlPlaneServer } from "./server.js";
 import { Store } from "./store.js";
@@ -17,7 +19,7 @@ async function main(): Promise<void> {
 	const dataDir = resolve(flagValue(args, "--data-dir") ?? process.env.HARNESS_CP_DATA_DIR ?? ".data/control-plane");
 
 	if (command === "init") {
-		const store = new Store(dataDir);
+		const store = new Store(dataDir, kekOptions());
 		const service = new ControlPlaneService(store);
 		let token: string;
 		try {
@@ -71,7 +73,7 @@ async function main(): Promise<void> {
 	}
 
 	if (command === "verify-audit") {
-		const store = new Store(dataDir);
+		const store = new Store(dataDir, kekOptions());
 		const deviceId = flagValue(args, "--device");
 		void (deviceId ? store.verifyDeviceAudit(deviceId) : store.verifyAdminAudit()).then((result) => {
 			if (result.valid) {
@@ -87,7 +89,7 @@ async function main(): Promise<void> {
 	}
 
 	if (command === "export-audit-anchor") {
-		const store = new Store(dataDir);
+		const store = new Store(dataDir, kekOptions());
 		const service = new ControlPlaneService(store);
 		// Identità di sistema locale: l'esecuzione della CLI è già un'operazione
 		// privilegiata sul data dir.
@@ -113,12 +115,17 @@ function flagValue(args: string[], flag: string): string | undefined {
  * impostata (per flotte grandi / alta disponibilità), altrimenti il file store
  * locale (default, zero dipendenze).
  */
+function kekOptions(): { kek?: Kek } {
+	const kek = loadKekFromEnv();
+	return kek ? { kek } : {};
+}
+
 async function openStore(dataDir: string): Promise<Store> {
 	const dbUrl = process.env.DATABASE_URL;
-	if (!dbUrl) return new Store(dataDir);
+	if (!dbUrl) return new Store(dataDir, kekOptions());
 	const { PostgresStateStore } = await import("./state-store.js");
 	console.log("[control-plane] backend di stato: Postgres (DATABASE_URL)");
-	return Store.openWithBackend(dataDir, new PostgresStateStore(dbUrl));
+	return Store.openWithBackend(dataDir, new PostgresStateStore(dbUrl), kekOptions());
 }
 
 function loadTlsFromEnv(): { cert: string; key: string } | undefined {
