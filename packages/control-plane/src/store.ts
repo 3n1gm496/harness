@@ -46,6 +46,10 @@ export interface OrgRecord {
 	killSwitch: boolean;
 	/** Minuti di validità dei bundle firmati (finestra fail-closed). */
 	configTtlMinutes: number;
+	/** Giorni oltre i quali un device token è considerato scaduto lato server (default 90). */
+	deviceTokenMaxAgeDays: number;
+	/** Se true, l'enrollment richiede un certificato client e il TOFU è disabilitato. */
+	requireDeviceCert: boolean;
 	policyOverride: DeepPartial<PolicyDocument>;
 	piSettingsOverride: Record<string, unknown>;
 }
@@ -63,6 +67,8 @@ export interface DeviceRecord {
 	name: string;
 	groupId: string;
 	tokenHash: string;
+	/** Emissione del token corrente; usata per la scadenza server-side. */
+	tokenIssuedAt?: string;
 	enrolledAt: string;
 	lastSeenAt?: string;
 	lastConfigVersion?: number;
@@ -461,6 +467,8 @@ export class Store {
 				configVersion: 1,
 				killSwitch: false,
 				configTtlMinutes: 60,
+				deviceTokenMaxAgeDays: 90,
+				requireDeviceCert: false,
 				policyOverride: {},
 				piSettingsOverride: {},
 			},

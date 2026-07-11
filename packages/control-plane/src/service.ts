@@ -116,6 +116,14 @@ export class ControlPlaneService {
 		const device = Object.values(this.store.state.devices).find((d) => d.tokenHash === tokenHash);
 		if (!device) throw new ServiceError(401, "token device non valido");
 		if (device.revoked) throw new ServiceError(403, "device revocato");
+		// Scadenza server-side del token: oltre l'età massima va ruotato.
+		const maxAgeDays = this.store.state.org.deviceTokenMaxAgeDays ?? 90;
+		if (device.tokenIssuedAt) {
+			const ageMs = Date.now() - Date.parse(device.tokenIssuedAt);
+			if (ageMs > maxAgeDays * 86_400_000) {
+				throw new ServiceError(401, "token device scaduto: eseguire la rotazione (harness-agent rotate-token)");
+			}
+		}
 		if (device.certFingerprint) {
 			const presented = normalizeFingerprint(presentedFingerprint);
 			if (!presented) throw new ServiceError(403, "certificato client mTLS richiesto per questo device");
@@ -131,6 +139,11 @@ export class ControlPlaneService {
 	 * first use: da qui in poi le sue richieste richiedono quel certificato.
 	 */
 	bindDeviceCertificate(device: DeviceRecord, presentedFingerprint: string | undefined): void {
+		if (this.store.state.org.requireDeviceCert && !device.certFingerprint) {
+			// TOFU disabilitato: il binding deve avvenire all'enrollment, non dopo
+			// (chiude la race del trust-on-first-use su token rubato).
+			throw new ServiceError(403, "trust-on-first-use disabilitato: il certificato va legato all'enrollment");
+		}
 		const presented = normalizeFingerprint(presentedFingerprint);
 		if (!presented) throw new ServiceError(400, "nessun certificato client presentato da legare");
 		device.certFingerprint = presented;
@@ -191,6 +204,9 @@ export class ControlPlaneService {
 		if (record.usedBy) throw new ServiceError(401, "token di enrollment già usato");
 		if (Date.parse(record.expiresAt) < Date.now()) throw new ServiceError(401, "token di enrollment scaduto");
 
+		if (this.store.state.org.requireDeviceCert && !normalizeFingerprint(certFingerprint)) {
+			throw new ServiceError(400, "questa organizzazione richiede un certificato client all'enrollment (mTLS)");
+		}
 		const deviceId = newId("dev");
 		const deviceToken = newSecretToken("dvt");
 		const device: DeviceRecord = {
@@ -198,6 +214,7 @@ export class ControlPlaneService {
 			name: deviceName || deviceId,
 			groupId: record.groupId,
 			tokenHash: hashToken(deviceToken),
+			tokenIssuedAt: new Date().toISOString(),
 			enrolledAt: new Date().toISOString(),
 			killSwitch: false,
 			revoked: false,
@@ -322,9 +339,14 @@ export class ControlPlaneService {
 			configTtlMinutes?: number;
 			policyOverride?: DeepPartial<PolicyDocument>;
 			piSettingsOverride?: Record<string, unknown>;
+			deviceTokenMaxAgeDays?: number;
+			requireDeviceCert?: boolean;
 		},
 	): void {
-		const changesPolicy = update.policyOverride !== undefined || update.piSettingsOverride !== undefined;
+		const changesPolicy =
+			update.policyOverride !== undefined ||
+			update.piSettingsOverride !== undefined ||
+			update.requireDeviceCert !== undefined;
 		this.requireRole(identity, changesPolicy || update.configTtlMinutes !== undefined ? "admin" : "operator");
 		const { org } = this.store.state;
 		if (update.name !== undefined) org.name = update.name;
@@ -335,6 +357,13 @@ export class ControlPlaneService {
 			}
 			org.configTtlMinutes = update.configTtlMinutes;
 		}
+		if (update.deviceTokenMaxAgeDays !== undefined) {
+			if (update.deviceTokenMaxAgeDays < 1 || update.deviceTokenMaxAgeDays > 3650) {
+				throw new ServiceError(400, "deviceTokenMaxAgeDays deve essere tra 1 e 3650");
+			}
+			org.deviceTokenMaxAgeDays = update.deviceTokenMaxAgeDays;
+		}
+		if (update.requireDeviceCert !== undefined) org.requireDeviceCert = update.requireDeviceCert;
 		if (update.policyOverride !== undefined) org.policyOverride = update.policyOverride;
 		if (update.piSettingsOverride !== undefined) org.piSettingsOverride = update.piSettingsOverride;
 		this.bumpConfig();
@@ -492,6 +521,7 @@ export class ControlPlaneService {
 	rotateDeviceToken(device: DeviceRecord): string {
 		const token = newSecretToken("dvt");
 		device.tokenHash = hashToken(token);
+		device.tokenIssuedAt = new Date().toISOString();
 		device.lastSeenAt = new Date().toISOString();
 		this.store.save();
 		this.audit("system", "device_token_rotated", { deviceId: device.deviceId });

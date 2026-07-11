@@ -25,6 +25,21 @@ const MAX_BODY_BYTES = 1_048_576;
 const ENROLL_RATE_LIMIT_PER_MINUTE = 20;
 const enrollBuckets = new Map<string, { windowStart: number; count: number }>();
 
+/**
+ * IP del client per il rate limit: dietro un reverse proxy fidato
+ * (HARNESS_TRUST_PROXY=1) usa il primo hop di X-Forwarded-For, altrimenti
+ * l'IP del socket (evita lo spoofing di XFF quando non c'è un proxy fidato).
+ */
+function clientIp(req: IncomingMessage): string {
+	if (process.env.HARNESS_TRUST_PROXY === "1") {
+		const xff = req.headers["x-forwarded-for"];
+		const value = Array.isArray(xff) ? xff[0] : xff;
+		const first = value?.split(",")[0]?.trim();
+		if (first) return first;
+	}
+	return req.socket.remoteAddress ?? "sconosciuto";
+}
+
 function checkEnrollRateLimit(ip: string): boolean {
 	const now = Date.now();
 	if (enrollBuckets.size > 10_000) enrollBuckets.clear(); // cap difensivo
@@ -87,7 +102,7 @@ async function handle(service: ControlPlaneService, req: IncomingMessage, res: S
 	// ---- API device ---------------------------------------------------------
 
 	if (method === "POST" && path === "/api/enroll") {
-		if (!checkEnrollRateLimit(req.socket.remoteAddress ?? "sconosciuto")) {
+		if (!checkEnrollRateLimit(clientIp(req))) {
 			sendJson(res, 429, { error: "troppi tentativi di enrollment, riprovare tra un minuto" });
 			return;
 		}

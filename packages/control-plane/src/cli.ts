@@ -45,6 +45,7 @@ async function main(): Promise<void> {
 			console.warn("[control-plane] ATTENZIONE: nessun token amministrativo. Esegui prima `harness-cp init`.");
 		}
 		const oidc = loadOidcFromEnv();
+		if (oidc) await startJwksRefresh(oidc);
 		const service = new ControlPlaneService(store, oidc ? { oidc } : {});
 		if (oidc) console.log(`[control-plane] OIDC admin abilitato (issuer ${oidc.issuer})`);
 		const tls = loadTlsFromEnv();
@@ -152,6 +153,48 @@ function loadOidcFromEnv(): import("./service.js").OidcConfig | undefined {
 	if (process.env.HARNESS_OIDC_ROLE_CLAIM) config.roleClaim = process.env.HARNESS_OIDC_ROLE_CLAIM;
 	if (process.env.HARNESS_OIDC_NAME_CLAIM) config.nameClaim = process.env.HARNESS_OIDC_NAME_CLAIM;
 	return config;
+}
+
+/**
+ * Se HARNESS_OIDC_JWKS_URI è impostata, scarica il JWKS del provider e ne
+ * popola le chiavi (convertendo JWK→PEM), con refresh orario: così la rotazione
+ * delle chiavi di firma dell'IdP non richiede aggiornamenti manuali.
+ */
+async function startJwksRefresh(oidc: import("./service.js").OidcConfig): Promise<void> {
+	const uri = process.env.HARNESS_OIDC_JWKS_URI;
+	if (!uri) return;
+	const { createPublicKey } = await import("node:crypto");
+	const refresh = async (): Promise<void> => {
+		try {
+			const res = await fetch(uri, { signal: AbortSignal.timeout(10_000) });
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const jwks = (await res.json()) as { keys?: Record<string, unknown>[] };
+			const keys: import("@harness/shared").JwtVerifyKey[] = [];
+			for (const jwk of jwks.keys ?? []) {
+				const alg = jwk.kty === "RSA" ? "RS256" : jwk.kty === "EC" ? "ES256" : undefined;
+				if (!alg) continue;
+				try {
+					const publicKeyPem = createPublicKey({ key: jwk as never, format: "jwk" })
+						.export({ type: "spki", format: "pem" })
+						.toString();
+					const entry: import("@harness/shared").JwtVerifyKey = { alg, publicKeyPem };
+					if (typeof jwk.kid === "string") entry.kid = jwk.kid;
+					keys.push(entry);
+				} catch {
+					// JWK non convertibile: saltata.
+				}
+			}
+			if (keys.length > 0) {
+				oidc.keys.length = 0;
+				oidc.keys.push(...keys);
+			}
+		} catch (error) {
+			console.warn(`[control-plane] refresh JWKS fallito: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	};
+	await refresh();
+	const timer = setInterval(() => void refresh(), 3_600_000);
+	timer.unref();
 }
 
 main().catch((error) => {
