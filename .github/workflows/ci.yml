@@ -40,3 +40,6 @@ jobs:
       - name: Audit dipendenze di produzione
         run: npm audit --omit=dev
         continue-on-error: true
+      - name: Verifica firme dei pacchetti (supply chain)
+        run: npm audit signatures
+        continue-on-error: true

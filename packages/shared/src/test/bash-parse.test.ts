@@ -84,6 +84,16 @@ test("corpus di bypass: evaluateBashCommand nega tutti i one-liner di esecuzione
 		"env EVIL=1 sh -c id",
 		"ls; node -e 'x'",
 		"true && python -c 'x'",
+		"/usr/bin/env node -e 'x'",
+		"nohup node -e 'x' &",
+		"timeout 5 bash -c id",
+		"cat file | sh",
+		"eval 'rm -rf /'",
+		"exec sh",
+		". ./malScript",
+		"gawk 'BEGIN{system(\"id\")}'",
+		"perl -E 'system(1)'",
+		"deno eval 'x'",
 	];
 	for (const cmd of bypasses) {
 		assert.equal(evaluateBashCommand(bash, cmd).action, "deny", `doveva negare: ${cmd}`);

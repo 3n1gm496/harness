@@ -96,9 +96,10 @@ export class PostgresStateStore implements NormalizedStateStore {
 	private async ensureReady(): Promise<void> {
 		if (this.ready) return;
 		const pg = (await import("pg")).default as unknown as {
-			Pool: new (config: { connectionString: string }) => unknown;
+			Pool: new (config: { connectionString: string; max: number }) => unknown;
 		};
-		this.pool = new pg.Pool({ connectionString: this.connectionString });
+		// Pool limitato: evita di esaurire le connessioni del server sotto carico.
+		this.pool = new pg.Pool({ connectionString: this.connectionString, max: 8 });
 		await this.query(`
 			CREATE TABLE IF NOT EXISTS cp_org (id int PRIMARY KEY DEFAULT 1 CHECK (id = 1), data jsonb NOT NULL);
 			CREATE TABLE IF NOT EXISTS cp_groups (group_id text PRIMARY KEY, data jsonb NOT NULL);
@@ -218,11 +219,11 @@ export class PostgresStateStore implements NormalizedStateStore {
 		};
 		try {
 			await client.query("BEGIN");
-			// Serializza l'append per-stream con lock di riga sulla testa.
-			const head = await client.query(
-				"SELECT seq, head FROM cp_audit_heads WHERE stream_id = $1 FOR UPDATE",
-				[streamId],
-			);
+			// Serializza gli append per-stream con un advisory lock di transazione:
+			// funziona anche al primo append (quando la riga head non esiste ancora
+			// e un FOR UPDATE non bloccherebbe nulla).
+			await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [streamId]);
+			const head = await client.query("SELECT seq, head FROM cp_audit_heads WHERE stream_id = $1", [streamId]);
 			let seq = head.rows.length > 0 ? Number(head.rows[0]?.seq) : 0;
 			let prev = head.rows.length > 0 ? (head.rows[0]?.head as string) : CHAIN_GENESIS;
 			for (const entry of entries) {

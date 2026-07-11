@@ -231,6 +231,7 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
 		"content-type": "application/json; charset=utf-8",
 		"content-length": Buffer.byteLength(body),
 		"cache-control": "no-store",
+		"x-content-type-options": "nosniff",
 	});
 	res.end(body);
 }

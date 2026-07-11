@@ -100,6 +100,35 @@ async function resetPgSchema(url: string): Promise<void> {
 	await s.close();
 }
 
+test("Postgres: append audit concorrenti sullo stesso stream restano integri (live)", { skip: !PG_URL }, async () => {
+	const url = PG_URL as string;
+	await resetPgSchema(url);
+	const a = new PostgresStateStore(url);
+	const b = new PostgresStateStore(url);
+	try {
+		const mkEvent = (i: number) => ({
+			eventId: `e${i}`,
+			deviceId: "dev_x",
+			timestamp: new Date().toISOString(),
+			type: "policy_decision",
+			data: { i },
+		});
+		// Due connessioni appendono 50 eventi ciascuna, in parallelo, allo stesso
+		// stream: la serializzazione per-stream (SELECT FOR UPDATE) deve produrre
+		// una catena unica, integra, con tutti i 100 eventi.
+		const appendsA = Array.from({ length: 20 }, (_, i) => a.appendAudit("dev_x", [mkEvent(i)]));
+		const appendsB = Array.from({ length: 20 }, (_, i) => b.appendAudit("dev_x", [mkEvent(100 + i)]));
+		await Promise.all([...appendsA, ...appendsB]);
+
+		const verify = await a.verifyAudit("dev_x");
+		assert.equal(verify.valid, true);
+		if (verify.valid) assert.equal(verify.entries, 40);
+	} finally {
+		await a.close();
+		await b.close();
+	}
+});
+
 test("Postgres normalizzato: scritture mirate e multi-istanza convergente (live)", { skip: !PG_URL }, async () => {
 	const url = PG_URL as string;
 	await resetPgSchema(url);
