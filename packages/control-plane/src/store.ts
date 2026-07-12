@@ -21,7 +21,8 @@ import {
 	sealPrivateKey,
 	verifyChain,
 } from "@harness/shared";
-import { isNormalized } from "./state-store.js";
+import { isIncremental, isNormalized } from "./state-store.js";
+import type { StateDiff } from "./state-store.js";
 
 /** Confronta due mappe per chiave e invoca upsert sui cambiati, del sui rimossi. */
 function diffMaps<T>(
@@ -209,8 +210,17 @@ export class Store {
 			await backend.save({ state: store.state, signingKeys: store.sealKeys(store.signingKeys) });
 		}
 		store.lastPersisted = store.snapshotStrings(store.state, store.sealKeys(store.signingKeys));
-		// Convergenza multi-istanza: ricarica periodicamente lo stato dal backend.
-		if (isNormalized(backend)) {
+		// Convergenza multi-istanza. Con un backend incrementale il cursore parte
+		// dalla testa del changelog (non si riapplica la storia) e le altre
+		// istanze svegliano questa via LISTEN/NOTIFY; un poll periodico resta come
+		// rete di sicurezza se una notifica va persa. Altrimenti si ricarica
+		// periodicamente l'intero snapshot.
+		if (isIncremental(backend)) {
+			store.changeCursor = await backend.changelogCursor();
+			store.unsubscribe = await backend.onChange(() => void store.refreshFromBackend());
+			store.refreshTimer = setInterval(() => void store.refreshFromBackend(), 5000);
+			store.refreshTimer.unref();
+		} else if (isNormalized(backend)) {
 			store.refreshTimer = setInterval(() => void store.refreshFromBackend(), 2000);
 			store.refreshTimer.unref();
 		}
@@ -244,6 +254,12 @@ export class Store {
 	/** Snapshot dell'ultimo stato persistito, per calcolare i diff mirati. */
 	private lastPersisted: { state: string; signingKeys: string } | undefined;
 	private refreshTimer: NodeJS.Timeout | undefined;
+	/** Cursore del changelog per la sincronizzazione incrementale (backend PG). */
+	private changeCursor = 0;
+	/** Disiscrizione dal LISTEN/NOTIFY del backend incrementale. */
+	private unsubscribe: (() => Promise<void>) | undefined;
+	/** Evita refresh incrementali concorrenti sovrapposti. */
+	private refreshing = false;
 
 	private mirrorNow(): void {
 		if (!this.mirror) return;
@@ -318,18 +334,54 @@ export class Store {
 		return diff;
 	}
 
-	/** Ricarica lo stato dal backend (convergenza multi-istanza). */
+	/**
+	 * Converge sullo stato del backend. Con un backend incrementale applica solo
+	 * i delta dal changelog (dopo aver drenato le scritture locali in volo, così
+	 * il DB riflette già le proprie modifiche); altrimenti ricarica lo snapshot.
+	 */
 	private async refreshFromBackend(): Promise<void> {
-		if (!this.mirror) return;
+		if (!this.mirror || this.refreshing) return;
+		this.refreshing = true;
 		try {
-			const snapshot = await this.mirror.load();
-			if (!snapshot) return;
-			this.state = snapshot.state;
-			this.signingKeys = this.openKeys(snapshot.signingKeys);
-			this.lastPersisted = this.snapshotStrings(this.state, this.sealKeys(this.signingKeys));
+			const backend = this.mirror;
+			if (isIncremental(backend)) {
+				// Drena le scritture write-behind: il DB deve riflettere le modifiche
+				// locali prima di calcolarne il delta, altrimenti un pull le
+				// riapplicherebbe con valori stantii.
+				await this.pending;
+				const { cursor, diff } = await backend.pullDelta(this.changeCursor);
+				if (cursor !== this.changeCursor) {
+					this.applyDiffToState(diff);
+					this.changeCursor = cursor;
+					this.lastPersisted = this.snapshotStrings(this.state, this.sealKeys(this.signingKeys));
+				}
+			} else {
+				const snapshot = await backend.load();
+				if (!snapshot) return;
+				this.state = snapshot.state;
+				this.signingKeys = this.openKeys(snapshot.signingKeys);
+				this.lastPersisted = this.snapshotStrings(this.state, this.sealKeys(this.signingKeys));
+			}
 		} catch (error) {
 			this.lastMirrorError = error instanceof Error ? error.message : String(error);
+		} finally {
+			this.refreshing = false;
 		}
+	}
+
+	/** Fonde un delta del backend nello stato in memoria (sincronizzazione incrementale). */
+	private applyDiffToState(diff: StateDiff): void {
+		if (diff.org) this.state.org = diff.org;
+		for (const g of diff.groupsUpsert) this.state.groups[g.groupId] = g;
+		for (const key of diff.groupsDelete) delete this.state.groups[key];
+		for (const d of diff.devicesUpsert) this.state.devices[d.deviceId] = d;
+		for (const key of diff.devicesDelete) delete this.state.devices[key];
+		for (const [h, t] of diff.adminTokensUpsert) this.state.adminTokens[h] = t;
+		for (const key of diff.adminTokensDelete) delete this.state.adminTokens[key];
+		for (const [h, t] of diff.gatewayTokensUpsert) this.state.gatewayTokens[h] = t;
+		for (const [h, t] of diff.enrollTokensUpsert) this.state.enrollTokens[h] = t;
+		for (const key of diff.enrollTokensDelete) delete this.state.enrollTokens[key];
+		if (diff.signingKeys) this.signingKeys = this.openKeys(diff.signingKeys);
 	}
 
 	/** Attende il completamento delle scritture write-behind verso il backend. */
@@ -339,6 +391,14 @@ export class Store {
 
 	async close(): Promise<void> {
 		if (this.refreshTimer) clearInterval(this.refreshTimer);
+		if (this.unsubscribe) {
+			try {
+				await this.unsubscribe();
+			} catch {
+				// la connessione di LISTEN potrebbe essere già caduta
+			}
+			this.unsubscribe = undefined;
+		}
 		await this.flush();
 		if (this.mirror) await this.mirror.close();
 	}

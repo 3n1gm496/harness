@@ -83,20 +83,14 @@ async function resetPgSchema(url: string): Promise<void> {
 	const s = new PostgresStateStore(url);
 	// biome-ignore lint/suspicious/noExplicitAny: reset schema di test
 	await (s as any).ensureReady();
-	for (const t of [
-		"cp_org",
-		"cp_groups",
-		"cp_devices",
-		"cp_admin_tokens",
-		"cp_gateway_tokens",
-		"cp_enroll_tokens",
-		"cp_signing_keys",
-		"cp_audit_events",
-		"cp_audit_heads",
-	]) {
-		// biome-ignore lint/suspicious/noExplicitAny: query di reset
-		await (s as any).query(`DELETE FROM ${t}`);
-	}
+	// TRUNCATE ... CASCADE azzera anche le sequenze (il cursore del changelog
+	// riparte da zero) e gestisce l'ordine imposto dalle foreign key.
+	// biome-ignore lint/suspicious/noExplicitAny: query di reset
+	await (s as any).query(
+		`TRUNCATE cp_org, cp_groups, cp_devices, cp_admin_tokens, cp_gateway_tokens,
+			cp_enroll_tokens, cp_signing_keys, cp_audit_events, cp_audit_heads, cp_changelog
+		 RESTART IDENTITY CASCADE`,
+	);
 	await s.close();
 }
 
@@ -179,5 +173,82 @@ test("Postgres normalizzato: scritture mirate e multi-istanza convergente (live)
 		await storeB.close();
 		rmSync(dirA, { recursive: true, force: true });
 		rmSync(dirB, { recursive: true, force: true });
+	}
+});
+
+test("Postgres incrementale: pullDelta consegna solo i cambi e NOTIFY sveglia i listener (live)", { skip: !PG_URL }, async () => {
+	const url = PG_URL as string;
+	await resetPgSchema(url);
+	const writer = new PostgresStateStore(url);
+	const reader = new PostgresStateStore(url);
+	try {
+		// Cursore iniziale a zero (changelog vuoto dopo il reset).
+		assert.equal(await reader.changelogCursor(), 0);
+
+		// Un NOTIFY del writer sveglia il listener del reader.
+		let notified = 0;
+		const unsubscribe = await reader.onChange(() => {
+			notified += 1;
+		});
+
+		await writer.applyDiff({
+			org: {
+				orgId: "org_1",
+				name: "acme",
+				configVersion: 1,
+				killSwitch: false,
+				configTtlMinutes: 60,
+				deviceTokenMaxAgeDays: 90,
+				requireDeviceCert: false,
+				policyOverride: {},
+				piSettingsOverride: {},
+			},
+			groupsUpsert: [{ groupId: "grp_1", name: "prod", killSwitch: false, policyOverride: {}, piSettingsOverride: {} }],
+			groupsDelete: [],
+			devicesUpsert: [],
+			devicesDelete: [],
+			adminTokensUpsert: [],
+			adminTokensDelete: [],
+			gatewayTokensUpsert: [],
+			enrollTokensUpsert: [],
+			enrollTokensDelete: [],
+		});
+
+		// pullDelta dal cursore 0 restituisce esattamente org + gruppo, e avanza.
+		const first = await reader.pullDelta(0);
+		assert.ok(first.cursor > 0);
+		assert.equal(first.diff.org?.name, "acme");
+		assert.equal(first.diff.groupsUpsert.length, 1);
+		assert.equal(first.diff.devicesUpsert.length, 0);
+
+		// Dal nuovo cursore non c'è altro delta (nessuna riscrittura completa).
+		const empty = await reader.pullDelta(first.cursor);
+		assert.equal(empty.cursor, first.cursor);
+		assert.equal(empty.diff.groupsUpsert.length, 0);
+
+		// Una seconda scrittura mirata (solo il gruppo) appare come singolo delta.
+		await writer.applyDiff({
+			groupsUpsert: [{ groupId: "grp_1", name: "prod-2", killSwitch: true, policyOverride: {}, piSettingsOverride: {} }],
+			groupsDelete: [],
+			devicesUpsert: [],
+			devicesDelete: [],
+			adminTokensUpsert: [],
+			adminTokensDelete: [],
+			gatewayTokensUpsert: [],
+			enrollTokensUpsert: [],
+			enrollTokensDelete: [],
+		});
+		const second = await reader.pullDelta(first.cursor);
+		assert.equal(second.diff.groupsUpsert.length, 1);
+		assert.equal(second.diff.groupsUpsert[0]?.name, "prod-2");
+		assert.equal(second.diff.org, undefined, "l'org non è cambiato: non deve comparire nel delta");
+
+		// Il NOTIFY è arrivato almeno una volta (consegna asincrona: piccola attesa).
+		await new Promise((r) => setTimeout(r, 100));
+		assert.ok(notified >= 1, "il listener LISTEN/NOTIFY deve essere stato svegliato");
+		await unsubscribe();
+	} finally {
+		await writer.close();
+		await reader.close();
 	}
 });

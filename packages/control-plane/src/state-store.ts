@@ -51,7 +51,8 @@ export interface DurableStateStore {
  */
 export interface NormalizedStateStore extends DurableStateStore {
 	readonly normalized: true;
-	applyDiff(diff: StateDiff): Promise<void>;
+	/** Applica un diff mirato e ritorna il cursore del changelog dopo la scrittura. */
+	applyDiff(diff: StateDiff): Promise<number>;
 	appendAudit(streamId: string, entries: unknown[]): Promise<void>;
 	readAudit(streamId: string, limit: number): Promise<unknown[]>;
 	verifyAudit(streamId: string): Promise<ChainVerification>;
@@ -60,8 +61,27 @@ export interface NormalizedStateStore extends DurableStateStore {
 	): Promise<{ admin: { head: string; entries: number }; devices: { deviceId: string; head: string; entries: number }[] }>;
 }
 
+/**
+ * Backend con sincronizzazione incrementale: invece di ricaricare l'intero
+ * snapshot, le istanze applicano solo i delta dal changelog e vengono svegliate
+ * via LISTEN/NOTIFY. Riduce drasticamente l'I/O di convergenza multi-istanza.
+ */
+export interface IncrementalStateStore extends NormalizedStateStore {
+	readonly incremental: true;
+	/** Ultimo id del changelog (cursore iniziale, per non riapplicare la storia). */
+	changelogCursor(): Promise<number>;
+	/** Delta accumulato dopo `sinceId`, come StateDiff pronto da fondere in memoria. */
+	pullDelta(sinceId: number): Promise<{ cursor: number; diff: StateDiff }>;
+	/** Registra un handler svegliato dagli eventi NOTIFY; ritorna l'unsubscribe. */
+	onChange(handler: () => void): Promise<() => Promise<void>>;
+}
+
 export function isNormalized(store: DurableStateStore): store is NormalizedStateStore {
 	return (store as NormalizedStateStore).normalized === true;
+}
+
+export function isIncremental(store: DurableStateStore): store is IncrementalStateStore {
+	return (store as IncrementalStateStore).incremental === true;
 }
 
 /** Backend in memoria snapshot-based, per test. */
@@ -77,18 +97,131 @@ export class InMemoryStateStore implements DurableStateStore {
 }
 
 const ADMIN_STREAM = "admin";
+const CHANGE_CHANNEL = "cp_changes";
+
+/** Entità del changelog (per la sincronizzazione incrementale). */
+type EntityKind = "org" | "group" | "device" | "admin_token" | "gateway_token" | "enroll_token" | "signing_keys";
+
+// biome-ignore lint/suspicious/noExplicitAny: righe grezze da pg
+type Row = Record<string, any>;
+
+/** Converte un valore timestamptz (Date o stringa) in ISO, o undefined se null. */
+function iso(value: unknown): string | undefined {
+	if (value === null || value === undefined) return undefined;
+	if (value instanceof Date) return value.toISOString();
+	return String(value);
+}
+
+// ---- Mappatura record ⇄ colonne tipizzate ---------------------------------
+
+function orgToParams(o: OrgRecord): unknown[] {
+	return [
+		o.orgId,
+		o.name,
+		o.configVersion,
+		o.killSwitch,
+		o.configTtlMinutes,
+		o.deviceTokenMaxAgeDays,
+		o.requireDeviceCert,
+		JSON.stringify(o.policyOverride),
+		JSON.stringify(o.piSettingsOverride),
+	];
+}
+function rowToOrg(r: Row): OrgRecord {
+	return {
+		orgId: r.org_id,
+		name: r.name,
+		configVersion: Number(r.config_version),
+		killSwitch: r.kill_switch,
+		configTtlMinutes: Number(r.config_ttl_minutes),
+		deviceTokenMaxAgeDays: Number(r.device_token_max_age_days),
+		requireDeviceCert: r.require_device_cert,
+		policyOverride: r.policy_override,
+		piSettingsOverride: r.pi_settings_override,
+	};
+}
+
+function rowToGroup(r: Row): GroupRecord {
+	return {
+		groupId: r.group_id,
+		name: r.name,
+		killSwitch: r.kill_switch,
+		policyOverride: r.policy_override,
+		piSettingsOverride: r.pi_settings_override,
+	};
+}
+
+function rowToDevice(r: Row): DeviceRecord {
+	const d: DeviceRecord = {
+		deviceId: r.device_id,
+		name: r.name,
+		groupId: r.group_id,
+		tokenHash: r.token_hash,
+		enrolledAt: iso(r.enrolled_at) as string,
+		killSwitch: r.kill_switch,
+		revoked: r.revoked,
+		policyOverride: r.policy_override,
+		piSettingsOverride: r.pi_settings_override,
+	};
+	const tokenIssuedAt = iso(r.token_issued_at);
+	if (tokenIssuedAt) d.tokenIssuedAt = tokenIssuedAt;
+	const lastSeenAt = iso(r.last_seen_at);
+	if (lastSeenAt) d.lastSeenAt = lastSeenAt;
+	if (r.last_config_version !== null && r.last_config_version !== undefined) {
+		d.lastConfigVersion = Number(r.last_config_version);
+	}
+	if (r.cert_fingerprint) d.certFingerprint = r.cert_fingerprint;
+	return d;
+}
+
+function rowToEnroll(r: Row): EnrollTokenRecord {
+	const e: EnrollTokenRecord = {
+		groupId: r.group_id,
+		createdAt: iso(r.created_at) as string,
+		expiresAt: iso(r.expires_at) as string,
+	};
+	if (r.used_by) e.usedBy = r.used_by;
+	return e;
+}
+
+function rowToAdmin(r: Row): AdminTokenRecord {
+	const a: AdminTokenRecord = { name: r.name, role: r.role, createdAt: iso(r.created_at) as string };
+	const expiresAt = iso(r.expires_at);
+	if (expiresAt) a.expiresAt = expiresAt;
+	return a;
+}
+
+function rowToGateway(r: Row): GatewayTokenRecord {
+	return { name: r.name, createdAt: iso(r.created_at) as string };
+}
+
+function rowToSigningKey(r: Row): SigningKeyRecord {
+	return {
+		keyId: r.key_id,
+		publicKeyPem: r.public_key_pem,
+		privateKeyPem: r.private_key_pem,
+		createdAt: iso(r.created_at) as string,
+		active: r.active,
+	};
+}
 
 /**
- * Backend Postgres a schema normalizzato: una riga per entità (org, gruppi,
- * device, token, chiavi) con payload JSONB, e audit centralizzato in
- * `audit_events` con testa di catena per-stream serializzata via lock di riga.
+ * Backend Postgres a schema normalizzato REALE: una tabella per entità con
+ * colonne tipizzate, chiavi esterne e indici (i JSONB restano solo per i
+ * sotto-documenti di policy, genuinamente schemaless). L'audit è centralizzato
+ * in `cp_audit_events` con testa di catena per-stream serializzata via advisory
+ * lock. Un changelog + LISTEN/NOTIFY abilitano la sincronizzazione incrementale
+ * multi-istanza senza ricaricare l'intero stato.
  *
  * Richiede la dipendenza opzionale `pg`. Import lazy.
  */
-export class PostgresStateStore implements NormalizedStateStore {
+export class PostgresStateStore implements IncrementalStateStore {
 	readonly normalized = true as const;
+	readonly incremental = true as const;
 	// biome-ignore lint/suspicious/noExplicitAny: il tipo del pool arriva da pg (dipendenza opzionale)
 	private pool: any;
+	// biome-ignore lint/suspicious/noExplicitAny: client dedicato per LISTEN/NOTIFY
+	private listenClient: any;
 	private ready = false;
 
 	constructor(private readonly connectionString: string) {}
@@ -101,51 +234,102 @@ export class PostgresStateStore implements NormalizedStateStore {
 		// Pool limitato: evita di esaurire le connessioni del server sotto carico.
 		this.pool = new pg.Pool({ connectionString: this.connectionString, max: 8 });
 		await this.query(`
-			CREATE TABLE IF NOT EXISTS cp_org (id int PRIMARY KEY DEFAULT 1 CHECK (id = 1), data jsonb NOT NULL);
-			CREATE TABLE IF NOT EXISTS cp_groups (group_id text PRIMARY KEY, data jsonb NOT NULL);
-			CREATE TABLE IF NOT EXISTS cp_devices (device_id text PRIMARY KEY, data jsonb NOT NULL);
-			CREATE TABLE IF NOT EXISTS cp_admin_tokens (token_hash text PRIMARY KEY, data jsonb NOT NULL);
-			CREATE TABLE IF NOT EXISTS cp_gateway_tokens (token_hash text PRIMARY KEY, data jsonb NOT NULL);
-			CREATE TABLE IF NOT EXISTS cp_enroll_tokens (token_hash text PRIMARY KEY, data jsonb NOT NULL);
-			CREATE TABLE IF NOT EXISTS cp_signing_keys (key_id text PRIMARY KEY, data jsonb NOT NULL);
+			CREATE TABLE IF NOT EXISTS cp_org (
+				id int PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+				org_id text NOT NULL,
+				name text NOT NULL,
+				config_version int NOT NULL,
+				kill_switch boolean NOT NULL,
+				config_ttl_minutes int NOT NULL,
+				device_token_max_age_days int NOT NULL,
+				require_device_cert boolean NOT NULL,
+				policy_override jsonb NOT NULL,
+				pi_settings_override jsonb NOT NULL);
+			CREATE TABLE IF NOT EXISTS cp_groups (
+				group_id text PRIMARY KEY,
+				name text NOT NULL,
+				kill_switch boolean NOT NULL,
+				policy_override jsonb NOT NULL,
+				pi_settings_override jsonb NOT NULL);
+			CREATE TABLE IF NOT EXISTS cp_devices (
+				device_id text PRIMARY KEY,
+				name text NOT NULL,
+				group_id text NOT NULL REFERENCES cp_groups(group_id),
+				token_hash text NOT NULL UNIQUE,
+				token_issued_at timestamptz,
+				enrolled_at timestamptz NOT NULL,
+				last_seen_at timestamptz,
+				last_config_version int,
+				kill_switch boolean NOT NULL,
+				revoked boolean NOT NULL,
+				cert_fingerprint text,
+				policy_override jsonb NOT NULL,
+				pi_settings_override jsonb NOT NULL);
+			CREATE INDEX IF NOT EXISTS cp_devices_group_id_idx ON cp_devices(group_id);
+			CREATE TABLE IF NOT EXISTS cp_admin_tokens (
+				token_hash text PRIMARY KEY,
+				name text NOT NULL,
+				role text NOT NULL,
+				created_at timestamptz NOT NULL,
+				expires_at timestamptz);
+			CREATE TABLE IF NOT EXISTS cp_gateway_tokens (
+				token_hash text PRIMARY KEY,
+				name text NOT NULL,
+				created_at timestamptz NOT NULL);
+			CREATE TABLE IF NOT EXISTS cp_enroll_tokens (
+				token_hash text PRIMARY KEY,
+				group_id text NOT NULL,
+				created_at timestamptz NOT NULL,
+				expires_at timestamptz NOT NULL,
+				used_by text);
+			CREATE INDEX IF NOT EXISTS cp_enroll_expires_idx ON cp_enroll_tokens(expires_at);
+			CREATE TABLE IF NOT EXISTS cp_signing_keys (
+				key_id text PRIMARY KEY,
+				public_key_pem text NOT NULL,
+				private_key_pem text NOT NULL,
+				created_at timestamptz NOT NULL,
+				active boolean NOT NULL);
 			CREATE TABLE IF NOT EXISTS cp_audit_events (
 				stream_id text NOT NULL, seq bigint NOT NULL, prev_hash text NOT NULL, hash text NOT NULL,
 				entry text NOT NULL, ts timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (stream_id, seq));
 			CREATE TABLE IF NOT EXISTS cp_audit_heads (stream_id text PRIMARY KEY, seq bigint NOT NULL, head text NOT NULL);
+			CREATE TABLE IF NOT EXISTS cp_changelog (
+				id bigserial PRIMARY KEY, entity text NOT NULL, entity_key text NOT NULL, op text NOT NULL,
+				ts timestamptz NOT NULL DEFAULT now());
 		`);
 		this.ready = true;
 	}
 
-	private async query(text: string, params: unknown[] = []): Promise<{ rows: Record<string, unknown>[] }> {
-		return this.pool.query(text, params) as Promise<{ rows: Record<string, unknown>[] }>;
+	private async query(text: string, params: unknown[] = []): Promise<{ rows: Row[] }> {
+		return this.pool.query(text, params) as Promise<{ rows: Row[] }>;
 	}
 
 	async load(): Promise<StateSnapshot | null> {
 		await this.ensureReady();
-		const org = await this.query("SELECT data FROM cp_org WHERE id = 1");
+		const org = await this.query("SELECT * FROM cp_org WHERE id = 1");
 		if (org.rows.length === 0) return null;
 		const [groups, devices, adminTokens, gatewayTokens, enrollTokens, signingKeys] = await Promise.all([
-			this.query("SELECT group_id, data FROM cp_groups"),
-			this.query("SELECT device_id, data FROM cp_devices"),
-			this.query("SELECT token_hash, data FROM cp_admin_tokens"),
-			this.query("SELECT token_hash, data FROM cp_gateway_tokens"),
-			this.query("SELECT token_hash, data FROM cp_enroll_tokens"),
-			this.query("SELECT data FROM cp_signing_keys"),
+			this.query("SELECT * FROM cp_groups"),
+			this.query("SELECT * FROM cp_devices"),
+			this.query("SELECT * FROM cp_admin_tokens"),
+			this.query("SELECT * FROM cp_gateway_tokens"),
+			this.query("SELECT * FROM cp_enroll_tokens"),
+			this.query("SELECT * FROM cp_signing_keys"),
 		]);
-		const byKey = <T>(rows: Record<string, unknown>[], key: string): Record<string, T> => {
+		const index = <T>(rows: Row[], key: string, map: (r: Row) => T): Record<string, T> => {
 			const out: Record<string, T> = {};
-			for (const row of rows) out[row[key] as string] = row.data as T;
+			for (const row of rows) out[row[key] as string] = map(row);
 			return out;
 		};
 		const state: ControlPlaneState = {
-			org: org.rows[0]?.data as OrgRecord,
-			groups: byKey<GroupRecord>(groups.rows, "group_id"),
-			devices: byKey<DeviceRecord>(devices.rows, "device_id"),
-			adminTokens: byKey<AdminTokenRecord>(adminTokens.rows, "token_hash"),
-			gatewayTokens: byKey<GatewayTokenRecord>(gatewayTokens.rows, "token_hash"),
-			enrollTokens: byKey<EnrollTokenRecord>(enrollTokens.rows, "token_hash"),
+			org: rowToOrg(org.rows[0] as Row),
+			groups: index(groups.rows, "group_id", rowToGroup),
+			devices: index(devices.rows, "device_id", rowToDevice),
+			adminTokens: index(adminTokens.rows, "token_hash", rowToAdmin),
+			gatewayTokens: index(gatewayTokens.rows, "token_hash", rowToGateway),
+			enrollTokens: index(enrollTokens.rows, "token_hash", rowToEnroll),
 		};
-		return { state, signingKeys: signingKeys.rows.map((r) => r.data as SigningKeyRecord) };
+		return { state, signingKeys: signingKeys.rows.map(rowToSigningKey) };
 	}
 
 	/** Salvataggio iniziale completo (bootstrap del DB dallo stato locale). */
@@ -165,47 +349,261 @@ export class PostgresStateStore implements NormalizedStateStore {
 		});
 	}
 
-	async applyDiff(diff: StateDiff): Promise<void> {
+	/**
+	 * Applica un diff in un'unica transazione, con ordine consapevole delle FK
+	 * (gruppi prima dei device negli upsert, device prima dei gruppi nelle
+	 * cancellazioni), registra il changelog e sveglia le altre istanze con
+	 * NOTIFY. Ritorna il cursore del changelog dopo la scrittura.
+	 */
+	async applyDiff(diff: StateDiff): Promise<number> {
 		await this.ensureReady();
-		const stmts: Promise<unknown>[] = [];
-		if (diff.org) {
-			stmts.push(
-				this.query(
-					"INSERT INTO cp_org (id, data) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET data = $1",
-					[JSON.stringify(diff.org)],
-				),
-			);
-		}
-		const upsert = (table: string, keyCol: string, key: string, data: unknown) =>
-			this.query(
-				`INSERT INTO ${table} (${keyCol}, data) VALUES ($1, $2) ON CONFLICT (${keyCol}) DO UPDATE SET data = $2`,
-				[key, JSON.stringify(data)],
-			);
-		const del = (table: string, keyCol: string, keys: string[]) =>
-			keys.length > 0 ? this.query(`DELETE FROM ${table} WHERE ${keyCol} = ANY($1)`, [keys]) : Promise.resolve();
+		const client = await this.connect();
+		try {
+			await client.query("BEGIN");
+			const changes: [EntityKind, string, "upsert" | "delete"][] = [];
 
-		for (const g of diff.groupsUpsert) stmts.push(upsert("cp_groups", "group_id", g.groupId, g));
-		for (const d of diff.devicesUpsert) stmts.push(upsert("cp_devices", "device_id", d.deviceId, d));
-		for (const [h, t] of diff.adminTokensUpsert) stmts.push(upsert("cp_admin_tokens", "token_hash", h, t));
-		for (const [h, t] of diff.gatewayTokensUpsert) stmts.push(upsert("cp_gateway_tokens", "token_hash", h, t));
-		for (const [h, t] of diff.enrollTokensUpsert) stmts.push(upsert("cp_enroll_tokens", "token_hash", h, t));
-		stmts.push(del("cp_groups", "group_id", diff.groupsDelete));
-		stmts.push(del("cp_devices", "device_id", diff.devicesDelete));
-		stmts.push(del("cp_admin_tokens", "token_hash", diff.adminTokensDelete));
-		stmts.push(del("cp_enroll_tokens", "token_hash", diff.enrollTokensDelete));
-		if (diff.signingKeys) {
-			// Sostituzione atomica del set chiavi.
-			stmts.push(
-				this.query("DELETE FROM cp_signing_keys").then(() =>
-					Promise.all(
-						(diff.signingKeys as SigningKeyRecord[]).map((k) =>
-							upsert("cp_signing_keys", "key_id", k.keyId, k),
-						),
-					),
-				),
-			);
+			if (diff.org) {
+				await client.query(
+					`INSERT INTO cp_org (id, org_id, name, config_version, kill_switch, config_ttl_minutes,
+						device_token_max_age_days, require_device_cert, policy_override, pi_settings_override)
+					 VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9)
+					 ON CONFLICT (id) DO UPDATE SET org_id=$1, name=$2, config_version=$3, kill_switch=$4,
+						config_ttl_minutes=$5, device_token_max_age_days=$6, require_device_cert=$7,
+						policy_override=$8, pi_settings_override=$9`,
+					orgToParams(diff.org),
+				);
+				changes.push(["org", "", "upsert"]);
+			}
+			// Gruppi upsert prima dei device (FK device.group_id → groups).
+			for (const g of diff.groupsUpsert) {
+				await client.query(
+					`INSERT INTO cp_groups (group_id, name, kill_switch, policy_override, pi_settings_override)
+					 VALUES ($1,$2,$3,$4,$5)
+					 ON CONFLICT (group_id) DO UPDATE SET name=$2, kill_switch=$3, policy_override=$4, pi_settings_override=$5`,
+					[g.groupId, g.name, g.killSwitch, JSON.stringify(g.policyOverride), JSON.stringify(g.piSettingsOverride)],
+				);
+				changes.push(["group", g.groupId, "upsert"]);
+			}
+			for (const d of diff.devicesUpsert) {
+				await client.query(
+					`INSERT INTO cp_devices (device_id, name, group_id, token_hash, token_issued_at, enrolled_at,
+						last_seen_at, last_config_version, kill_switch, revoked, cert_fingerprint,
+						policy_override, pi_settings_override)
+					 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+					 ON CONFLICT (device_id) DO UPDATE SET name=$2, group_id=$3, token_hash=$4, token_issued_at=$5,
+						enrolled_at=$6, last_seen_at=$7, last_config_version=$8, kill_switch=$9, revoked=$10,
+						cert_fingerprint=$11, policy_override=$12, pi_settings_override=$13`,
+					[
+						d.deviceId,
+						d.name,
+						d.groupId,
+						d.tokenHash,
+						d.tokenIssuedAt ?? null,
+						d.enrolledAt,
+						d.lastSeenAt ?? null,
+						d.lastConfigVersion ?? null,
+						d.killSwitch,
+						d.revoked,
+						d.certFingerprint ?? null,
+						JSON.stringify(d.policyOverride),
+						JSON.stringify(d.piSettingsOverride),
+					],
+				);
+				changes.push(["device", d.deviceId, "upsert"]);
+			}
+			for (const [h, t] of diff.adminTokensUpsert) {
+				await client.query(
+					`INSERT INTO cp_admin_tokens (token_hash, name, role, created_at, expires_at)
+					 VALUES ($1,$2,$3,$4,$5)
+					 ON CONFLICT (token_hash) DO UPDATE SET name=$2, role=$3, created_at=$4, expires_at=$5`,
+					[h, t.name, t.role, t.createdAt, t.expiresAt ?? null],
+				);
+				changes.push(["admin_token", h, "upsert"]);
+			}
+			for (const [h, t] of diff.gatewayTokensUpsert) {
+				await client.query(
+					`INSERT INTO cp_gateway_tokens (token_hash, name, created_at) VALUES ($1,$2,$3)
+					 ON CONFLICT (token_hash) DO UPDATE SET name=$2, created_at=$3`,
+					[h, t.name, t.createdAt],
+				);
+				changes.push(["gateway_token", h, "upsert"]);
+			}
+			for (const [h, t] of diff.enrollTokensUpsert) {
+				await client.query(
+					`INSERT INTO cp_enroll_tokens (token_hash, group_id, created_at, expires_at, used_by)
+					 VALUES ($1,$2,$3,$4,$5)
+					 ON CONFLICT (token_hash) DO UPDATE SET group_id=$2, created_at=$3, expires_at=$4, used_by=$5`,
+					[h, t.groupId, t.createdAt, t.expiresAt, t.usedBy ?? null],
+				);
+				changes.push(["enroll_token", h, "upsert"]);
+			}
+			// Cancellazioni: device prima dei gruppi (FK).
+			for (const key of diff.devicesDelete) {
+				await client.query("DELETE FROM cp_devices WHERE device_id = $1", [key]);
+				changes.push(["device", key, "delete"]);
+			}
+			for (const key of diff.adminTokensDelete) {
+				await client.query("DELETE FROM cp_admin_tokens WHERE token_hash = $1", [key]);
+				changes.push(["admin_token", key, "delete"]);
+			}
+			for (const key of diff.enrollTokensDelete) {
+				await client.query("DELETE FROM cp_enroll_tokens WHERE token_hash = $1", [key]);
+				changes.push(["enroll_token", key, "delete"]);
+			}
+			for (const key of diff.groupsDelete) {
+				await client.query("DELETE FROM cp_groups WHERE group_id = $1", [key]);
+				changes.push(["group", key, "delete"]);
+			}
+			if (diff.signingKeys) {
+				await client.query("DELETE FROM cp_signing_keys");
+				for (const k of diff.signingKeys) {
+					await client.query(
+						`INSERT INTO cp_signing_keys (key_id, public_key_pem, private_key_pem, created_at, active)
+						 VALUES ($1,$2,$3,$4,$5)`,
+						[k.keyId, k.publicKeyPem, k.privateKeyPem, k.createdAt, k.active],
+					);
+				}
+				changes.push(["signing_keys", "", "upsert"]);
+			}
+
+			let cursor = 0;
+			if (changes.length > 0) {
+				const values: string[] = [];
+				const params: unknown[] = [];
+				changes.forEach((c, i) => {
+					values.push(`($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`);
+					params.push(c[0], c[1], c[2]);
+				});
+				const inserted = await client.query(
+					`INSERT INTO cp_changelog (entity, entity_key, op) VALUES ${values.join(",")} RETURNING id`,
+					params,
+				);
+				cursor = Math.max(...inserted.rows.map((r) => Number(r.id)));
+				await client.query(`NOTIFY ${CHANGE_CHANNEL}`);
+			} else {
+				const max = await client.query("SELECT COALESCE(MAX(id),0) AS id FROM cp_changelog");
+				cursor = Number(max.rows[0]?.id ?? 0);
+			}
+			await client.query("COMMIT");
+			return cursor;
+		} catch (error) {
+			await client.query("ROLLBACK");
+			throw error;
+		} finally {
+			client.release();
 		}
-		await Promise.all(stmts);
+	}
+
+	// ---- Sincronizzazione incrementale --------------------------------------
+
+	async changelogCursor(): Promise<number> {
+		await this.ensureReady();
+		const max = await this.query("SELECT COALESCE(MAX(id),0) AS id FROM cp_changelog");
+		return Number(max.rows[0]?.id ?? 0);
+	}
+
+	async pullDelta(sinceId: number): Promise<{ cursor: number; diff: StateDiff }> {
+		await this.ensureReady();
+		const diff: StateDiff = {
+			groupsUpsert: [],
+			groupsDelete: [],
+			devicesUpsert: [],
+			devicesDelete: [],
+			adminTokensUpsert: [],
+			adminTokensDelete: [],
+			gatewayTokensUpsert: [],
+			enrollTokensUpsert: [],
+			enrollTokensDelete: [],
+		};
+		const rows = (
+			await this.query(
+				"SELECT id, entity, entity_key, op FROM cp_changelog WHERE id > $1 ORDER BY id ASC",
+				[sinceId],
+			)
+		).rows;
+		if (rows.length === 0) return { cursor: sinceId, diff };
+
+		// Ultima operazione per (entità, chiave): comprime i cambi ripetuti.
+		const latest = new Map<string, { entity: EntityKind; key: string; op: string }>();
+		let cursor = sinceId;
+		for (const r of rows) {
+			cursor = Math.max(cursor, Number(r.id));
+			latest.set(`${r.entity} ${r.entity_key}`, { entity: r.entity, key: r.entity_key, op: r.op });
+		}
+
+		const upsertKeys: Record<string, string[]> = { group: [], device: [], admin_token: [], gateway_token: [], enroll_token: [] };
+		let orgChanged = false;
+		let signingChanged = false;
+		for (const { entity, key, op } of latest.values()) {
+			if (entity === "org") orgChanged = true;
+			else if (entity === "signing_keys") signingChanged = true;
+			else if (op === "delete") {
+				if (entity === "group") diff.groupsDelete.push(key);
+				else if (entity === "device") diff.devicesDelete.push(key);
+				else if (entity === "admin_token") diff.adminTokensDelete.push(key);
+				else if (entity === "enroll_token") diff.enrollTokensDelete.push(key);
+			} else {
+				upsertKeys[entity]?.push(key);
+			}
+		}
+
+		if (orgChanged) {
+			const org = await this.query("SELECT * FROM cp_org WHERE id = 1");
+			if (org.rows[0]) diff.org = rowToOrg(org.rows[0]);
+		}
+		if (signingChanged) {
+			const keys = await this.query("SELECT * FROM cp_signing_keys");
+			diff.signingKeys = keys.rows.map(rowToSigningKey);
+		}
+		if (upsertKeys.group!.length > 0) {
+			const r = await this.query("SELECT * FROM cp_groups WHERE group_id = ANY($1)", [upsertKeys.group]);
+			diff.groupsUpsert = r.rows.map(rowToGroup);
+		}
+		if (upsertKeys.device!.length > 0) {
+			const r = await this.query("SELECT * FROM cp_devices WHERE device_id = ANY($1)", [upsertKeys.device]);
+			diff.devicesUpsert = r.rows.map(rowToDevice);
+		}
+		if (upsertKeys.admin_token!.length > 0) {
+			const r = await this.query("SELECT * FROM cp_admin_tokens WHERE token_hash = ANY($1)", [upsertKeys.admin_token]);
+			diff.adminTokensUpsert = r.rows.map((row) => [row.token_hash as string, rowToAdmin(row)]);
+		}
+		if (upsertKeys.gateway_token!.length > 0) {
+			const r = await this.query("SELECT * FROM cp_gateway_tokens WHERE token_hash = ANY($1)", [upsertKeys.gateway_token]);
+			diff.gatewayTokensUpsert = r.rows.map((row) => [row.token_hash as string, rowToGateway(row)]);
+		}
+		if (upsertKeys.enroll_token!.length > 0) {
+			const r = await this.query("SELECT * FROM cp_enroll_tokens WHERE token_hash = ANY($1)", [upsertKeys.enroll_token]);
+			diff.enrollTokensUpsert = r.rows.map((row) => [row.token_hash as string, rowToEnroll(row)]);
+		}
+		return { cursor, diff };
+	}
+
+	async onChange(handler: () => void): Promise<() => Promise<void>> {
+		await this.ensureReady();
+		const client = await this.connect();
+		this.listenClient = client;
+		client.on("notification", () => handler());
+		// Se la connessione dedicata cade, non deve abbattere il processo: il poll
+		// periodico del chiamante resta come rete di sicurezza.
+		client.on("error", () => {});
+		await client.query(`LISTEN ${CHANGE_CHANNEL}`);
+		return async () => {
+			try {
+				await client.query(`UNLISTEN ${CHANGE_CHANNEL}`);
+			} finally {
+				client.release();
+				this.listenClient = undefined;
+			}
+		};
+	}
+
+	private async connect(): Promise<{
+		query: (t: string, p?: unknown[]) => Promise<{ rows: Row[] }>;
+		on: (event: string, cb: (...args: unknown[]) => void) => void;
+		release: () => void;
+	}> {
+		await this.ensureReady();
+		return this.pool.connect();
 	}
 
 	// ---- Audit centralizzato -------------------------------------------------
@@ -213,10 +611,7 @@ export class PostgresStateStore implements NormalizedStateStore {
 	async appendAudit(streamId: string, entries: unknown[]): Promise<void> {
 		if (entries.length === 0) return;
 		await this.ensureReady();
-		const client = (await this.pool.connect()) as {
-			query: (t: string, p?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
-			release: () => void;
-		};
+		const client = await this.connect();
 		try {
 			await client.query("BEGIN");
 			// Serializza gli append per-stream con un advisory lock di transazione:
@@ -287,6 +682,14 @@ export class PostgresStateStore implements NormalizedStateStore {
 	}
 
 	async close(): Promise<void> {
+		if (this.listenClient) {
+			try {
+				this.listenClient.release();
+			} catch {
+				// la connessione potrebbe essere già chiusa
+			}
+			this.listenClient = undefined;
+		}
 		if (this.pool) await this.pool.end();
 	}
 }
