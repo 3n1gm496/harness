@@ -1,12 +1,11 @@
-import { readFileSync } from "node:fs";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { peerCertFingerprint } from "@harness/shared";
 import type { ControlPlaneService } from "./service.js";
-import { ServiceError } from "./service.js";
+import { ServiceError } from "./services/context.js";
+import { type CompiledRoute, type RouteContext, compileRoutes, matchRoute } from "./http-router.js";
+import { buildRoutes } from "./routes.js";
 
 export interface ControlPlaneServerOptions {
 	/** Certificato e chiave PEM: se presenti il server parla HTTPS con HSTS. */
@@ -18,49 +17,17 @@ export interface ControlPlaneServerOptions {
 const MAX_BODY_BYTES = 1_048_576;
 
 /**
- * Rate limit per-IP sull'enrollment: i token hanno 256 bit di entropia e sono
- * monouso, quindi il brute force è impraticabile, ma un endpoint di
- * autenticazione non va comunque lasciato senza freni.
- */
-const ENROLL_RATE_LIMIT_PER_MINUTE = 20;
-const enrollBuckets = new Map<string, { windowStart: number; count: number }>();
-
-/**
- * IP del client per il rate limit: dietro un reverse proxy fidato
- * (HARNESS_TRUST_PROXY=1) usa il primo hop di X-Forwarded-For, altrimenti
- * l'IP del socket (evita lo spoofing di XFF quando non c'è un proxy fidato).
- */
-function clientIp(req: IncomingMessage): string {
-	if (process.env.HARNESS_TRUST_PROXY === "1") {
-		const xff = req.headers["x-forwarded-for"];
-		const value = Array.isArray(xff) ? xff[0] : xff;
-		const first = value?.split(",")[0]?.trim();
-		if (first) return first;
-	}
-	return req.socket.remoteAddress ?? "sconosciuto";
-}
-
-function checkEnrollRateLimit(ip: string): boolean {
-	const now = Date.now();
-	if (enrollBuckets.size > 10_000) enrollBuckets.clear(); // cap difensivo
-	const bucket = enrollBuckets.get(ip);
-	if (!bucket || now - bucket.windowStart >= 60_000) {
-		enrollBuckets.set(ip, { windowStart: now, count: 1 });
-		return true;
-	}
-	bucket.count += 1;
-	return bucket.count <= ENROLL_RATE_LIMIT_PER_MINUTE;
-}
-
-/**
- * Server HTTP del control plane, senza dipendenze esterne.
- * Espone le API device (/api/enroll, /api/device/*), le API amministrative
- * (/api/admin/*), l'introspezione per il gateway e la UI statica su /.
+ * Server HTTP del control plane, senza dipendenze esterne. Le route sono
+ * dichiarate in `routes.ts` e risolte da un dispatcher generico: qui restano
+ * solo la creazione del server (TLS/HSTS, logging) e la meccanica di
+ * autenticazione/serializzazione condivisa da tutte le route.
  */
 export function createControlPlaneServer(
 	service: ControlPlaneService,
 	options: ControlPlaneServerOptions = {},
 ): Server | HttpsServer {
+	const routes = compileRoutes(buildRoutes());
+
 	const listener = (req: IncomingMessage, res: ServerResponse): void => {
 		const started = Date.now();
 		if (options.tls) {
@@ -77,7 +44,7 @@ export function createControlPlaneServer(
 				});
 			});
 		}
-		void handle(service, req, res).catch((error) => {
+		void dispatch(routes, service, req, res).catch((error) => {
 			const status = error instanceof ServiceError ? error.status : 500;
 			const message = error instanceof Error ? error.message : "errore interno";
 			if (!(error instanceof ServiceError)) console.error("[control-plane] errore:", error);
@@ -93,212 +60,55 @@ export function createControlPlaneServer(
 	return createServer(listener);
 }
 
-async function handle(service: ControlPlaneService, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function dispatch(
+	routes: CompiledRoute[],
+	service: ControlPlaneService,
+	req: IncomingMessage,
+	res: ServerResponse,
+): Promise<void> {
 	const url = new URL(req.url ?? "/", "http://localhost");
 	const method = req.method ?? "GET";
-	const path = url.pathname;
+	const matched = matchRoute(routes, method, url.pathname);
+	if (!matched) {
+		sendJson(res, 404, { error: "non trovato" });
+		return;
+	}
+
 	const bearer = bearerToken(req);
-
-	// ---- API device ---------------------------------------------------------
-
-	if (method === "POST" && path === "/api/enroll") {
-		if (!checkEnrollRateLimit(clientIp(req))) {
-			sendJson(res, 429, { error: "troppi tentativi di enrollment, riprovare tra un minuto" });
-			return;
-		}
-		const body = await readJsonBody(req);
-		const enrollToken = requireString(body, "enrollToken");
-		const deviceName = optionalString(body, "deviceName") ?? "";
-		// Il device può legarsi al proprio certificato client già all'enrollment,
-		// presentandolo via mTLS oppure indicandone il fingerprint nel body.
-		const certFingerprint = peerCertFingerprint(req) ?? optionalString(body, "certFingerprint");
-		sendJson(res, 200, service.enrollDevice(enrollToken, deviceName, certFingerprint));
-		return;
-	}
-
 	const fp = peerCertFingerprint(req);
+	let cachedBody: Record<string, unknown> | undefined;
+	const ctx: RouteContext = {
+		req,
+		res,
+		url,
+		params: matched.params,
+		bearer,
+		fp,
+		service,
+		json: async () => {
+			if (cachedBody === undefined) cachedBody = await readJsonBody(req);
+			return cachedBody;
+		},
+	};
 
-	if (method === "GET" && path === "/api/device/config") {
-		const device = service.authenticateDevice(bearer, fp);
-		sendJson(res, 200, { token: service.issueConfigBundle(device) });
-		return;
+	// Autenticazione dichiarata dalla route, risolta prima dell'handler.
+	switch (matched.route.def.auth) {
+		case "admin":
+			ctx.identity = service.authenticateAdmin(bearer);
+			break;
+		case "device":
+			ctx.device = service.authenticateDevice(bearer, fp);
+			break;
+		case "gateway":
+			service.authenticateGateway(bearer);
+			break;
+		case "none":
+			break;
 	}
 
-	if (method === "POST" && path === "/api/device/audit") {
-		const device = service.authenticateDevice(bearer, fp);
-		const body = await readJsonBody(req);
-		const events: unknown[] = Array.isArray(body.events) ? body.events : [];
-		sendJson(res, 200, { accepted: service.ingestAudit(device, events) });
-		return;
-	}
-
-	if (method === "POST" && path === "/api/device/rotate-token") {
-		const device = service.authenticateDevice(bearer, fp);
-		sendJson(res, 200, { deviceToken: service.rotateDeviceToken(device) });
-		return;
-	}
-
-	if (method === "POST" && path === "/api/device/bind-cert") {
-		// Trust on first use: autentica col token (se già legato, il fingerprint
-		// deve comunque combaciare) e lega il device al certificato presentato.
-		const device = service.authenticateDevice(bearer, fp);
-		service.bindDeviceCertificate(device, fp);
-		sendJson(res, 200, { ok: true });
-		return;
-	}
-
-	// ---- Introspezione per il gateway LLM ------------------------------------
-
-	if (method === "POST" && path === "/api/introspect") {
-		service.authenticateGateway(bearer);
-		const body = await readJsonBody(req);
-		const deviceToken = requireString(body, "deviceToken");
-		// Il gateway inoltra il fingerprint del cert presentato dal device: il
-		// control plane lo confronta col binding mTLS del device.
-		const presentedFingerprint = optionalString(body, "presentedFingerprint");
-		sendJson(res, 200, service.introspectDeviceToken(deviceToken, presentedFingerprint));
-		return;
-	}
-
-	// ---- API amministrative ---------------------------------------------------
-
-	if (path.startsWith("/api/admin/")) {
-		const identity = service.authenticateAdmin(bearer);
-
-		if (method === "GET" && path === "/api/admin/overview") {
-			sendJson(res, 200, service.overview(identity));
-			return;
-		}
-		if (method === "GET" && path === "/api/admin/org/config") {
-			sendJson(res, 200, service.getOrgConfig(identity));
-			return;
-		}
-		if (method === "PUT" && path === "/api/admin/org") {
-			service.updateOrg(identity, await readJsonBody(req));
-			sendJson(res, 200, { ok: true });
-			return;
-		}
-		if (method === "POST" && path === "/api/admin/groups") {
-			const body = await readJsonBody(req);
-			sendJson(res, 200, service.createGroup(identity, requireString(body, "name")));
-			return;
-		}
-		const groupMatch = /^\/api\/admin\/groups\/([^/]+)$/.exec(path);
-		if (groupMatch) {
-			const groupId = decodeURIComponent(groupMatch[1] as string);
-			if (method === "PUT") {
-				service.updateGroup(identity, groupId, await readJsonBody(req));
-				sendJson(res, 200, { ok: true });
-				return;
-			}
-			if (method === "DELETE") {
-				service.deleteGroup(identity, groupId);
-				sendJson(res, 200, { ok: true });
-				return;
-			}
-		}
-		if (method === "POST" && path === "/api/admin/enroll-tokens") {
-			const body = await readJsonBody(req);
-			const groupId = requireString(body, "groupId");
-			const ttlMinutes = typeof body.ttlMinutes === "number" ? body.ttlMinutes : 60;
-			sendJson(res, 200, { enrollToken: service.createEnrollToken(identity, groupId, ttlMinutes) });
-			return;
-		}
-		const deviceMatch = /^\/api\/admin\/devices\/([^/]+)$/.exec(path);
-		if (deviceMatch && method === "PUT") {
-			service.updateDevice(identity, decodeURIComponent(deviceMatch[1] as string), await readJsonBody(req));
-			sendJson(res, 200, { ok: true });
-			return;
-		}
-		const effectiveMatch = /^\/api\/admin\/devices\/([^/]+)\/effective-policy$/.exec(path);
-		if (effectiveMatch && method === "GET") {
-			sendJson(res, 200, service.effectivePolicy(identity, decodeURIComponent(effectiveMatch[1] as string)));
-			return;
-		}
-		if (method === "GET" && path === "/api/admin/signing-keys") {
-			sendJson(res, 200, { keys: service.listSigningKeys(identity) });
-			return;
-		}
-		if (method === "POST" && path === "/api/admin/signing-keys") {
-			sendJson(res, 200, service.addSigningKey(identity));
-			return;
-		}
-		const promoteMatch = /^\/api\/admin\/signing-keys\/([^/]+)\/promote$/.exec(path);
-		if (promoteMatch && method === "POST") {
-			service.promoteSigningKey(identity, decodeURIComponent(promoteMatch[1] as string));
-			sendJson(res, 200, { ok: true });
-			return;
-		}
-		const retireMatch = /^\/api\/admin\/signing-keys\/([^/]+)$/.exec(path);
-		if (retireMatch && method === "DELETE") {
-			service.retireSigningKey(identity, decodeURIComponent(retireMatch[1] as string));
-			sendJson(res, 200, { ok: true });
-			return;
-		}
-		if (method === "GET" && path === "/api/admin/audit/verify") {
-			const deviceId = url.searchParams.get("deviceId") ?? undefined;
-			sendJson(res, 200, await service.verifyAudit(identity, deviceId));
-			return;
-		}
-		if (method === "GET" && path === "/api/admin/audit/anchor") {
-			sendJson(res, 200, await service.exportAuditAnchor(identity));
-			return;
-		}
-		if (method === "GET" && path === "/api/admin/admin-tokens") {
-			sendJson(res, 200, { tokens: service.listAdminTokens(identity) });
-			return;
-		}
-		const adminTokenMatch = /^\/api\/admin\/admin-tokens\/([^/]+)$/.exec(path);
-		if (adminTokenMatch && method === "DELETE") {
-			service.revokeAdminToken(identity, decodeURIComponent(adminTokenMatch[1] as string));
-			sendJson(res, 200, { ok: true });
-			return;
-		}
-		if (method === "GET" && path === "/api/admin/audit") {
-			const deviceId = url.searchParams.get("deviceId");
-			const limit = Number(url.searchParams.get("limit") ?? "100");
-			if (deviceId) {
-				sendJson(res, 200, { events: await service.readDeviceAudit(identity, deviceId, limit) });
-			} else {
-				sendJson(res, 200, { events: await service.readAdminAudit(identity, limit) });
-			}
-			return;
-		}
-		if (method === "POST" && path === "/api/admin/admin-tokens") {
-			const body = await readJsonBody(req);
-			const role = requireString(body, "role") as "admin" | "operator" | "viewer";
-			const ttlDays = typeof body.ttlDays === "number" ? body.ttlDays : 90;
-			sendJson(res, 200, { token: service.createAdminToken(identity, requireString(body, "name"), role, ttlDays) });
-			return;
-		}
-		if (method === "POST" && path === "/api/admin/gateway-tokens") {
-			const body = await readJsonBody(req);
-			sendJson(res, 200, { token: service.createGatewayToken(identity, requireString(body, "name")) });
-			return;
-		}
-	}
-
-	// ---- UI statica -----------------------------------------------------------
-
-	if (method === "GET" && (path === "/" || path === "/index.html")) {
-		const dir = dirname(fileURLToPath(import.meta.url));
-		const html = readFileSync(join(dir, "..", "public", "index.html"), "utf8");
-		res.writeHead(200, {
-			"content-type": "text/html; charset=utf-8",
-			"x-content-type-options": "nosniff",
-			"content-security-policy":
-				"default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:",
-		});
-		res.end(html);
-		return;
-	}
-
-	if (method === "GET" && path === "/healthz") {
-		sendJson(res, 200, { ok: true });
-		return;
-	}
-
-	sendJson(res, 404, { error: "non trovato" });
+	const result = await matched.route.def.handler(ctx);
+	if (matched.route.def.raw) return; // l'handler ha già scritto la risposta
+	sendJson(res, 200, result);
 }
 
 function bearerToken(req: IncomingMessage): string | undefined {
@@ -327,17 +137,6 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
 		if (error instanceof ServiceError) throw error;
 		throw new ServiceError(400, "JSON non valido");
 	}
-}
-
-function requireString(body: Record<string, unknown>, key: string): string {
-	const value = body[key];
-	if (typeof value !== "string" || value === "") throw new ServiceError(400, `campo mancante: ${key}`);
-	return value;
-}
-
-function optionalString(body: Record<string, unknown>, key: string): string | undefined {
-	const value = body[key];
-	return typeof value === "string" ? value : undefined;
 }
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {

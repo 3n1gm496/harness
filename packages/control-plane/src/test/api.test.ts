@@ -454,7 +454,8 @@ test("autenticazione admin via OIDC/JWT con mappatura del ruolo dal claim", asyn
 test("P2: scadenza server-side del device token, requireDeviceCert e rate-limit XFF", () => {
 	const dir = mkdtempSync(join(tmpdir(), "harness-p2-"));
 	try {
-		const svc = new ControlPlaneService(new Store(dir));
+		const store = new Store(dir);
+		const svc = new ControlPlaneService(store);
 		const admin = svc.bootstrapAdminToken("t");
 		const id = svc.authenticateAdmin(admin);
 		const groupId = svc.overview(id).groups[0]?.groupId as string;
@@ -464,13 +465,14 @@ test("P2: scadenza server-side del device token, requireDeviceCert e rate-limit 
 		const dev = svc.enrollDevice(enr, "d");
 		assert.equal(svc.authenticateDevice(dev.deviceToken).deviceId, dev.deviceId);
 		svc.updateOrg(id, { deviceTokenMaxAgeDays: 1 });
-		// biome-ignore lint/suspicious/noExplicitAny: accesso interno per invecchiare il token nel test
-		(svc as any).store.state.devices[dev.deviceId].tokenIssuedAt = new Date(Date.now() - 3 * 86_400_000).toISOString();
+		const aged = store.state.devices[dev.deviceId];
+		if (!aged) throw new Error("device non trovato nello store");
+		aged.tokenIssuedAt = new Date(Date.now() - 3 * 86_400_000).toISOString();
 		assert.throws(() => svc.authenticateDevice(dev.deviceToken), /scaduto/);
 		// La rotazione riemette il token e azzera l'età (il device è raggiunto
 		// direttamente, come farebbe un flusso di re-emissione amministrativo).
-		// biome-ignore lint/suspicious/noExplicitAny: accesso al record device nel test
-		const record = (svc as any).store.state.devices[dev.deviceId];
+		const record = store.state.devices[dev.deviceId];
+		if (!record) throw new Error("device non trovato nello store");
 		const rotated = svc.rotateDeviceToken(record);
 		assert.equal(svc.authenticateDevice(rotated).deviceId, dev.deviceId);
 

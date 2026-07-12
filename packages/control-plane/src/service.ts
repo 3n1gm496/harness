@@ -1,422 +1,102 @@
-import type {
-	AdminRole,
-	AuditEvent,
-	ConfigBundle,
-	DeepPartial,
-	DeviceInfo,
-	GroupInfo,
-	JwtVerifyKey,
-	PolicyDocument,
-} from "@harness/shared";
-import {
-	deepMerge,
-	lockedPiSettings,
-	newId,
-	newSecretToken,
-	resolvePolicy,
-	signPayload,
-	verifyJwt,
-} from "@harness/shared";
-import type { AdminTokenRecord, DeviceRecord, GroupRecord, Store } from "./store.js";
-import { hashToken } from "./store.js";
+import type { AdminRole, AuditEvent, ChainVerification, DeepPartial, PolicyDocument } from "@harness/shared";
+import type { DeviceRecord, GroupRecord, Store } from "./store.js";
+import { type AdminIdentity, type OidcConfig, ServiceContext, ServiceError } from "./services/context.js";
+import { AuthService } from "./services/auth-service.js";
+import { DeviceService } from "./services/device-service.js";
+import { GroupService } from "./services/group-service.js";
+import { OrgService } from "./services/org-service.js";
+import { SigningKeyService } from "./services/signing-key-service.js";
+import { AuditService } from "./services/audit-service.js";
 
-export class ServiceError extends Error {
-	readonly status: number;
-	constructor(status: number, message: string) {
-		super(message);
-		this.status = status;
-	}
-}
-
-export interface AdminIdentity {
-	name: string;
-	role: AdminRole;
-}
+export { ServiceError } from "./services/context.js";
+export type { AdminIdentity, OidcConfig } from "./services/context.js";
 
 /**
- * Configurazione OIDC opzionale: se presente, il control plane accetta anche
- * JWT firmati dal provider aziendale come credenziali amministrative, mappando
- * un claim al ruolo.
- */
-export interface OidcConfig {
-	issuer: string;
-	audience: string;
-	keys: JwtVerifyKey[];
-	/** Claim che porta il ruolo (default "harness_role"). Valore: admin|operator|viewer. */
-	roleClaim?: string;
-	/** Claim usato come nome dell'identità nell'audit (default "email", poi "sub"). */
-	nameClaim?: string;
-}
-
-const ROLE_LEVEL: Record<AdminRole, number> = { viewer: 1, operator: 2, admin: 3 };
-
-/**
- * Logica applicativa del control plane. Tutte le mutazioni passano da qui,
- * incrementano la versione di configurazione e finiscono nell'audit
- * amministrativo.
+ * Facciata del control plane: compone i servizi di dominio focalizzati
+ * ({@link AuthService}, {@link DeviceService}, {@link GroupService},
+ * {@link OrgService}, {@link SigningKeyService}, {@link AuditService}) su un
+ * contesto condiviso e delega. I servizi sono anche esposti come proprietà
+ * (`service.auth`, `service.devices`, …) per l'uso diretto; i metodi qui sotto
+ * restano per retrocompatibilità dei chiamanti esistenti.
+ *
+ * Tutte le mutazioni passano dai servizi, incrementano la versione di
+ * configurazione e finiscono nell'audit amministrativo.
  */
 export class ControlPlaneService {
-	private readonly oidc: OidcConfig | undefined;
+	readonly auth: AuthService;
+	readonly devices: DeviceService;
+	readonly groups: GroupService;
+	readonly org: OrgService;
+	readonly signingKeys: SigningKeyService;
+	readonly auditLog: AuditService;
 
-	constructor(
-		private readonly store: Store,
-		options: { oidc?: OidcConfig } = {},
-	) {
-		this.oidc = options.oidc;
+	constructor(store: Store, options: { oidc?: OidcConfig } = {}) {
+		const ctx = new ServiceContext(store, options.oidc);
+		this.auth = new AuthService(ctx);
+		this.devices = new DeviceService(ctx);
+		this.groups = new GroupService(ctx);
+		this.org = new OrgService(ctx);
+		this.signingKeys = new SigningKeyService(ctx);
+		this.auditLog = new AuditService(ctx);
 	}
 
-	// ---- Autenticazione -----------------------------------------------------
+	// ---- Autenticazione (AuthService) ---------------------------------------
 
 	authenticateAdmin(token: string | undefined): AdminIdentity {
-		if (!token) throw new ServiceError(401, "token amministrativo mancante");
-		// I token statici hanno prefisso "adm_"; qualunque altra cosa è trattata
-		// come JWT OIDC, se l'OIDC è configurato.
-		if (!token.startsWith("adm_") && this.oidc) {
-			return this.authenticateOidc(token);
-		}
-		const record: AdminTokenRecord | undefined = this.store.state.adminTokens[hashToken(token)];
-		if (!record) throw new ServiceError(401, "token amministrativo non valido");
-		if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
-			throw new ServiceError(401, "token amministrativo scaduto");
-		}
-		return { name: record.name, role: record.role };
+		return this.auth.authenticateAdmin(token);
 	}
-
-	private authenticateOidc(token: string): AdminIdentity {
-		const oidc = this.oidc as OidcConfig;
-		const result = verifyJwt(token, { keys: oidc.keys, issuer: oidc.issuer, audience: oidc.audience });
-		if (!result.valid) throw new ServiceError(401, `JWT non valido: ${result.error}`);
-		const roleClaim = oidc.roleClaim ?? "harness_role";
-		const roleValue = result.claims[roleClaim];
-		if (roleValue !== "admin" && roleValue !== "operator" && roleValue !== "viewer") {
-			throw new ServiceError(403, `claim "${roleClaim}" assente o non valido nel token`);
-		}
-		const nameClaim = oidc.nameClaim ?? "email";
-		const name =
-			(typeof result.claims[nameClaim] === "string" && (result.claims[nameClaim] as string)) ||
-			(typeof result.claims.sub === "string" && result.claims.sub) ||
-			"oidc-user";
-		return { name, role: roleValue };
-	}
-
-	requireRole(identity: AdminIdentity, minimum: AdminRole): void {
-		if (ROLE_LEVEL[identity.role] < ROLE_LEVEL[minimum]) {
-			throw new ServiceError(403, `operazione riservata al ruolo ${minimum} o superiore`);
-		}
-	}
-
-	/**
-	 * Autentica un device via token e, se il device è legato a un certificato
-	 * mTLS, verifica che il fingerprint presentato combaci. `presentedFingerprint`
-	 * è estratto dal server dal certificato client della connessione TLS.
-	 */
 	authenticateDevice(token: string | undefined, presentedFingerprint?: string): DeviceRecord {
-		if (!token) throw new ServiceError(401, "token device mancante");
-		const tokenHash = hashToken(token);
-		const device = Object.values(this.store.state.devices).find((d) => d.tokenHash === tokenHash);
-		if (!device) throw new ServiceError(401, "token device non valido");
-		if (device.revoked) throw new ServiceError(403, "device revocato");
-		// Scadenza server-side del token: oltre l'età massima va ruotato.
-		const maxAgeDays = this.store.state.org.deviceTokenMaxAgeDays ?? 90;
-		if (device.tokenIssuedAt) {
-			const ageMs = Date.now() - Date.parse(device.tokenIssuedAt);
-			if (ageMs > maxAgeDays * 86_400_000) {
-				throw new ServiceError(401, "token device scaduto: eseguire la rotazione (harness-agent rotate-token)");
-			}
-		}
-		if (device.certFingerprint) {
-			const presented = normalizeFingerprint(presentedFingerprint);
-			if (!presented) throw new ServiceError(403, "certificato client mTLS richiesto per questo device");
-			if (presented !== device.certFingerprint) {
-				throw new ServiceError(403, "il certificato client non corrisponde a quello legato al device");
-			}
-		}
-		return device;
+		return this.auth.authenticateDevice(token, presentedFingerprint);
 	}
-
-	/**
-	 * Lega (o ri-lega) il device al certificato client presentato — trust on
-	 * first use: da qui in poi le sue richieste richiedono quel certificato.
-	 */
-	bindDeviceCertificate(device: DeviceRecord, presentedFingerprint: string | undefined): void {
-		if (this.store.state.org.requireDeviceCert && !device.certFingerprint) {
-			// TOFU disabilitato: il binding deve avvenire all'enrollment, non dopo
-			// (chiude la race del trust-on-first-use su token rubato).
-			throw new ServiceError(403, "trust-on-first-use disabilitato: il certificato va legato all'enrollment");
-		}
-		const presented = normalizeFingerprint(presentedFingerprint);
-		if (!presented) throw new ServiceError(400, "nessun certificato client presentato da legare");
-		device.certFingerprint = presented;
-		this.store.save();
-		this.audit("system", "device_cert_bound", { deviceId: device.deviceId });
-	}
-
 	authenticateGateway(token: string | undefined): string {
-		if (!token) throw new ServiceError(401, "token gateway mancante");
-		const record = this.store.state.gatewayTokens[hashToken(token)];
-		if (!record) throw new ServiceError(401, "token gateway non valido");
-		return record.name;
+		return this.auth.authenticateGateway(token);
 	}
-
-	// ---- Bootstrap ----------------------------------------------------------
-
-	/** Crea il primo token admin. Consentito solo finché non ne esiste alcuno. */
+	bindDeviceCertificate(device: DeviceRecord, presentedFingerprint: string | undefined): void {
+		this.auth.bindDeviceCertificate(device, presentedFingerprint);
+	}
 	bootstrapAdminToken(name: string): string {
-		if (Object.keys(this.store.state.adminTokens).length > 0) {
-			throw new ServiceError(409, "bootstrap già eseguito: esiste già un token amministrativo");
-		}
-		const token = newSecretToken("adm");
-		this.store.state.adminTokens[hashToken(token)] = {
-			name,
-			role: "admin",
-			createdAt: new Date().toISOString(),
-		};
-		this.store.save();
-		return token;
+		return this.auth.bootstrapAdminToken(name);
+	}
+	createAdminToken(identity: AdminIdentity, name: string, role: AdminRole, ttlDays = 90): string {
+		return this.auth.createAdminToken(identity, name, role, ttlDays);
+	}
+	listAdminTokens(identity: AdminIdentity): { id: string; name: string; role: AdminRole; createdAt: string; expiresAt?: string }[] {
+		return this.auth.listAdminTokens(identity);
+	}
+	revokeAdminToken(identity: AdminIdentity, id: string): void {
+		this.auth.revokeAdminToken(identity, id);
+	}
+	createGatewayToken(identity: AdminIdentity, name: string): string {
+		return this.auth.createGatewayToken(identity, name);
+	}
+	rotateDeviceToken(device: DeviceRecord): string {
+		return this.auth.rotateDeviceToken(device);
+	}
+	introspectDeviceToken(
+		deviceToken: string,
+		presentedFingerprint?: string,
+	): { active: boolean; deviceId?: string; groupId?: string } {
+		return this.auth.introspectDeviceToken(deviceToken, presentedFingerprint);
 	}
 
-	// ---- Enrollment e device ------------------------------------------------
+	// ---- Device (DeviceService) ---------------------------------------------
 
 	createEnrollToken(identity: AdminIdentity, groupId: string, ttlMinutes: number): string {
-		this.requireRole(identity, "operator");
-		this.requireGroup(groupId);
-		this.pruneEnrollTokens();
-		const token = newSecretToken("enr");
-		const now = Date.now();
-		this.store.state.enrollTokens[hashToken(token)] = {
-			groupId,
-			createdAt: new Date(now).toISOString(),
-			expiresAt: new Date(now + ttlMinutes * 60_000).toISOString(),
-		};
-		this.store.save();
-		this.audit(identity.name, "enroll_token_created", { groupId, ttlMinutes });
-		return token;
+		return this.devices.createEnrollToken(identity, groupId, ttlMinutes);
 	}
-
 	enrollDevice(
 		enrollToken: string,
 		deviceName: string,
 		certFingerprint?: string,
 	): { deviceId: string; deviceToken: string; publicKeyPem: string } {
-		const tokenHash = hashToken(enrollToken);
-		const record = this.store.state.enrollTokens[tokenHash];
-		if (!record) throw new ServiceError(401, "token di enrollment non valido");
-		if (record.usedBy) throw new ServiceError(401, "token di enrollment già usato");
-		if (Date.parse(record.expiresAt) < Date.now()) throw new ServiceError(401, "token di enrollment scaduto");
-
-		if (this.store.state.org.requireDeviceCert && !normalizeFingerprint(certFingerprint)) {
-			throw new ServiceError(400, "questa organizzazione richiede un certificato client all'enrollment (mTLS)");
-		}
-		const deviceId = newId("dev");
-		const deviceToken = newSecretToken("dvt");
-		const device: DeviceRecord = {
-			deviceId,
-			name: deviceName || deviceId,
-			groupId: record.groupId,
-			tokenHash: hashToken(deviceToken),
-			tokenIssuedAt: new Date().toISOString(),
-			enrolledAt: new Date().toISOString(),
-			killSwitch: false,
-			revoked: false,
-			policyOverride: {},
-			piSettingsOverride: {},
-		};
-		const boundFp = normalizeFingerprint(certFingerprint);
-		if (boundFp) device.certFingerprint = boundFp;
-		this.store.state.devices[deviceId] = device;
-		record.usedBy = deviceId;
-		this.store.save();
-		this.audit("system", "device_enrolled", { deviceId, deviceName: device.name, groupId: record.groupId });
-		return { deviceId, deviceToken, publicKeyPem: this.store.signingPublicKeyPem };
+		return this.devices.enrollDevice(enrollToken, deviceName, certFingerprint);
 	}
-
-	/** Costruisce e firma il bundle di configurazione effettivo per un device. */
 	issueConfigBundle(device: DeviceRecord): string {
-		const { org } = this.store.state;
-		const group = this.requireGroup(device.groupId);
-
-		const policy: PolicyDocument = resolvePolicy(org.policyOverride, group.policyOverride, device.policyOverride);
-		policy.killSwitch = policy.killSwitch || org.killSwitch || group.killSwitch || device.killSwitch;
-
-		let piSettings: Record<string, unknown> = {};
-		piSettings = deepMerge(piSettings, org.piSettingsOverride);
-		piSettings = deepMerge(piSettings, group.piSettingsOverride);
-		piSettings = deepMerge(piSettings, device.piSettingsOverride);
-		// I lockdown aziendali vincono sempre su qualunque override.
-		piSettings = deepMerge(piSettings, lockedPiSettings());
-
-		const now = Date.now();
-		const bundle: ConfigBundle = {
-			schema: "harness/config-bundle@1",
-			bundleId: newId("bnd"),
-			orgId: org.orgId,
-			groupId: group.groupId,
-			deviceId: device.deviceId,
-			configVersion: org.configVersion,
-			issuedAt: new Date(now).toISOString(),
-			expiresAt: new Date(now + org.configTtlMinutes * 60_000).toISOString(),
-			policy,
-			piSettings,
-			trustedPublicKeys: this.store.trustedPublicKeys(),
-		};
-
-		device.lastSeenAt = new Date(now).toISOString();
-		device.lastConfigVersion = org.configVersion;
-		// Il heartbeat (lastSeenAt/lastConfigVersion) è persistito con throttling
-		// per non amplificare le scritture a ogni poll di ogni device.
-		this.touchDevice(device.deviceId);
-		return signPayload(this.store.signingPrivateKeyPem, bundle);
+		return this.devices.issueConfigBundle(device);
 	}
-
-	/** Persiste l'aggiornamento di heartbeat di un device al più ogni 30s. */
-	private touchDevice(deviceId: string): void {
-		const now = Date.now();
-		const last = this.lastSeenPersist.get(deviceId) ?? 0;
-		if (now - last < 30_000) return;
-		this.lastSeenPersist.set(deviceId, now);
-		this.store.save();
-	}
-	private readonly lastSeenPersist = new Map<string, number>();
-
 	ingestAudit(device: DeviceRecord, events: unknown[]): number {
-		const sanitized: AuditEvent[] = [];
-		for (const raw of events.slice(0, 500)) {
-			const event = sanitizeAuditEvent(raw, device.deviceId);
-			if (event) sanitized.push(event);
-		}
-		this.store.appendDeviceAudit(device.deviceId, sanitized);
-		device.lastSeenAt = new Date().toISOString();
-		this.touchDevice(device.deviceId);
-		return sanitized.length;
+		return this.devices.ingestAudit(device, events);
 	}
-
-	// ---- Amministrazione ----------------------------------------------------
-
-	overview(identity: AdminIdentity): {
-		role: AdminRole;
-		org: { orgId: string; name: string; configVersion: number; killSwitch: boolean; configTtlMinutes: number };
-		groups: GroupInfo[];
-		devices: DeviceInfo[];
-	} {
-		this.requireRole(identity, "viewer");
-		const { org, groups, devices } = this.store.state;
-		return {
-			role: identity.role,
-			org: {
-				orgId: org.orgId,
-				name: org.name,
-				configVersion: org.configVersion,
-				killSwitch: org.killSwitch,
-				configTtlMinutes: org.configTtlMinutes,
-			},
-			groups: Object.values(groups).map((group) => ({
-				groupId: group.groupId,
-				name: group.name,
-				killSwitch: group.killSwitch,
-				policyOverride: group.policyOverride,
-				piSettingsOverride: group.piSettingsOverride,
-			})),
-			devices: Object.values(devices).map((device) => this.toDeviceInfo(device)),
-		};
-	}
-
-	getOrgConfig(identity: AdminIdentity): {
-		policyOverride: DeepPartial<PolicyDocument>;
-		piSettingsOverride: Record<string, unknown>;
-	} {
-		this.requireRole(identity, "viewer");
-		return {
-			policyOverride: this.store.state.org.policyOverride,
-			piSettingsOverride: this.store.state.org.piSettingsOverride,
-		};
-	}
-
-	updateOrg(
-		identity: AdminIdentity,
-		update: {
-			name?: string;
-			killSwitch?: boolean;
-			configTtlMinutes?: number;
-			policyOverride?: DeepPartial<PolicyDocument>;
-			piSettingsOverride?: Record<string, unknown>;
-			deviceTokenMaxAgeDays?: number;
-			requireDeviceCert?: boolean;
-		},
-	): void {
-		const changesPolicy =
-			update.policyOverride !== undefined ||
-			update.piSettingsOverride !== undefined ||
-			update.requireDeviceCert !== undefined;
-		this.requireRole(identity, changesPolicy || update.configTtlMinutes !== undefined ? "admin" : "operator");
-		const { org } = this.store.state;
-		if (update.name !== undefined) org.name = update.name;
-		if (update.killSwitch !== undefined) org.killSwitch = update.killSwitch;
-		if (update.configTtlMinutes !== undefined) {
-			if (update.configTtlMinutes < 5 || update.configTtlMinutes > 24 * 60) {
-				throw new ServiceError(400, "configTtlMinutes deve essere tra 5 e 1440");
-			}
-			org.configTtlMinutes = update.configTtlMinutes;
-		}
-		if (update.deviceTokenMaxAgeDays !== undefined) {
-			if (update.deviceTokenMaxAgeDays < 1 || update.deviceTokenMaxAgeDays > 3650) {
-				throw new ServiceError(400, "deviceTokenMaxAgeDays deve essere tra 1 e 3650");
-			}
-			org.deviceTokenMaxAgeDays = update.deviceTokenMaxAgeDays;
-		}
-		if (update.requireDeviceCert !== undefined) org.requireDeviceCert = update.requireDeviceCert;
-		if (update.policyOverride !== undefined) org.policyOverride = update.policyOverride;
-		if (update.piSettingsOverride !== undefined) org.piSettingsOverride = update.piSettingsOverride;
-		this.bumpConfig();
-		this.audit(identity.name, "org_updated", { update });
-	}
-
-	createGroup(identity: AdminIdentity, name: string): GroupRecord {
-		this.requireRole(identity, "admin");
-		if (!name.trim()) throw new ServiceError(400, "nome gruppo mancante");
-		const group: GroupRecord = {
-			groupId: newId("grp"),
-			name: name.trim(),
-			killSwitch: false,
-			policyOverride: {},
-			piSettingsOverride: {},
-		};
-		this.store.state.groups[group.groupId] = group;
-		this.bumpConfig();
-		this.audit(identity.name, "group_created", { groupId: group.groupId, name: group.name });
-		return group;
-	}
-
-	updateGroup(
-		identity: AdminIdentity,
-		groupId: string,
-		update: {
-			name?: string;
-			killSwitch?: boolean;
-			policyOverride?: DeepPartial<PolicyDocument>;
-			piSettingsOverride?: Record<string, unknown>;
-		},
-	): void {
-		const changesPolicy = update.policyOverride !== undefined || update.piSettingsOverride !== undefined;
-		this.requireRole(identity, changesPolicy ? "admin" : "operator");
-		const group = this.requireGroup(groupId);
-		if (update.name !== undefined) group.name = update.name;
-		if (update.killSwitch !== undefined) group.killSwitch = update.killSwitch;
-		if (update.policyOverride !== undefined) group.policyOverride = update.policyOverride;
-		if (update.piSettingsOverride !== undefined) group.piSettingsOverride = update.piSettingsOverride;
-		this.bumpConfig();
-		this.audit(identity.name, "group_updated", { groupId, update });
-	}
-
-	deleteGroup(identity: AdminIdentity, groupId: string): void {
-		this.requireRole(identity, "admin");
-		this.requireGroup(groupId);
-		const inUse = Object.values(this.store.state.devices).some((device) => device.groupId === groupId);
-		if (inUse) throw new ServiceError(409, "il gruppo ha device associati");
-		delete this.store.state.groups[groupId];
-		this.bumpConfig();
-		this.audit(identity.name, "group_deleted", { groupId });
-	}
-
 	updateDevice(
 		identity: AdminIdentity,
 		deviceId: string,
@@ -429,301 +109,72 @@ export class ControlPlaneService {
 			piSettingsOverride?: Record<string, unknown>;
 		},
 	): void {
-		const changesPolicy = update.policyOverride !== undefined || update.piSettingsOverride !== undefined;
-		this.requireRole(identity, changesPolicy ? "admin" : "operator");
-		const device = this.store.state.devices[deviceId];
-		if (!device) throw new ServiceError(404, "device non trovato");
-		if (update.groupId !== undefined) {
-			this.requireGroup(update.groupId);
-			device.groupId = update.groupId;
-		}
-		if (update.name !== undefined) device.name = update.name;
-		if (update.killSwitch !== undefined) device.killSwitch = update.killSwitch;
-		if (update.revoked !== undefined) device.revoked = update.revoked;
-		if (update.policyOverride !== undefined) device.policyOverride = update.policyOverride;
-		if (update.piSettingsOverride !== undefined) device.piSettingsOverride = update.piSettingsOverride;
-		this.bumpConfig();
-		this.audit(identity.name, "device_updated", { deviceId, update });
+		this.devices.updateDevice(identity, deviceId, update);
 	}
-
-	/** Anteprima della policy effettiva di un device, come la vedrebbe il client. */
 	effectivePolicy(identity: AdminIdentity, deviceId: string): PolicyDocument {
-		this.requireRole(identity, "viewer");
-		const device = this.store.state.devices[deviceId];
-		if (!device) throw new ServiceError(404, "device non trovato");
-		const group = this.requireGroup(device.groupId);
-		const { org } = this.store.state;
-		const policy = resolvePolicy(org.policyOverride, group.policyOverride, device.policyOverride);
-		policy.killSwitch = policy.killSwitch || org.killSwitch || group.killSwitch || device.killSwitch;
-		return policy;
+		return this.devices.effectivePolicy(identity, deviceId);
 	}
 
-	async readDeviceAudit(identity: AdminIdentity, deviceId: string, limit: number): Promise<AuditEvent[]> {
-		this.requireRole(identity, "viewer");
-		return this.store.readDeviceAudit(deviceId, Math.min(Math.max(limit, 1), 1000));
+	// ---- Gruppi (GroupService) ----------------------------------------------
+
+	createGroup(identity: AdminIdentity, name: string): GroupRecord {
+		return this.groups.createGroup(identity, name);
+	}
+	updateGroup(
+		identity: AdminIdentity,
+		groupId: string,
+		update: {
+			name?: string;
+			killSwitch?: boolean;
+			policyOverride?: DeepPartial<PolicyDocument>;
+			piSettingsOverride?: Record<string, unknown>;
+		},
+	): void {
+		this.groups.updateGroup(identity, groupId, update);
+	}
+	deleteGroup(identity: AdminIdentity, groupId: string): void {
+		this.groups.deleteGroup(identity, groupId);
 	}
 
-	async readAdminAudit(identity: AdminIdentity, limit: number): Promise<unknown[]> {
-		this.requireRole(identity, "viewer");
-		return this.store.readAdminAudit(Math.min(Math.max(limit, 1), 1000));
+	// ---- Organizzazione (OrgService) ----------------------------------------
+
+	overview(identity: AdminIdentity): ReturnType<OrgService["overview"]> {
+		return this.org.overview(identity);
+	}
+	getOrgConfig(identity: AdminIdentity): ReturnType<OrgService["getOrgConfig"]> {
+		return this.org.getOrgConfig(identity);
+	}
+	updateOrg(identity: AdminIdentity, update: Parameters<OrgService["updateOrg"]>[1]): void {
+		this.org.updateOrg(identity, update);
 	}
 
-	createAdminToken(identity: AdminIdentity, name: string, role: AdminRole, ttlDays = 90): string {
-		this.requireRole(identity, "admin");
-		if (!["admin", "operator", "viewer"].includes(role)) throw new ServiceError(400, "ruolo non valido");
-		if (ttlDays < 1 || ttlDays > 365) throw new ServiceError(400, "ttlDays deve essere tra 1 e 365");
-		const token = newSecretToken("adm");
-		this.store.state.adminTokens[hashToken(token)] = {
-			name,
-			role,
-			createdAt: new Date().toISOString(),
-			expiresAt: new Date(Date.now() + ttlDays * 86_400_000).toISOString(),
-		};
-		this.store.save();
-		this.audit(identity.name, "admin_token_created", { name, role, ttlDays });
-		return token;
-	}
-
-	listAdminTokens(identity: AdminIdentity): { id: string; name: string; role: AdminRole; createdAt: string; expiresAt?: string }[] {
-		this.requireRole(identity, "admin");
-		return Object.entries(this.store.state.adminTokens).map(([hash, record]) => {
-			const item: { id: string; name: string; role: AdminRole; createdAt: string; expiresAt?: string } = {
-				id: hash.slice(0, 12),
-				name: record.name,
-				role: record.role,
-				createdAt: record.createdAt,
-			};
-			if (record.expiresAt !== undefined) item.expiresAt = record.expiresAt;
-			return item;
-		});
-	}
-
-	revokeAdminToken(identity: AdminIdentity, id: string): void {
-		this.requireRole(identity, "admin");
-		const match = Object.keys(this.store.state.adminTokens).find((hash) => hash.startsWith(id));
-		if (!match) throw new ServiceError(404, "token amministrativo non trovato");
-		const target = this.store.state.adminTokens[match] as AdminTokenRecord;
-		const remainingAdmins = Object.entries(this.store.state.adminTokens).filter(
-			([hash, record]) =>
-				hash !== match &&
-				record.role === "admin" &&
-				(!record.expiresAt || Date.parse(record.expiresAt) > Date.now()),
-		);
-		if (target.role === "admin" && remainingAdmins.length === 0) {
-			throw new ServiceError(409, "impossibile revocare l'ultimo token admin attivo");
-		}
-		delete this.store.state.adminTokens[match];
-		this.store.save();
-		this.audit(identity.name, "admin_token_revoked", { id, name: target.name, role: target.role });
-	}
-
-	/** Rotazione del token di un device autenticato: il vecchio smette subito di valere. */
-	rotateDeviceToken(device: DeviceRecord): string {
-		const token = newSecretToken("dvt");
-		device.tokenHash = hashToken(token);
-		device.tokenIssuedAt = new Date().toISOString();
-		device.lastSeenAt = new Date().toISOString();
-		this.store.save();
-		this.audit("system", "device_token_rotated", { deviceId: device.deviceId });
-		return token;
-	}
-
-	async verifyAudit(identity: AdminIdentity, deviceId?: string): Promise<import("@harness/shared").ChainVerification> {
-		this.requireRole(identity, "viewer");
-		return deviceId ? this.store.verifyDeviceAudit(deviceId) : this.store.verifyAdminAudit();
-	}
-
-	/**
-	 * Produce un anchor di audit firmato (JWS) con le teste di tutte le catene.
-	 * Va esportato periodicamente su storage WORM esterno; la firma usa la
-	 * chiave attiva del control plane, verificabile con `trustedPublicKeys`.
-	 */
-	async exportAuditAnchor(identity: AdminIdentity): Promise<{ anchor: string; publicKeyPem: string }> {
-		this.requireRole(identity, "viewer");
-		const heads = await this.store.auditHeads();
-		const anchor: import("@harness/shared").AuditAnchor = {
-			schema: "harness/audit-anchor@1",
-			orgId: this.store.state.org.orgId,
-			generatedAt: new Date().toISOString(),
-			admin: heads.admin,
-			devices: heads.devices,
-		};
-		this.audit(identity.name, "audit_anchor_exported", {
-			adminEntries: heads.admin.entries,
-			deviceCount: heads.devices.length,
-		});
-		return {
-			anchor: signPayload(this.store.signingPrivateKeyPem, anchor),
-			publicKeyPem: this.store.signingPublicKeyPem,
-		};
-	}
-
-	// ---- Chiavi di firma -----------------------------------------------------
+	// ---- Chiavi di firma (SigningKeyService) --------------------------------
 
 	listSigningKeys(identity: AdminIdentity): { keyId: string; createdAt: string; active: boolean }[] {
-		this.requireRole(identity, "viewer");
-		return this.store.listSigningKeys();
+		return this.signingKeys.listSigningKeys(identity);
 	}
-
-	/**
-	 * Rotazione della chiave di firma in tre fasi, senza re-enrollment:
-	 *   add     → nuova chiave fidata ma non ancora firmante; viaggia nei bundle
-	 *             (`trustedPublicKeys`) firmati dalla chiave attuale, i device la apprendono
-	 *   promote → la nuova chiave diventa firmante (i device la fidano già)
-	 *   retire  → la vecchia chiave esce dal set fidato
-	 */
 	addSigningKey(identity: AdminIdentity): { keyId: string } {
-		this.requireRole(identity, "admin");
-		const key = this.store.addSigningKey();
-		this.bumpConfig(); // ridistribuisce i bundle con la nuova chiave elencata
-		this.audit(identity.name, "signing_key_added", { keyId: key.keyId });
-		return { keyId: key.keyId };
+		return this.signingKeys.addSigningKey(identity);
 	}
-
 	promoteSigningKey(identity: AdminIdentity, keyId: string): void {
-		this.requireRole(identity, "admin");
-		try {
-			this.store.promoteSigningKey(keyId);
-		} catch (error) {
-			throw new ServiceError(400, error instanceof Error ? error.message : "promozione chiave fallita");
-		}
-		this.bumpConfig();
-		this.audit(identity.name, "signing_key_promoted", { keyId });
+		this.signingKeys.promoteSigningKey(identity, keyId);
 	}
-
 	retireSigningKey(identity: AdminIdentity, keyId: string): void {
-		this.requireRole(identity, "admin");
-		try {
-			this.store.retireSigningKey(keyId);
-		} catch (error) {
-			throw new ServiceError(400, error instanceof Error ? error.message : "ritiro chiave fallito");
-		}
-		this.bumpConfig();
-		this.audit(identity.name, "signing_key_retired", { keyId });
+		this.signingKeys.retireSigningKey(identity, keyId);
 	}
 
-	createGatewayToken(identity: AdminIdentity, name: string): string {
-		this.requireRole(identity, "admin");
-		const token = newSecretToken("gwt");
-		this.store.state.gatewayTokens[hashToken(token)] = { name, createdAt: new Date().toISOString() };
-		this.store.save();
-		this.audit(identity.name, "gateway_token_created", { name });
-		return token;
+	// ---- Audit (AuditService) -----------------------------------------------
+
+	async readDeviceAudit(identity: AdminIdentity, deviceId: string, limit: number): Promise<AuditEvent[]> {
+		return this.auditLog.readDeviceAudit(identity, deviceId, limit);
 	}
-
-	/** Introspezione dei device token per il gateway LLM. */
-	introspectDeviceToken(
-		deviceToken: string,
-		presentedFingerprint?: string,
-	): { active: boolean; deviceId?: string; groupId?: string } {
-		const tokenHash = hashToken(deviceToken);
-		const device = Object.values(this.store.state.devices).find((d) => d.tokenHash === tokenHash);
-		if (!device || device.revoked) return { active: false };
-		const killSwitch =
-			device.killSwitch || this.store.state.org.killSwitch || this.store.state.groups[device.groupId]?.killSwitch;
-		if (killSwitch) return { active: false };
-		// Se il device è legato a un certificato mTLS, il fingerprint presentato
-		// (estratto dal gateway dalla connessione col device) deve combaciare:
-		// un token rubato senza la chiave privata non basta per l'inferenza.
-		if (device.certFingerprint) {
-			const presented = presentedFingerprint?.replaceAll(":", "").trim().toLowerCase();
-			if (!presented || presented !== device.certFingerprint) return { active: false };
-		}
-		return { active: true, deviceId: device.deviceId, groupId: device.groupId };
+	async readAdminAudit(identity: AdminIdentity, limit: number): Promise<unknown[]> {
+		return this.auditLog.readAdminAudit(identity, limit);
 	}
-
-	// ---- Interni ------------------------------------------------------------
-
-	private toDeviceInfo(device: DeviceRecord): DeviceInfo {
-		const info: DeviceInfo = {
-			deviceId: device.deviceId,
-			name: device.name,
-			groupId: device.groupId,
-			enrolledAt: device.enrolledAt,
-			killSwitch: device.killSwitch,
-			revoked: device.revoked,
-		};
-		if (device.lastSeenAt !== undefined) info.lastSeenAt = device.lastSeenAt;
-		if (device.lastConfigVersion !== undefined) info.lastConfigVersion = device.lastConfigVersion;
-		return info;
+	async verifyAudit(identity: AdminIdentity, deviceId?: string): Promise<ChainVerification> {
+		return this.auditLog.verifyAudit(identity, deviceId);
 	}
-
-	private requireGroup(groupId: string): GroupRecord {
-		const group = this.store.state.groups[groupId];
-		if (!group) throw new ServiceError(404, `gruppo non trovato: ${groupId}`);
-		return group;
+	async exportAuditAnchor(identity: AdminIdentity): Promise<{ anchor: string; publicKeyPem: string }> {
+		return this.auditLog.exportAuditAnchor(identity);
 	}
-
-	private bumpConfig(): void {
-		this.store.state.org.configVersion += 1;
-		this.store.save();
-	}
-
-	/** Rimuove i token di enrollment scaduti o usati da più di 24 ore. */
-	private pruneEnrollTokens(): void {
-		const cutoff = Date.now() - 24 * 3_600_000;
-		for (const [hash, record] of Object.entries(this.store.state.enrollTokens)) {
-			if (Date.parse(record.expiresAt) < cutoff) delete this.store.state.enrollTokens[hash];
-		}
-	}
-
-	private audit(actor: string, action: string, detail: Record<string, unknown>): void {
-		this.store.appendAdminAudit({ timestamp: new Date().toISOString(), actor, action, detail });
-	}
-}
-
-/** Normalizza un fingerprint (rimuove i due-punti, minuscolo) per confronto stabile. */
-function normalizeFingerprint(fingerprint: string | undefined): string | undefined {
-	if (!fingerprint) return undefined;
-	const normalized = fingerprint.replaceAll(":", "").trim().toLowerCase();
-	return normalized === "" ? undefined : normalized;
-}
-
-const AUDIT_EVENT_TYPES = new Set<string>([
-	"policy_decision",
-	"tool_call",
-	"tool_result",
-	"user_bash",
-	"config_applied",
-	"config_error",
-	"agent_start",
-	"agent_stop",
-	"error",
-]);
-
-/**
- * Valida e delimita un evento di audit proveniente da un device: il device è
- * autenticato ma non fidato — l'evento deve avere una shape nota, il deviceId
- * viene sempre forzato e il payload viene troncato per proteggere lo storage.
- */
-function sanitizeAuditEvent(raw: unknown, deviceId: string): AuditEvent | undefined {
-	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
-	const candidate = raw as Record<string, unknown>;
-	if (typeof candidate.type !== "string" || !AUDIT_EVENT_TYPES.has(candidate.type)) return undefined;
-
-	let data: Record<string, unknown> = {};
-	if (typeof candidate.data === "object" && candidate.data !== null && !Array.isArray(candidate.data)) {
-		data = candidate.data as Record<string, unknown>;
-		try {
-			const serialized = JSON.stringify(data);
-			if (serialized.length > 8192) {
-				data = { truncated: true, preview: serialized.slice(0, 2048) };
-			}
-		} catch {
-			data = { truncated: true, preview: "[dati non serializzabili]" };
-		}
-	}
-
-	const event: AuditEvent = {
-		eventId: typeof candidate.eventId === "string" ? candidate.eventId.slice(0, 64) : newId("evt"),
-		deviceId, // il device non può impersonarne un altro
-		timestamp:
-			typeof candidate.timestamp === "string" && !Number.isNaN(Date.parse(candidate.timestamp))
-				? candidate.timestamp
-				: new Date().toISOString(),
-		type: candidate.type as AuditEvent["type"],
-		data,
-	};
-	if (typeof candidate.sessionId === "string") event.sessionId = candidate.sessionId.slice(0, 64);
-	return event;
 }
