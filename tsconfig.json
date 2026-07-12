@@ -3,6 +3,7 @@
 	"references": [
 		{ "path": "packages/shared" },
 		{ "path": "packages/control-plane" },
+		{ "path": "packages/enforcement-core" },
 		{ "path": "packages/fleet-extension" },
 		{ "path": "packages/llm-gateway" },
 		{ "path": "packages/agent-client" }

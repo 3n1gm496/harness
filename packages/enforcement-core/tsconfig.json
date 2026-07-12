@@ -10,12 +10,6 @@
 	"references": [
 		{
 			"path": "../shared"
-		},
-		{
-			"path": "../enforcement-core"
-		},
-		{
-			"path": "../control-plane"
 		}
 	]
 }

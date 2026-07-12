@@ -1,5 +1,5 @@
 {
-	"name": "@harness/fleet-extension",
+	"name": "@harness/enforcement-core",
 	"version": "0.1.0",
 	"private": true,
 	"type": "module",
@@ -14,10 +14,6 @@
 		"test": "npm run build && node --test dist/test/*.test.js"
 	},
 	"dependencies": {
-		"@harness/enforcement-core": "0.1.0",
 		"@harness/shared": "0.1.0"
-	},
-	"devDependencies": {
-		"@harness/control-plane": "0.1.0"
 	}
 }

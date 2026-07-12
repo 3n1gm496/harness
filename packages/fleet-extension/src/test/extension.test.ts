@@ -170,8 +170,8 @@ test("estensione end-to-end contro un control plane reale", async (t) => {
 });
 
 test("la revoca degrada subito a fail-closed, senza attendere la scadenza del bundle", async () => {
-	const { FleetState } = await import("../fleet-state.js");
-	const { loadAgentConfig } = await import("../fleet-state.js");
+	const { FleetState } = await import("@harness/enforcement-core");
+	const { loadAgentConfig } = await import("@harness/enforcement-core");
 	const config = loadAgentConfig();
 
 	// Primo load: bundle valido (con scadenza lontana) in cache.
@@ -206,7 +206,7 @@ test("la revoca degrada subito a fail-closed, senza attendere la scadenza del bu
 });
 
 test("dopo la revoca, la riabilitazione del device recupera dallo stato fail-closed", async () => {
-	const { FleetState, loadAgentConfig } = await import("../fleet-state.js");
+	const { FleetState, loadAgentConfig } = await import("@harness/enforcement-core");
 	const config = loadAgentConfig();
 	const identity = service.authenticateAdmin(adminToken);
 
@@ -225,7 +225,7 @@ test("dopo la revoca, la riabilitazione del device recupera dallo stato fail-clo
 });
 
 test("rotazione chiave di firma end-to-end: il client apprende B e sopravvive al ritiro di A", async () => {
-	const { FleetState, loadAgentConfig } = await import("../fleet-state.js");
+	const { FleetState, loadAgentConfig } = await import("@harness/enforcement-core");
 	const identity = service.authenticateAdmin(adminToken);
 
 	// Il client parte fidando solo la chiave A (quella dell'enrollment).
@@ -289,7 +289,7 @@ test("sandbox obbligatoria: senza marker tutto è bloccato, col marker si opera"
 });
 
 test("anti-rollback: un bundle con configVersion inferiore viene rifiutato", async () => {
-	const { FleetState, loadAgentConfig } = await import("../fleet-state.js");
+	const { FleetState, loadAgentConfig } = await import("@harness/enforcement-core");
 	const { readFileSync: readSync } = await import("node:fs");
 	const identity = service.authenticateAdmin(adminToken);
 
