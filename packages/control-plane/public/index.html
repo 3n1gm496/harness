@@ -6,52 +6,78 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M50 5 90 20v30c0 25-18 39-40 45C28 89 10 75 10 50V20z' fill='%234f8cff'/%3E%3Cpath d='M32 50l12 12 24-26' stroke='%23fff' stroke-width='9' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <title>Harness — Piattaforma amministrativa</title>
 <style>
-	:root { --bg:#0f1216; --panel:#171c22; --border:#2a3138; --text:#e6e9ec; --muted:#9aa4ad; --accent:#4f8cff; --danger:#e5534b; --ok:#3fb950; }
+	:root { --bg:#0f1216; --panel:#171c22; --panel2:#1d232b; --border:#2a3138; --text:#e6e9ec; --muted:#9aa4ad; --accent:#4f8cff; --danger:#e5534b; --ok:#3fb950; --warn:#d29922; }
 	* { box-sizing:border-box; }
 	body { margin:0; font:14px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--text); }
-	header { display:flex; align-items:center; flex-wrap:wrap; gap:12px; padding:14px 24px; border-bottom:1px solid var(--border); }
+	header { display:flex; align-items:center; flex-wrap:wrap; gap:12px; padding:14px 24px; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--bg); z-index:5; }
 	header h1 { font-size:16px; margin:0; }
 	header .spacer { flex:1; }
-	/* minmax(0,1fr): il contenuto largo (es. righe di audit nel pre) scorre
-	   dentro la propria sezione invece di allargare la colonna della griglia. */
-	main { max-width:1100px; margin:0 auto; padding:24px; display:grid; grid-template-columns:minmax(0,1fr); gap:20px; }
-	/* overflow-x: su schermi stretti le tabelle scorrono dentro la sezione
-	   invece di allargare la pagina. */
+	#loadingBar { position:fixed; top:0; left:0; height:3px; width:0; background:var(--accent); transition:width .2s ease, opacity .3s ease; z-index:20; opacity:0; }
+	#loadingBar.active { opacity:1; }
+	main { max-width:1160px; margin:0 auto; padding:24px; display:grid; grid-template-columns:minmax(0,1fr); gap:20px; }
 	section { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:18px; overflow-x:auto; }
 	h2 { margin:0 0 12px; font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
 	table { width:100%; border-collapse:collapse; }
 	th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:middle; }
 	th { color:var(--muted); font-weight:500; }
 	input, select, textarea, button { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; }
-	textarea { width:100%; min-height:180px; font-family:ui-monospace, monospace; font-size:12px; }
+	textarea { width:100%; min-height:200px; font-family:ui-monospace, monospace; font-size:12px; }
 	button { cursor:pointer; background:var(--accent); border-color:transparent; color:#fff; }
 	button.secondary { background:transparent; border-color:var(--border); color:var(--text); }
 	button.danger { background:var(--danger); }
-	.pill { display:inline-block; padding:1px 9px; border-radius:99px; font-size:12px; }
+	button:disabled { opacity:.45; cursor:not-allowed; }
+	.pill { display:inline-block; padding:1px 9px; border-radius:99px; font-size:12px; white-space:nowrap; }
 	.pill.on { background:rgba(229,83,75,.15); color:var(--danger); }
 	.pill.off { background:rgba(63,185,80,.15); color:var(--ok); }
+	.pill.warn { background:rgba(210,153,34,.15); color:var(--warn); }
 	.row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 	.muted { color:var(--muted); }
 	code { background:var(--bg); padding:2px 6px; border-radius:4px; font-size:12px; word-break:break-all; }
-	#msg { position:fixed; bottom:18px; right:18px; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:10px 16px; display:none; max-width:420px; }
-	pre { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; overflow:auto; max-height:320px; font-size:12px; }
-	/* Controlli mostrati solo se il ruolo lo consente (il backend è comunque l'autorità). */
+	#msg { position:fixed; bottom:18px; right:18px; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:10px 16px; display:none; max-width:420px; box-shadow:0 6px 24px rgba(0,0,0,.4); }
+	pre { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; overflow:auto; max-height:340px; font-size:12px; }
 	body:not(.can-operate) .op-only { display:none !important; }
 	body:not(.can-admin) .admin-only { display:none !important; }
+	.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+	.card { background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:14px; }
+	.card .num { font-size:26px; font-weight:600; line-height:1.1; }
+	.card .lbl { color:var(--muted); font-size:12px; margin-top:4px; }
+	.card.alert .num { color:var(--danger); }
+	.card.warn .num { color:var(--warn); }
+	.card.ok .num { color:var(--ok); }
+	.err-banner { background:rgba(229,83,75,.12); border:1px solid var(--danger); color:#ffb4ae; border-radius:6px; padding:8px 12px; margin-bottom:12px; font-size:13px; display:none; }
+	.err-banner.show { display:block; }
+	.field { display:flex; flex-direction:column; gap:4px; min-width:150px; }
+	.field label { font-size:12px; color:var(--muted); }
+	.grid-form { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:14px; }
+	.diff { font-family:ui-monospace, monospace; font-size:12px; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; overflow:auto; max-height:280px; white-space:pre; }
+	.diff .add { color:var(--ok); }
+	.diff .del { color:var(--danger); }
+	.diff .same { color:var(--muted); }
+	.validation { margin:10px 0; font-size:13px; }
+	.validation .v-err { color:var(--danger); }
+	.validation .v-warn { color:var(--warn); }
+	.validation .v-ok { color:var(--ok); }
+	.pager { display:flex; gap:8px; align-items:center; margin-top:10px; }
+	.tabbtn { background:transparent; border-color:var(--border); }
+	.tabbtn.active { background:var(--accent); border-color:transparent; }
+	.hidden { display:none !important; }
 </style>
 </head>
 <body>
+<div id="loadingBar"></div>
 <header>
 	<h1>Harness · Piattaforma amministrativa</h1>
 	<span id="orgName" class="muted"></span>
 	<div class="spacer"></div>
 	<span id="configVersion" class="muted"></span>
 	<button id="btnGlobalKill" class="danger" hidden>Kill switch globale</button>
-	<button id="btnLogout" class="secondary">Cambia token</button>
+	<button id="btnRefresh" class="secondary" hidden>Aggiorna</button>
+	<button id="btnLogout" class="secondary" hidden>Cambia token</button>
 </header>
 <main>
 	<section id="loginPanel">
 		<h2>Accesso</h2>
+		<div class="err-banner" id="loginErr"></div>
 		<div class="row">
 			<input id="tokenInput" type="password" placeholder="Token amministrativo" size="50">
 			<button id="btnLogin">Accedi</button>
@@ -59,18 +85,42 @@
 		<p class="muted">Il token viene generato con <code>harness-cp init</code> o dalla sezione token di un admin.</p>
 	</section>
 
+	<section id="dashboardPanel" hidden>
+		<h2>Panoramica flotta</h2>
+		<div class="cards" id="dashboardCards"></div>
+		<p class="muted" style="margin-top:12px">Un device è <b>stale</b> se non contatta il control plane da oltre il doppio della TTL di configurazione: il suo bundle firmato può essere scaduto e l'agente in fail-closed.</p>
+	</section>
+
 	<section id="devicesPanel" hidden>
 		<h2>Device</h2>
+		<div class="row" style="margin-bottom:10px">
+			<input id="deviceSearch" placeholder="Cerca per nome, gruppo o id…" style="flex:1; min-width:200px">
+			<select id="deviceFilter" class="secondary">
+				<option value="all">Tutti</option>
+				<option value="active">Solo attivi</option>
+				<option value="suspended">Sospesi/revocati</option>
+				<option value="stale">Solo stale</option>
+			</select>
+		</div>
 		<table>
-			<thead><tr><th>Nome</th><th>Gruppo</th><th>Ultimo contatto</th><th>Config</th><th>Kill switch</th><th></th></tr></thead>
+			<thead><tr><th>Nome</th><th>Gruppo</th><th>Stato</th><th>Ultimo contatto</th><th>Config</th><th>Kill</th><th></th></tr></thead>
 			<tbody id="devicesBody"></tbody>
 		</table>
+		<div class="pager">
+			<button id="devPrev" class="secondary">‹ Prec</button>
+			<span id="devPageInfo" class="muted"></span>
+			<button id="devNext" class="secondary">Succ ›</button>
+			<span class="spacer" style="flex:1"></span>
+			<label class="muted">Per pagina
+				<select id="devPageSize"><option>10</option><option selected>25</option><option>50</option><option>100</option></select>
+			</label>
+		</div>
 	</section>
 
 	<section id="groupsPanel" hidden>
 		<h2>Gruppi</h2>
 		<table>
-			<thead><tr><th>Nome</th><th>Kill switch</th><th></th></tr></thead>
+			<thead><tr><th>Nome</th><th>Device</th><th>Kill switch</th><th></th></tr></thead>
 			<tbody id="groupsBody"></tbody>
 		</table>
 		<div class="row admin-only" style="margin-top:10px">
@@ -90,15 +140,50 @@
 	</section>
 
 	<section id="policyPanel" class="admin-only" hidden>
-		<h2>Policy organizzazione (override JSON sul default)</h2>
-		<textarea id="orgPolicy" spellcheck="false"></textarea>
-		<div class="row" style="margin-top:10px">
+		<h2>Policy organizzazione</h2>
+		<div class="err-banner" id="policyErr"></div>
+		<div class="row" style="margin-bottom:12px">
+			<button class="tabbtn active" id="tabForm">Editor guidato</button>
+			<button class="tabbtn" id="tabJson">JSON avanzato</button>
+			<button class="tabbtn" id="tabDiff">Diff vs corrente</button>
+		</div>
+
+		<div id="policyForm">
+			<div class="grid-form">
+				<label class="field"><span>Kill switch org</span>
+					<select id="pf_kill"><option value="">(default)</option><option value="true">attivo</option><option value="false">spento</option></select></label>
+				<label class="field"><span>Sandbox obbligatoria</span>
+					<select id="pf_sandbox"><option value="">(default)</option><option value="true">richiesta</option><option value="false">non richiesta</option></select></label>
+				<label class="field"><span>Redaction segreti</span>
+					<select id="pf_redaction"><option value="">(default)</option><option value="true">abilitata</option><option value="false">disabilitata</option></select></label>
+				<label class="field"><span>Path solo workspace</span>
+					<select id="pf_workspaceOnly"><option value="">(default)</option><option value="true">sì</option><option value="false">no</option></select></label>
+				<label class="field"><span>Modalità bash</span>
+					<select id="pf_bashMode"><option value="">(default)</option><option value="allowlist">allowlist</option><option value="denylist">denylist</option><option value="deny-all">deny-all</option></select></label>
+			</div>
+			<label class="field" style="margin-bottom:8px"><span>Prefissi bash consentiti (uno per riga; vuoto = non sovrascrive)</span>
+				<textarea id="pf_bashAllow" style="min-height:90px" spellcheck="false"></textarea></label>
+		</div>
+
+		<div id="policyJson" class="hidden">
+			<textarea id="orgPolicy" spellcheck="false"></textarea>
+			<div class="row" style="margin-top:8px">
+				<button id="btnSyncJson" class="secondary">Valida e sincronizza col form</button>
+			</div>
+		</div>
+
+		<div id="policyDiff" class="hidden">
+			<div class="diff" id="diffOut"></div>
+		</div>
+
+		<div class="validation" id="policyValidation"></div>
+		<div class="row" style="margin-top:8px">
 			<button id="btnSavePolicy">Salva policy org</button>
-			<span class="muted">Ogni salvataggio incrementa la versione di configurazione e viene distribuito ai device al prossimo sync.</span>
+			<span class="muted">Ogni salvataggio incrementa la versione di configurazione e viene distribuito al prossimo sync.</span>
 		</div>
 	</section>
 
-	<section id="tokensPanel" hidden>
+	<section id="tokensPanel" class="admin-only" hidden>
 		<h2>Token amministrativi</h2>
 		<table>
 			<thead><tr><th>Nome</th><th>Ruolo</th><th>Creato</th><th>Scade</th><th></th></tr></thead>
@@ -106,11 +191,7 @@
 		</table>
 		<div class="row" style="margin-top:10px">
 			<input id="newTokenName" placeholder="Nome (es. mario.rossi)">
-			<select id="newTokenRole">
-				<option value="viewer">viewer</option>
-				<option value="operator">operator</option>
-				<option value="admin">admin</option>
-			</select>
+			<select id="newTokenRole"><option value="viewer">viewer</option><option value="operator">operator</option><option value="admin">admin</option></select>
 			<input id="newTokenTtl" type="number" value="90" min="1" max="365" style="width:90px" title="Scadenza in giorni">
 			<button id="btnCreateToken">Crea token</button>
 		</div>
@@ -146,36 +227,235 @@
 const $ = (id) => document.getElementById(id);
 let token = localStorage.getItem("harnessAdminToken") || "";
 let overview = null;
+let savedPolicy = {};      // override attualmente salvato (baseline del diff)
+let policyModel = {};      // override in editing
+let devPage = 0;
+let pending = 0;
 
+// ---- Feedback: barra di caricamento, toast, banner ------------------------
+function setBusy(on) {
+	pending += on ? 1 : -1;
+	const bar = $("loadingBar");
+	if (pending > 0) { bar.classList.add("active"); bar.style.width = "70%"; }
+	else { bar.style.width = "100%"; setTimeout(() => { bar.classList.remove("active"); bar.style.width = "0"; }, 250); }
+}
 function msg(text, isError) {
 	const el = $("msg");
 	el.textContent = text;
 	el.style.borderColor = isError ? "var(--danger)" : "var(--border)";
 	el.style.display = "block";
-	setTimeout(() => { el.style.display = "none"; }, 4000);
+	setTimeout(() => { el.style.display = "none"; }, 4200);
 }
-
-async function api(method, path, body) {
-	const res = await fetch(path, {
-		method,
-		headers: { "authorization": "Bearer " + token, "content-type": "application/json" },
-		body: body === undefined ? undefined : JSON.stringify(body),
-	});
-	const data = await res.json().catch(() => ({}));
-	if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
-	return data;
+function banner(id, text) {
+	const el = $(id);
+	if (!el) return;
+	if (text) { el.textContent = text; el.classList.add("show"); } else { el.classList.remove("show"); }
 }
-
+function esc(text) { const div = document.createElement("div"); div.textContent = String(text); return div.innerHTML; }
 function fmtDate(iso) { return iso ? new Date(iso).toLocaleString("it-IT") : "mai"; }
 function killPill(on) { return '<span class="pill ' + (on ? "on\">ATTIVO" : "off\">spento") + '</span>'; }
 
+async function api(method, path, body) {
+	setBusy(true);
+	try {
+		const res = await fetch(path, {
+			method,
+			headers: { "authorization": "Bearer " + token, "content-type": "application/json" },
+			body: body === undefined ? undefined : JSON.stringify(body),
+		});
+		const data = await res.json().catch(() => ({}));
+		if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+		return data;
+	} finally { setBusy(false); }
+}
+
+// ---- Staleness / dashboard -------------------------------------------------
+function staleWindowMs() { return Math.max(2 * (overview.org.configTtlMinutes || 60), 10) * 60_000; }
+function isStale(d) {
+	if (d.revoked) return false;
+	const last = d.lastSeenAt ? Date.parse(d.lastSeenAt) : Date.parse(d.enrolledAt || 0);
+	return Date.now() - last > staleWindowMs();
+}
+function deviceState(d) {
+	if (d.revoked) return { key: "suspended", label: '<span class="pill on">revocato</span>' };
+	if (d.killSwitch || overview.org.killSwitch) return { key: "suspended", label: '<span class="pill on">sospeso</span>' };
+	if (isStale(d)) return { key: "stale", label: '<span class="pill warn">stale</span>' };
+	return { key: "active", label: '<span class="pill off">attivo</span>' };
+}
+function renderDashboard() {
+	const ds = overview.devices;
+	const total = ds.length;
+	const suspended = ds.filter((d) => d.revoked || d.killSwitch || overview.org.killSwitch).length;
+	const stale = ds.filter((d) => deviceState(d).key === "stale").length;
+	const active = ds.filter((d) => deviceState(d).key === "active").length;
+	const cards = [
+		{ n: total, l: "Device totali" },
+		{ n: active, l: "Attivi", cls: "ok" },
+		{ n: suspended, l: "Sospesi / revocati", cls: suspended ? "alert" : "" },
+		{ n: stale, l: "Stale (rischio fail-closed)", cls: stale ? "warn" : "" },
+		{ n: "v" + overview.org.configVersion, l: "Versione config" },
+		{ n: overview.org.killSwitch ? "ON" : "off", l: "Kill switch globale", cls: overview.org.killSwitch ? "alert" : "ok" },
+	];
+	$("dashboardCards").innerHTML = cards.map((c) =>
+		'<div class="card ' + (c.cls || "") + '"><div class="num">' + esc(c.n) + '</div><div class="lbl">' + esc(c.l) + "</div></div>"
+	).join("");
+}
+
+// ---- Device: filtro + paginazione -----------------------------------------
+function groupName(id) { return (overview.groups.find((g) => g.groupId === id) || { name: id }).name; }
+function filteredDevices() {
+	const q = $("deviceSearch").value.trim().toLowerCase();
+	const filter = $("deviceFilter").value;
+	return overview.devices.filter((d) => {
+		if (q && !(d.name.toLowerCase().includes(q) || groupName(d.groupId).toLowerCase().includes(q) || d.deviceId.toLowerCase().includes(q))) return false;
+		if (filter === "all") return true;
+		const st = deviceState(d).key;
+		if (filter === "active") return st === "active";
+		if (filter === "stale") return st === "stale";
+		if (filter === "suspended") return st === "suspended";
+		return true;
+	});
+}
+function renderDevices() {
+	const all = filteredDevices();
+	const size = Number($("devPageSize").value);
+	const pages = Math.max(1, Math.ceil(all.length / size));
+	if (devPage >= pages) devPage = pages - 1;
+	if (devPage < 0) devPage = 0;
+	const slice = all.slice(devPage * size, devPage * size + size);
+	$("devicesBody").innerHTML = slice.map((d) =>
+		"<tr><td>" + esc(d.name) + "</td>" +
+		"<td>" + esc(groupName(d.groupId)) + "</td>" +
+		"<td>" + deviceState(d).label + "</td>" +
+		"<td>" + fmtDate(d.lastSeenAt) + "</td>" +
+		"<td>" + (d.lastConfigVersion ?? "—") + "</td>" +
+		"<td>" + killPill(d.killSwitch) + "</td>" +
+		'<td class="row op-only">' +
+		'<button class="secondary" onclick="toggleDeviceKill(\'' + d.deviceId + "'," + d.killSwitch + ')">' + (d.killSwitch ? "riattiva" : "sospendi") + "</button>" +
+		(d.revoked ? "" : '<button class="danger" onclick="revokeDevice(\'' + d.deviceId + '\')">revoca</button>') +
+		"</td></tr>"
+	).join("") || '<tr><td colspan="7" class="muted">Nessun device corrisponde ai filtri</td></tr>';
+	$("devPageInfo").textContent = all.length ? ("Pagina " + (devPage + 1) + " di " + pages + " · " + all.length + " device") : "0 device";
+	$("devPrev").disabled = devPage <= 0;
+	$("devNext").disabled = devPage >= pages - 1;
+}
+
+// ---- Policy: modello, form, validazione, diff ------------------------------
+const POLICY_SCHEMA = {
+	version: { type: "const", value: 1 },
+	killSwitch: { type: "boolean" },
+	tools: { type: "object", fields: { defaultAction: { type: "enum", values: ["allow", "deny"] }, allow: { type: "string[]" }, deny: { type: "string[]" } } },
+	bash: { type: "object", fields: { mode: { type: "enum", values: ["allowlist", "denylist", "deny-all"] }, allow: { type: "string[]" }, deny: { type: "string[]" }, allowSubstitution: { type: "boolean" } } },
+	paths: { type: "object", fields: { workspaceOnly: { type: "boolean" }, deny: { type: "string[]" }, allow: { type: "string[]" } } },
+	redaction: { type: "object", fields: { enabled: { type: "boolean" }, patterns: { type: "string[]" } } },
+	sandbox: { type: "object", fields: { required: { type: "boolean" }, markerPath: { type: "string" }, markerValue: { type: "string" } } },
+};
+function checkType(spec, val, path, errors) {
+	if (spec.type === "boolean" && typeof val !== "boolean") errors.push(path + ": deve essere booleano");
+	else if (spec.type === "string" && typeof val !== "string") errors.push(path + ": deve essere stringa");
+	else if (spec.type === "const" && val !== spec.value) errors.push(path + ": deve valere " + spec.value);
+	else if (spec.type === "enum" && !spec.values.includes(val)) errors.push(path + ": deve essere uno di " + spec.values.join(", "));
+	else if (spec.type === "string[]") {
+		if (!Array.isArray(val) || val.some((x) => typeof x !== "string")) errors.push(path + ": deve essere un array di stringhe");
+	}
+}
+function validatePolicy(obj) {
+	const errors = [], warnings = [];
+	if (typeof obj !== "object" || obj === null || Array.isArray(obj)) { errors.push("La policy deve essere un oggetto JSON"); return { errors, warnings }; }
+	for (const key of Object.keys(obj)) {
+		const spec = POLICY_SCHEMA[key];
+		if (!spec) { warnings.push('Chiave sconosciuta "' + key + '" (possibile refuso: sarà ignorata dal client)'); continue; }
+		if (spec.type === "object") {
+			const sub = obj[key];
+			if (typeof sub !== "object" || sub === null || Array.isArray(sub)) { errors.push(key + ": deve essere un oggetto"); continue; }
+			for (const sk of Object.keys(sub)) {
+				const sspec = spec.fields[sk];
+				if (!sspec) { warnings.push('Chiave sconosciuta "' + key + "." + sk + '"'); continue; }
+				checkType(sspec, sub[sk], key + "." + sk, errors);
+			}
+		} else checkType(spec, obj[key], key, errors);
+	}
+	return { errors, warnings };
+}
+function renderValidation(v) {
+	const parts = [];
+	if (v.errors.length === 0 && v.warnings.length === 0) parts.push('<span class="v-ok">✓ policy valida</span>');
+	for (const e of v.errors) parts.push('<div class="v-err">✗ ' + esc(e) + "</div>");
+	for (const w of v.warnings) parts.push('<div class="v-warn">⚠ ' + esc(w) + "</div>");
+	$("policyValidation").innerHTML = parts.join("");
+	$("btnSavePolicy").disabled = v.errors.length > 0;
+}
+function modelFromForm() {
+	const m = {};
+	const setBool = (id, path) => {
+		const v = $(id).value;
+		if (v === "") return;
+		set(m, path, v === "true");
+	};
+	function set(obj, path, val) { const p = path.split("."); let o = obj; for (let i = 0; i < p.length - 1; i++) { o[p[i]] = o[p[i]] || {}; o = o[p[i]]; } o[p[p.length - 1]] = val; }
+	setBool("pf_kill", "killSwitch");
+	setBool("pf_sandbox", "sandbox.required");
+	setBool("pf_redaction", "redaction.enabled");
+	setBool("pf_workspaceOnly", "paths.workspaceOnly");
+	if ($("pf_bashMode").value) set(m, "bash.mode", $("pf_bashMode").value);
+	const allow = $("pf_bashAllow").value.split("\n").map((s) => s.trim()).filter(Boolean);
+	if (allow.length) set(m, "bash.allow", allow);
+	return m;
+}
+function formFromModel() {
+	const g = (path) => { const p = path.split("."); let o = policyModel; for (const k of p) { if (o == null) return undefined; o = o[k]; } return o; };
+	const setSel = (id, val) => { $(id).value = (val === true ? "true" : val === false ? "false" : ""); };
+	setSel("pf_kill", g("killSwitch"));
+	setSel("pf_sandbox", g("sandbox.required"));
+	setSel("pf_redaction", g("redaction.enabled"));
+	setSel("pf_workspaceOnly", g("paths.workspaceOnly"));
+	$("pf_bashMode").value = g("bash.mode") || "";
+	$("pf_bashAllow").value = Array.isArray(g("bash.allow")) ? g("bash.allow").join("\n") : "";
+}
+function syncFromForm() {
+	policyModel = modelFromForm();
+	$("orgPolicy").value = JSON.stringify(policyModel, null, 2);
+	afterModelChange();
+}
+function afterModelChange() {
+	renderValidation(validatePolicy(policyModel));
+	renderDiff();
+}
+function lineDiff(aStr, bStr) {
+	const a = aStr.split("\n"), b = bStr.split("\n"), n = a.length, m = b.length;
+	const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+	for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+	const out = []; let i = 0, j = 0;
+	while (i < n && j < m) { if (a[i] === b[j]) { out.push([" ", a[i]]); i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push(["-", a[i++]]); } else { out.push(["+", b[j++]]); } }
+	while (i < n) out.push(["-", a[i++]]);
+	while (j < m) out.push(["+", b[j++]]);
+	return out;
+}
+function renderDiff() {
+	const before = JSON.stringify(savedPolicy, null, 2);
+	const after = JSON.stringify(policyModel, null, 2);
+	if (before === after) { $("diffOut").innerHTML = '<span class="same">nessuna modifica rispetto alla policy salvata</span>'; return; }
+	$("diffOut").innerHTML = lineDiff(before, after).map(([t, v]) => {
+		const cls = t === "+" ? "add" : t === "-" ? "del" : "same";
+		return '<span class="' + cls + '">' + esc(t + " " + v) + "</span>";
+	}).join("\n");
+}
+function showPolicyTab(which) {
+	$("policyForm").classList.toggle("hidden", which !== "form");
+	$("policyJson").classList.toggle("hidden", which !== "json");
+	$("policyDiff").classList.toggle("hidden", which !== "diff");
+	for (const [id, w] of [["tabForm", "form"], ["tabJson", "json"], ["tabDiff", "diff"]]) $(id).classList.toggle("active", w === which);
+	if (which === "form") formFromModel();
+	if (which === "json") $("orgPolicy").value = JSON.stringify(policyModel, null, 2);
+	if (which === "diff") renderDiff();
+}
+
+// ---- Refresh principale ----------------------------------------------------
 async function refresh() {
 	overview = await api("GET", "/api/admin/overview");
 	$("orgName").textContent = overview.org.name;
 	$("configVersion").textContent = "config v" + overview.org.configVersion + " · " + overview.role;
 
-	// I controlli che mutano lo stato sono visibili solo a chi ha il ruolo
-	// adeguato; il backend resta comunque l'autorità (defense-in-depth).
 	const canOperate = overview.role === "admin" || overview.role === "operator";
 	const canAdmin = overview.role === "admin";
 	document.body.classList.toggle("can-operate", canOperate);
@@ -185,40 +465,37 @@ async function refresh() {
 	kill.hidden = !canOperate;
 	kill.textContent = overview.org.killSwitch ? "Disattiva kill switch globale" : "Kill switch globale";
 	kill.className = overview.org.killSwitch ? "secondary" : "danger";
+	$("btnRefresh").hidden = false;
+	$("btnLogout").hidden = false;
 
-	const groupName = (id) => (overview.groups.find((g) => g.groupId === id) || { name: id }).name;
-	$("devicesBody").innerHTML = overview.devices.map((d) =>
-		"<tr><td>" + esc(d.name) + (d.revoked ? ' <span class="pill on">revocato</span>' : "") + "</td>" +
-		"<td>" + esc(groupName(d.groupId)) + "</td>" +
-		"<td>" + fmtDate(d.lastSeenAt) + "</td>" +
-		"<td>" + (d.lastConfigVersion ?? "—") + "</td>" +
-		"<td>" + killPill(d.killSwitch) + "</td>" +
-		'<td class="row op-only">' +
-		'<button class="secondary" onclick="toggleDeviceKill(\'' + d.deviceId + "'," + d.killSwitch + ')">' + (d.killSwitch ? "riattiva" : "sospendi") + "</button>" +
-		(d.revoked ? "" : '<button class="danger" onclick="revokeDevice(\'' + d.deviceId + '\')">revoca</button>') +
-		"</td></tr>"
-	).join("") || '<tr><td colspan="6" class="muted">Nessun device registrato</td></tr>';
+	renderDashboard();
+	renderDevices();
 
-	$("groupsBody").innerHTML = overview.groups.map((g) =>
-		"<tr><td>" + esc(g.name) + "</td><td>" + killPill(g.killSwitch) + "</td>" +
-		'<td class="op-only"><button class="secondary" onclick="toggleGroupKill(\'' + g.groupId + "'," + g.killSwitch + ')">' + (g.killSwitch ? "riattiva" : "sospendi") + "</button></td></tr>"
-	).join("");
+	$("groupsBody").innerHTML = overview.groups.map((g) => {
+		const count = overview.devices.filter((d) => d.groupId === g.groupId).length;
+		return "<tr><td>" + esc(g.name) + "</td><td>" + count + "</td><td>" + killPill(g.killSwitch) + "</td>" +
+			'<td class="op-only"><button class="secondary" onclick="toggleGroupKill(\'' + g.groupId + "'," + g.killSwitch + ')">' + (g.killSwitch ? "riattiva" : "sospendi") + "</button></td></tr>";
+	}).join("");
 
-	const groupOptions = overview.groups.map((g) => '<option value="' + g.groupId + '">' + esc(g.name) + "</option>").join("");
-	$("enrollGroup").innerHTML = groupOptions;
+	$("enrollGroup").innerHTML = overview.groups.map((g) => '<option value="' + g.groupId + '">' + esc(g.name) + "</option>").join("");
 	$("auditDevice").innerHTML = '<option value="">— audit amministrativo —</option>' +
 		overview.devices.map((d) => '<option value="' + d.deviceId + '">' + esc(d.name) + "</option>").join("");
 
-	const orgConfig = await api("GET", "/api/admin/org/config");
-	$("orgPolicy").value = JSON.stringify(orgConfig.policyOverride, null, 2);
-
-	for (const id of ["devicesPanel", "groupsPanel", "enrollPanel", "policyPanel", "auditPanel"]) $(id).hidden = false;
+	for (const id of ["dashboardPanel", "devicesPanel", "groupsPanel", "enrollPanel", "auditPanel"]) $(id).hidden = false;
 	$("loginPanel").hidden = true;
 
-	// Solo gli admin possono elencare i token: si evita del tutto la chiamata
-	// (che risponderebbe 403) per gli altri ruoli.
-	if (canAdmin) { await refreshTokens(); await refreshSigningKeys(); }
-	else { $("tokensPanel").hidden = true; $("signingPanel").hidden = true; }
+	if (canAdmin) {
+		const orgConfig = await api("GET", "/api/admin/org/config");
+		savedPolicy = orgConfig.policyOverride || {};
+		policyModel = JSON.parse(JSON.stringify(savedPolicy));
+		$("policyPanel").hidden = false;
+		showPolicyTab("form");
+		afterModelChange();
+		await refreshTokens();
+		await refreshSigningKeys();
+	} else {
+		$("policyPanel").hidden = true; $("tokensPanel").hidden = true; $("signingPanel").hidden = true;
+	}
 }
 
 async function refreshSigningKeys() {
@@ -227,124 +504,67 @@ async function refreshSigningKeys() {
 		$("signingBody").innerHTML = data.keys.map((k) =>
 			"<tr><td><code>" + esc(k.keyId) + "</code></td><td>" + fmtDate(k.createdAt) + "</td>" +
 			"<td>" + (k.active ? '<span class="pill off">attiva (firma)</span>' : '<span class="muted">fidata</span>') + "</td>" +
-			"<td>" + (k.active
-				? ""
-				: '<button class="secondary" onclick="promoteKey(\'' + k.keyId + '\')">promuovi</button> ' +
-				  '<button class="danger" onclick="retireKey(\'' + k.keyId + '\')">ritira</button>') +
+			"<td>" + (k.active ? "" : '<button class="secondary" onclick="promoteKey(\'' + k.keyId + '\')">promuovi</button> <button class="danger" onclick="retireKey(\'' + k.keyId + '\')">ritira</button>') +
 			"</td></tr>"
 		).join("");
 		$("signingPanel").hidden = false;
 	} catch { $("signingPanel").hidden = true; }
 }
-window.promoteKey = async (id) => {
-	if (!confirm("Promuovere questa chiave ad attiva? I device non ancora sincronizzati con essa andranno fail-closed.")) return;
-	try { await api("POST", "/api/admin/signing-keys/" + id + "/promote"); await refreshSigningKeys(); msg("Chiave promossa"); }
-	catch (e) { msg(e.message, true); }
-};
-window.retireKey = async (id) => {
-	if (!confirm("Ritirare questa chiave? I bundle firmati con essa non saranno più verificabili.")) return;
-	try { await api("DELETE", "/api/admin/signing-keys/" + id); await refreshSigningKeys(); msg("Chiave ritirata"); }
-	catch (e) { msg(e.message, true); }
-};
-
 async function refreshTokens() {
 	const data = await api("GET", "/api/admin/admin-tokens");
 	$("tokensBody").innerHTML = data.tokens.map((t) =>
-		"<tr><td>" + esc(t.name) + "</td><td>" + esc(t.role) + "</td>" +
-		"<td>" + fmtDate(t.createdAt) + "</td>" +
+		"<tr><td>" + esc(t.name) + "</td><td>" + esc(t.role) + "</td><td>" + fmtDate(t.createdAt) + "</td>" +
 		"<td>" + (t.expiresAt ? fmtDate(t.expiresAt) : '<span class="muted">mai (bootstrap)</span>') + "</td>" +
 		'<td><button class="danger" onclick="revokeToken(\'' + t.id + '\')">revoca</button></td></tr>'
 	).join("");
 	$("tokensPanel").hidden = false;
 }
 
-function esc(text) { const div = document.createElement("div"); div.textContent = String(text); return div.innerHTML; }
+// ---- Azioni ----------------------------------------------------------------
+window.promoteKey = async (id) => { if (!confirm("Promuovere questa chiave ad attiva? I device non sincronizzati andranno fail-closed.")) return; try { await api("POST", "/api/admin/signing-keys/" + id + "/promote"); await refreshSigningKeys(); msg("Chiave promossa"); } catch (e) { msg(e.message, true); } };
+window.retireKey = async (id) => { if (!confirm("Ritirare questa chiave? I bundle firmati con essa non saranno più verificabili.")) return; try { await api("DELETE", "/api/admin/signing-keys/" + id); await refreshSigningKeys(); msg("Chiave ritirata"); } catch (e) { msg(e.message, true); } };
+window.toggleDeviceKill = async (id, current) => { try { await api("PUT", "/api/admin/devices/" + id, { killSwitch: !current }); await refresh(); msg("Device aggiornato"); } catch (e) { msg(e.message, true); } };
+window.revokeDevice = async (id) => { if (!confirm("Revocare definitivamente il device? Il suo token smetterà di funzionare.")) return; try { await api("PUT", "/api/admin/devices/" + id, { revoked: true }); await refresh(); msg("Device revocato"); } catch (e) { msg(e.message, true); } };
+window.toggleGroupKill = async (id, current) => { try { await api("PUT", "/api/admin/groups/" + id, { killSwitch: !current }); await refresh(); msg("Gruppo aggiornato"); } catch (e) { msg(e.message, true); } };
+window.revokeToken = async (id) => { if (!confirm("Revocare il token amministrativo? Chi lo usa perderà subito l'accesso.")) return; try { await api("DELETE", "/api/admin/admin-tokens/" + id); await refreshTokens(); msg("Token revocato"); } catch (e) { msg(e.message, true); } };
 
-window.toggleDeviceKill = async (id, current) => {
-	try { await api("PUT", "/api/admin/devices/" + id, { killSwitch: !current }); await refresh(); msg("Device aggiornato"); }
-	catch (e) { msg(e.message, true); }
-};
-window.revokeDevice = async (id) => {
-	if (!confirm("Revocare definitivamente il device? Il suo token smetterà di funzionare.")) return;
-	try { await api("PUT", "/api/admin/devices/" + id, { revoked: true }); await refresh(); msg("Device revocato"); }
-	catch (e) { msg(e.message, true); }
-};
-window.toggleGroupKill = async (id, current) => {
-	try { await api("PUT", "/api/admin/groups/" + id, { killSwitch: !current }); await refresh(); msg("Gruppo aggiornato"); }
-	catch (e) { msg(e.message, true); }
-};
+$("btnGlobalKill").onclick = async () => { const target = !overview.org.killSwitch; if (target && !confirm("Attivare il kill switch GLOBALE? Tutti gli agenti verranno sospesi.")) return; try { await api("PUT", "/api/admin/org", { killSwitch: target }); await refresh(); msg("Organizzazione aggiornata"); } catch (e) { msg(e.message, true); } };
+$("btnRefresh").onclick = () => refresh().catch((e) => msg(e.message, true));
+$("btnCreateGroup").onclick = async () => { try { await api("POST", "/api/admin/groups", { name: $("newGroupName").value }); $("newGroupName").value = ""; await refresh(); msg("Gruppo creato"); } catch (e) { msg(e.message, true); } };
+$("btnEnrollToken").onclick = async () => { try { const data = await api("POST", "/api/admin/enroll-tokens", { groupId: $("enrollGroup").value, ttlMinutes: Number($("enrollTtl").value) }); $("enrollResult").innerHTML = "Token (monouso, mostralo solo al device): <code>" + esc(data.enrollToken) + "</code>"; } catch (e) { msg(e.message, true); } };
 
-$("btnGlobalKill").onclick = async () => {
-	const target = !overview.org.killSwitch;
-	if (target && !confirm("Attivare il kill switch GLOBALE? Tutti gli agenti verranno sospesi.")) return;
-	try { await api("PUT", "/api/admin/org", { killSwitch: target }); await refresh(); msg("Organizzazione aggiornata"); }
-	catch (e) { msg(e.message, true); }
-};
-$("btnCreateGroup").onclick = async () => {
-	try { await api("POST", "/api/admin/groups", { name: $("newGroupName").value }); $("newGroupName").value = ""; await refresh(); msg("Gruppo creato"); }
-	catch (e) { msg(e.message, true); }
-};
-$("btnEnrollToken").onclick = async () => {
-	try {
-		const data = await api("POST", "/api/admin/enroll-tokens", { groupId: $("enrollGroup").value, ttlMinutes: Number($("enrollTtl").value) });
-		$("enrollResult").innerHTML = "Token (monouso, mostralo solo al device): <code>" + data.enrollToken + "</code>";
-	} catch (e) { msg(e.message, true); }
-};
 $("btnSavePolicy").onclick = async () => {
-	try {
-		const policyOverride = JSON.parse($("orgPolicy").value || "{}");
-		await api("PUT", "/api/admin/org", { policyOverride });
-		await refresh(); msg("Policy salvata e versionata");
-	} catch (e) { msg(e.message, true); }
+	const v = validatePolicy(policyModel);
+	if (v.errors.length) { banner("policyErr", "Correggi gli errori di validazione prima di salvare."); return; }
+	if (v.warnings.length && !confirm("Ci sono avvisi (chiavi sconosciute). Salvare comunque?")) return;
+	banner("policyErr", "");
+	try { await api("PUT", "/api/admin/org", { policyOverride: policyModel }); await refresh(); msg("Policy salvata e versionata"); }
+	catch (e) { banner("policyErr", e.message); msg(e.message, true); }
 };
-$("btnLoadAudit").onclick = async () => {
-	try {
-		const deviceId = $("auditDevice").value;
-		const data = await api("GET", "/api/admin/audit?limit=100" + (deviceId ? "&deviceId=" + deviceId : ""));
-		$("auditOutput").textContent = data.events.map((e) => JSON.stringify(e)).join("\n") || "nessun evento";
-	} catch (e) { msg(e.message, true); }
+$("btnSyncJson").onclick = () => {
+	try { policyModel = JSON.parse($("orgPolicy").value || "{}"); banner("policyErr", ""); formFromModel(); afterModelChange(); msg("JSON sincronizzato"); }
+	catch (e) { banner("policyErr", "JSON non valido: " + e.message); }
 };
-$("btnVerifyAudit").onclick = async () => {
-	try {
-		const deviceId = $("auditDevice").value;
-		const data = await api("GET", "/api/admin/audit/verify" + (deviceId ? "?deviceId=" + deviceId : ""));
-		const el = $("auditVerdict");
-		if (data.valid) {
-			el.innerHTML = '<span class="pill off">catena integra · ' + data.entries + ' righe</span>';
-		} else {
-			el.innerHTML = '<span class="pill on">COMPROMESSA alla riga ' + data.brokenAtLine + '</span>';
-		}
-	} catch (e) { msg(e.message, true); }
-};
-window.revokeToken = async (id) => {
-	if (!confirm("Revocare il token amministrativo? Chi lo usa perderà subito l'accesso.")) return;
-	try { await api("DELETE", "/api/admin/admin-tokens/" + id); await refreshTokens(); msg("Token revocato"); }
-	catch (e) { msg(e.message, true); }
-};
-$("btnCreateToken").onclick = async () => {
-	try {
-		const data = await api("POST", "/api/admin/admin-tokens", {
-			name: $("newTokenName").value,
-			role: $("newTokenRole").value,
-			ttlDays: Number($("newTokenTtl").value),
-		});
-		$("newTokenName").value = "";
-		$("tokenResult").innerHTML = "Token (mostrato solo ora): <code>" + data.token + "</code>";
-		await refreshTokens();
-	} catch (e) { msg(e.message, true); }
-};
-$("btnLogin").onclick = async () => {
-	token = $("tokenInput").value.trim();
-	try { await refresh(); localStorage.setItem("harnessAdminToken", token); }
-	catch (e) { msg("Accesso fallito: " + e.message, true); }
-};
-$("btnAddKey").onclick = async () => {
-	try { const r = await api("POST", "/api/admin/signing-keys"); await refreshSigningKeys(); msg("Chiave aggiunta: " + r.keyId); }
-	catch (e) { msg(e.message, true); }
-};
+for (const pf of ["pf_kill", "pf_sandbox", "pf_redaction", "pf_workspaceOnly", "pf_bashMode", "pf_bashAllow"]) $(pf).addEventListener("input", syncFromForm);
+$("tabForm").onclick = () => showPolicyTab("form");
+$("tabJson").onclick = () => showPolicyTab("json");
+$("tabDiff").onclick = () => showPolicyTab("diff");
+
+$("btnLoadAudit").onclick = async () => { try { const deviceId = $("auditDevice").value; const data = await api("GET", "/api/admin/audit?limit=100" + (deviceId ? "&deviceId=" + deviceId : "")); $("auditOutput").textContent = data.events.map((e) => JSON.stringify(e)).join("\n") || "nessun evento"; } catch (e) { msg(e.message, true); } };
+$("btnVerifyAudit").onclick = async () => { try { const deviceId = $("auditDevice").value; const data = await api("GET", "/api/admin/audit/verify" + (deviceId ? "?deviceId=" + deviceId : "")); $("auditVerdict").innerHTML = data.valid ? '<span class="pill off">catena integra · ' + data.entries + ' righe</span>' : '<span class="pill on">COMPROMESSA alla riga ' + data.brokenAtLine + "</span>"; } catch (e) { msg(e.message, true); } };
+$("btnCreateToken").onclick = async () => { try { const data = await api("POST", "/api/admin/admin-tokens", { name: $("newTokenName").value, role: $("newTokenRole").value, ttlDays: Number($("newTokenTtl").value) }); $("newTokenName").value = ""; $("tokenResult").innerHTML = "Token (mostrato solo ora): <code>" + esc(data.token) + "</code>"; await refreshTokens(); } catch (e) { msg(e.message, true); } };
+$("btnAddKey").onclick = async () => { try { const r = await api("POST", "/api/admin/signing-keys"); await refreshSigningKeys(); msg("Chiave aggiunta: " + r.keyId); } catch (e) { msg(e.message, true); } };
+$("btnLogin").onclick = async () => { token = $("tokenInput").value.trim(); banner("loginErr", ""); try { await refresh(); localStorage.setItem("harnessAdminToken", token); } catch (e) { banner("loginErr", "Accesso fallito: " + e.message); } };
 $("btnLogout").onclick = () => { localStorage.removeItem("harnessAdminToken"); location.reload(); };
 
-if (token) refresh().catch(() => { $("loginPanel").hidden = false; });
+// Device pagination/filter listeners.
+$("deviceSearch").addEventListener("input", () => { devPage = 0; renderDevices(); });
+$("deviceFilter").addEventListener("change", () => { devPage = 0; renderDevices(); });
+$("devPageSize").addEventListener("change", () => { devPage = 0; renderDevices(); });
+$("devPrev").onclick = () => { devPage--; renderDevices(); };
+$("devNext").onclick = () => { devPage++; renderDevices(); };
+
+if (token) refresh().catch((e) => { $("loginPanel").hidden = false; banner("loginErr", "Sessione non valida: " + e.message); });
 </script>
 </body>
 </html>

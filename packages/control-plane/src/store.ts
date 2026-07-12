@@ -217,19 +217,29 @@ export class Store {
 		// periodicamente l'intero snapshot.
 		if (isIncremental(backend)) {
 			store.changeCursor = await backend.changelogCursor();
-			store.unsubscribe = await backend.onChange(() => void store.refreshFromBackend());
-			store.refreshTimer = setInterval(() => void store.refreshFromBackend(), 5000);
+			store.unsubscribe = await backend.onChange(() => void store.queueRefresh());
+			store.refreshTimer = setInterval(() => void store.queueRefresh(), 5000);
 			store.refreshTimer.unref();
 		} else if (isNormalized(backend)) {
-			store.refreshTimer = setInterval(() => void store.refreshFromBackend(), 2000);
+			store.refreshTimer = setInterval(() => void store.queueRefresh(), 2000);
 			store.refreshTimer.unref();
 		}
 		return store;
 	}
 
-	/** Solo per test: forza un refresh immediato dal backend. */
+	/** Solo per test: forza un refresh immediato dal backend e ne attende l'esito. */
 	async refreshNow(): Promise<void> {
-		await this.refreshFromBackend();
+		await this.queueRefresh();
+	}
+
+	/**
+	 * Accoda un refresh serializzandolo con gli altri (NOTIFY, poll, refreshNow):
+	 * i refresh non si sovrappongono e chi attende la promise ottiene lo stato
+	 * aggiornato dopo che tutti i refresh accodati prima sono stati applicati.
+	 */
+	private queueRefresh(): Promise<void> {
+		this.refreshQueue = this.refreshQueue.then(() => this.doRefresh());
+		return this.refreshQueue;
 	}
 
 	/** Sigilla le chiavi private per la persistenza (no-op se KEK assente). */
@@ -258,8 +268,8 @@ export class Store {
 	private changeCursor = 0;
 	/** Disiscrizione dal LISTEN/NOTIFY del backend incrementale. */
 	private unsubscribe: (() => Promise<void>) | undefined;
-	/** Evita refresh incrementali concorrenti sovrapposti. */
-	private refreshing = false;
+	/** Coda che serializza i refresh (NOTIFY, poll, refreshNow) senza sovrapporli. */
+	private refreshQueue: Promise<void> = Promise.resolve();
 
 	private mirrorNow(): void {
 		if (!this.mirror) return;
@@ -339,9 +349,8 @@ export class Store {
 	 * i delta dal changelog (dopo aver drenato le scritture locali in volo, così
 	 * il DB riflette già le proprie modifiche); altrimenti ricarica lo snapshot.
 	 */
-	private async refreshFromBackend(): Promise<void> {
-		if (!this.mirror || this.refreshing) return;
-		this.refreshing = true;
+	private async doRefresh(): Promise<void> {
+		if (!this.mirror) return;
 		try {
 			const backend = this.mirror;
 			if (isIncremental(backend)) {
@@ -364,8 +373,6 @@ export class Store {
 			}
 		} catch (error) {
 			this.lastMirrorError = error instanceof Error ? error.message : String(error);
-		} finally {
-			this.refreshing = false;
 		}
 	}
 

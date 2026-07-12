@@ -512,9 +512,15 @@ test("P2: scadenza server-side del device token, requireDeviceCert e rate-limit 
 	}
 });
 
-test("la UI statica viene servita", async () => {
+test("la UI statica viene servita con la dashboard, la paginazione e l'editor policy", async () => {
 	const response = await fetch(`${baseUrl}/`);
 	assert.equal(response.status, 200);
 	const html = await response.text();
 	assert.match(html, /Piattaforma amministrativa/);
+	assert.match(html, /<!doctype html>/i);
+	// Elementi chiave della UI ricostruita (regressione strutturale).
+	assert.match(html, /id="dashboardCards"/);
+	assert.match(html, /id="devPageSize"/);
+	assert.match(html, /id="policyValidation"/);
+	assert.match(html, /id="diffOut"/);
 });
