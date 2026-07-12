@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Kek } from "@harness/shared";
-import { loadKekFromEnv } from "@harness/shared";
+import { createLogger, loadKekFromEnv } from "@harness/shared";
 import { ControlPlaneService } from "./service.js";
 import { createControlPlaneServer } from "./server.js";
 import { Store } from "./store.js";
@@ -49,18 +49,20 @@ async function main(): Promise<void> {
 		const service = new ControlPlaneService(store, oidc ? { oidc } : {});
 		if (oidc) console.log(`[control-plane] OIDC admin abilitato (issuer ${oidc.issuer})`);
 		const tls = loadTlsFromEnv();
+		const logger = createLogger("control-plane");
 		const options: Parameters<typeof createControlPlaneServer>[1] = {
-			log: (entry) => console.log(JSON.stringify(entry)),
+			logger,
+			readiness: () => store.checkReady(),
 		};
 		if (tls) options.tls = tls;
 		const server = createControlPlaneServer(service, options);
 		server.listen(port, () => {
 			const scheme = tls ? "https" : "http";
-			console.log(`[control-plane] in ascolto su ${scheme}://localhost:${port} (data dir: ${dataDir})`);
+			logger.info("listening", { url: `${scheme}://localhost:${port}`, dataDir });
 			if (!tls) {
-				console.warn(
-					"[control-plane] in chiaro: imposta HARNESS_TLS_CERT_FILE e HARNESS_TLS_KEY_FILE (o termina TLS su un reverse proxy)",
-				);
+				logger.warn("plaintext_transport", {
+					hint: "imposta HARNESS_TLS_CERT_FILE e HARNESS_TLS_KEY_FILE (o termina TLS su un reverse proxy)",
+				});
 			}
 		});
 		const shutdown = () => {

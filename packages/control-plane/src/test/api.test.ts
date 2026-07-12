@@ -23,7 +23,7 @@ before(async () => {
 	const store = new Store(dataDir);
 	const service = new ControlPlaneService(store);
 	adminToken = service.bootstrapAdminToken("test-admin");
-	server = createControlPlaneServer(service);
+	server = createControlPlaneServer(service, { readiness: () => store.checkReady() });
 	await new Promise<void>((resolve) => server.listen(0, resolve));
 	baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
@@ -51,6 +51,25 @@ async function call(
 test("le API admin rifiutano richieste senza token", async () => {
 	const result = await call("GET", "/api/admin/overview");
 	assert.equal(result.status, 401);
+});
+
+test("osservabilità: /readyz riflette lo stato reale e /metrics espone Prometheus", async () => {
+	const ready = await fetch(`${baseUrl}/readyz`);
+	assert.equal(ready.status, 200);
+	const readyBody = (await ready.json()) as { ready: boolean; detail: Record<string, unknown> };
+	assert.equal(readyBody.ready, true);
+	assert.equal(readyBody.detail.backend, "file");
+	assert.ok((readyBody.detail.signingKeys as number) >= 1);
+
+	// Genera traffico e verifica che il contatore lo registri.
+	await call("GET", "/healthz");
+	const metrics = await fetch(`${baseUrl}/metrics`);
+	assert.equal(metrics.status, 200);
+	assert.match(metrics.headers.get("content-type") ?? "", /text\/plain/);
+	const text = await metrics.text();
+	assert.match(text, /# TYPE harness_http_requests_total counter/);
+	assert.match(text, /harness_http_requests_total\{[^}]*status="200"[^}]*\}/);
+	assert.match(text, /harness_up 1/);
 });
 
 test("flusso completo: enroll token → enrollment → config firmata", async () => {

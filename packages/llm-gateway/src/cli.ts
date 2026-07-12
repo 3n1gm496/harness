@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
+import { createLogger } from "@harness/shared";
 import { createGatewayServer, type GatewayOptions } from "./gateway.js";
 
 /**
@@ -40,7 +41,8 @@ function main(): void {
 		process.exit(2);
 	}
 
-	const options: GatewayOptions = { controlPlaneUrl, gatewayToken, providers };
+	const logger = createLogger("llm-gateway");
+	const options: GatewayOptions = { controlPlaneUrl, gatewayToken, providers, logger };
 	if (process.env.RATE_LIMIT_PER_MINUTE) {
 		options.rateLimitPerMinute = Number(process.env.RATE_LIMIT_PER_MINUTE);
 	}
@@ -54,7 +56,7 @@ function main(): void {
 	const port = Number(process.env.PORT ?? "8788");
 	const server = createGatewayServer(options);
 	server.listen(port, () => {
-		console.log(`[llm-gateway] in ascolto su ${options.tls ? "https" : "http"}://localhost:${port}`);
+		logger.info("listening", { url: `${options.tls ? "https" : "http"}://localhost:${port}` });
 	});
 	const shutdown = () => server.close(() => process.exit(0));
 	process.on("SIGINT", shutdown);

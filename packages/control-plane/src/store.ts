@@ -389,6 +389,31 @@ export class Store {
 		await this.pending;
 	}
 
+	/**
+	 * Sonda di readiness: il backend è raggiungibile ed esiste una chiave di
+	 * firma attiva. Con Postgres verifica la connettività con una query leggera;
+	 * in file mode è pronto se lo stato è caricato.
+	 */
+	async checkReady(): Promise<{ ready: boolean; detail: Record<string, unknown> }> {
+		const detail: Record<string, unknown> = {
+			backend: this.mirror ? (isIncremental(this.mirror) ? "postgres" : "durable") : "file",
+			adminTokens: Object.keys(this.state.adminTokens).length,
+			signingKeys: this.signingKeys.length,
+			configVersion: this.state.org.configVersion,
+		};
+		if (this.lastMirrorError) detail.lastMirrorError = this.lastMirrorError;
+		if (this.mirror && isIncremental(this.mirror)) {
+			try {
+				await this.mirror.changelogCursor();
+			} catch (error) {
+				detail.error = error instanceof Error ? error.message : String(error);
+				return { ready: false, detail };
+			}
+		}
+		const hasActiveKey = this.signingKeys.some((k) => k.active);
+		return { ready: hasActiveKey, detail };
+	}
+
 	async close(): Promise<void> {
 		if (this.refreshTimer) clearInterval(this.refreshTimer);
 		if (this.unsubscribe) {

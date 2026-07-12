@@ -2,7 +2,7 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { Readable } from "node:stream";
-import { peerCertFingerprint } from "@harness/shared";
+import { type Logger, MetricsRegistry, peerCertFingerprint } from "@harness/shared";
 
 /**
  * Gateway LLM: i client si autenticano con il token di device (verificato via
@@ -26,6 +26,8 @@ export interface GatewayOptions {
 	/** TTL della cache di introspezione in millisecondi (default 60s). */
 	introspectionTtlMs?: number;
 	log?: (entry: Record<string, unknown>) => void;
+	/** Logger strutturato (in aggiunta o al posto di `log`). */
+	logger?: Logger;
 	/** Certificato e chiave PEM: se presenti il gateway parla HTTPS. */
 	tls?: { cert: string; key: string };
 }
@@ -51,7 +53,12 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 	const rateBuckets = new Map<string, { windowStart: number; count: number }>();
 	const rateLimit = options.rateLimitPerMinute ?? 60;
 	const ttl = options.introspectionTtlMs ?? 60_000;
-	const log = options.log ?? ((entry) => console.log(JSON.stringify(entry)));
+	const log = options.log ?? ((entry) => options.logger?.info("gateway_request", entry) ?? console.log(JSON.stringify(entry)));
+	const metrics = new MetricsRegistry();
+	metrics.counter("harness_gateway_requests_total", "Richieste al gateway per provider ed esito");
+	metrics.histogram("harness_gateway_upstream_duration_seconds", "Durata delle chiamate upstream in secondi");
+	metrics.gauge("harness_up", "1 se il processo è vivo");
+	metrics.setGauge("harness_up", 1);
 
 	async function introspect(deviceToken: string, presentedFingerprint?: string): Promise<IntrospectionEntry> {
 		// La cache è per (token, fingerprint): lo stesso token con un cert diverso
@@ -114,6 +121,26 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 			sendJson(res, 200, { ok: true });
 			return;
 		}
+		if (req.method === "GET" && url.pathname === "/metrics") {
+			const body = metrics.render();
+			res.writeHead(200, {
+				"content-type": "text/plain; version=0.0.4; charset=utf-8",
+				"content-length": Buffer.byteLength(body),
+				"cache-control": "no-store",
+			});
+			res.end(body);
+			return;
+		}
+		if (req.method === "GET" && url.pathname === "/readyz") {
+			// Pronto se il control plane (da cui dipende l'introspezione) risponde.
+			try {
+				const probe = await fetch(`${options.controlPlaneUrl}/healthz`, { signal: AbortSignal.timeout(5_000) });
+				sendJson(res, probe.ok ? 200 : 503, { ready: probe.ok, controlPlane: probe.status });
+			} catch (error) {
+				sendJson(res, 503, { ready: false, error: String(error) });
+			}
+			return;
+		}
 
 		const providerMatch = /^\/(anthropic|openai)(\/.*)$/.exec(url.pathname);
 		if (!providerMatch) {
@@ -171,6 +198,9 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 			body: body.length > 0 ? body : null,
 		});
 
+		const durationMs = Date.now() - started;
+		metrics.incCounter("harness_gateway_requests_total", { provider: providerName, status: String(upstream.status) });
+		metrics.observe("harness_gateway_upstream_duration_seconds", durationMs / 1000, { provider: providerName });
 		log({
 			ts: new Date().toISOString(),
 			deviceId: introspection.deviceId,
@@ -178,7 +208,7 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 			path: upstreamPath,
 			model: extractModel(body),
 			status: upstream.status,
-			durationMs: Date.now() - started,
+			durationMs,
 		});
 
 		res.writeHead(upstream.status, {

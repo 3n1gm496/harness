@@ -11,3 +11,5 @@ export * from "./bash-parse.js";
 export * from "./keystore.js";
 export * from "./tls.js";
 export * from "./sandbox.js";
+export * from "./logger.js";
+export * from "./metrics.js";
