@@ -12,12 +12,28 @@ npm test
 
 Requisiti: Node.js ≥ 22. Nessuna dipendenza runtime esterna: i pacchetti usano solo i built-in di Node (superficie di supply chain minima).
 
+### Avvio one-command (Docker)
+
+L'intero backend (Postgres + control plane con auto-seeding) parte con un solo comando; le credenziali iniziali sono stampate nei log del servizio `control-plane`:
+
+```bash
+docker compose -f deploy/docker-compose.yml up --build
+# Gateway LLM opzionale (profilo `gateway`, richiede una chiave provider):
+ANTHROPIC_API_KEY=sk-... docker compose -f deploy/docker-compose.yml --profile gateway up --build
+```
+
+La KEK nel compose è un valore di **sviluppo**: in produzione forniscila da un secret manager.
+
 ## 2. Control plane
 
 ```bash
 # Prima inizializzazione: genera la coppia di chiavi Ed25519 di firma dei
 # bundle e il primo token amministrativo (mostrato una sola volta).
 node packages/control-plane/dist/cli.js init --data-dir .data/control-plane
+
+# In alternativa, seeding idempotente (admin se assente + token di
+# enrollment + token gateway, output JSON) — comodo per sviluppo e CI:
+node packages/control-plane/dist/cli.js seed --data-dir .data/control-plane
 
 # Avvio del server (default porta 8787)
 node packages/control-plane/dist/cli.js serve --data-dir .data/control-plane
@@ -36,6 +52,16 @@ Ruoli: `admin` (tutto), `operator` (kill switch, enrollment), `viewer` (sola let
 ### TLS
 
 Imposta `HARNESS_TLS_CERT_FILE` e `HARNESS_TLS_KEY_FILE` (PEM) per servire HTTPS con HSTS direttamente da control plane e gateway; in alternativa termina TLS su un reverse proxy. Senza TLS il server avvisa all'avvio. Le richieste sono loggate in JSON strutturato (`method`, `path`, `status`, `durationMs`).
+
+### Osservabilità
+
+Control plane e gateway espongono:
+
+- `GET /healthz` — liveness (il processo risponde);
+- `GET /readyz` — readiness **reale**: sul control plane verifica la connettività del backend (con Postgres: una query sul changelog) e la presenza di una chiave di firma attiva; sul gateway la raggiungibilità del control plane. Risponde 503 se non pronto — da usare come readiness probe di Kubernetes/compose;
+- `GET /metrics` — formato Prometheus: `harness_http_requests_total{method,status}`, `harness_http_request_duration_seconds` (histogram), richieste in-flight, `harness_up`; sul gateway `harness_gateway_requests_total{provider,status}` e durata upstream.
+
+Il livello di log si controlla con `HARNESS_LOG_LEVEL` (`debug|info|warn|error`, default `info`); l'output è una riga JSON per evento, pronto per qualunque collector.
 
 ### Audit tamper-evident
 
@@ -129,9 +155,11 @@ L'enrollment scrive `~/.harness/agent.json` (0600) con l'identità del device e 
 
 Il device token **ruota automaticamente** ogni 30 giorni (`rotateAfterDays` in agent.json) a ogni `sync`/`run`, o su richiesta con `harness-agent rotate-token`; il vecchio token smette immediatamente di valere su control plane e gateway.
 
-### Comportamento a runtime (estensione fleet)
+### Comportamento a runtime (motore di enforcement)
 
-- ogni `tool_call` di PI è valutata contro la policy: default **deny** sui tool sconosciuti, allowlist bash per segmenti di comando, filesystem limitato alla workspace;
+L'enforcement vive in `@harness/enforcement-core`, **agent-agnostic**: definisce un contratto neutro `AgentAdapter` e non conosce PI. `@harness/fleet-extension` è l'adapter che traduce la Extension API di PI sulle primitive neutre; integrare un altro coding agent significa scrivere un adapter analogo, senza toccare il motore (dimostrazione funzionante: `npm run example:mock-agent`).
+
+- ogni `tool_call` dell'agente è valutata contro la policy: default **deny** sui tool sconosciuti, allowlist bash per segmenti di comando, filesystem limitato alla workspace;
 - i comandi `!` dell'utente seguono la stessa policy bash;
 - i segreti nei risultati dei tool vengono redatti prima di rientrare nel contesto del modello;
 - ogni decisione è tracciata e spedita in batch al control plane;

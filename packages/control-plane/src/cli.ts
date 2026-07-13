@@ -162,7 +162,8 @@ async function openStore(dataDir: string): Promise<Store> {
 	const dbUrl = process.env.DATABASE_URL;
 	if (!dbUrl) return new Store(dataDir, kekOptions());
 	const { PostgresStateStore } = await import("./state-store.js");
-	console.log("[control-plane] backend di stato: Postgres (DATABASE_URL)");
+	// Su stderr: lo stdout di `seed` deve restare JSON puro (viene parsato).
+	console.error("[control-plane] backend di stato: Postgres (DATABASE_URL)");
 	return Store.openWithBackend(dataDir, new PostgresStateStore(dbUrl), kekOptions());
 }
 
