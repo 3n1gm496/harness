@@ -1,36 +1,94 @@
-# Backend della piattaforma: control plane + gateway LLM.
-# Prima di avviare:
-#   1. docker compose run --rm control-plane node packages/control-plane/dist/cli.js init --data-dir /data
-#   2. dalla UI (o via API) creare un token gateway ed esportarlo come GATEWAY_TOKEN
-#   3. esportare ANTHROPIC_API_KEY (e/o OPENAI_API_KEY)
+# Backend della piattaforma, avviabile con un solo comando:
+#
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+# Porta su: Postgres + control plane (con UI su http://localhost:8787).
+# Al primo avvio il control plane si auto-seeda (admin + token di enrollment +
+# token gateway) e stampa le credenziali nei log; il token gateway viene anche
+# scritto nel volume condiviso per il servizio gateway.
+#
+# Il gateway LLM è opzionale (richiede una chiave provider) e si abilita col
+# profilo `gateway`:
+#
+#   ANTHROPIC_API_KEY=sk-... docker compose -f deploy/docker-compose.yml --profile gateway up --build
+#
+# NB: HARNESS_SIGNING_KEK qui è un valore di SVILUPPO. In produzione fornisci
+# una KEK reale da un secret manager/KMS e non committarla.
 services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: harness
+      POSTGRES_PASSWORD: harness
+      POSTGRES_DB: harness
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harness"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   control-plane:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.backend
     ports:
       - "8787:8787"
+    environment:
+      DATABASE_URL: "postgresql://harness:harness@postgres:5432/harness"
+      # KEK di SVILUPPO (32 byte hex). Sostituiscila in produzione.
+      HARNESS_SIGNING_KEK: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+      HARNESS_LOG_LEVEL: "info"
     volumes:
       - cp-data:/data
+      - seed:/shared
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Seeding idempotente (stampa e salva le credenziali) poi avvio del server.
+    command:
+      - sh
+      - -c
+      - >-
+        node packages/control-plane/dist/cli.js seed --data-dir /data | tee /shared/seed.json &&
+        exec node packages/control-plane/dist/cli.js serve --data-dir /data --port 8787
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8787/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
     restart: unless-stopped
 
   llm-gateway:
+    profiles: ["gateway"]
     build:
       context: ..
       dockerfile: deploy/Dockerfile.backend
-    command: ["node", "packages/llm-gateway/dist/cli.js"]
     ports:
       - "8788:8788"
     environment:
       PORT: "8788"
       CONTROL_PLANE_URL: "http://control-plane:8787"
-      GATEWAY_TOKEN: "${GATEWAY_TOKEN:?definire GATEWAY_TOKEN}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       RATE_LIMIT_PER_MINUTE: "60"
+    volumes:
+      - seed:/shared
     depends_on:
-      - control-plane
+      control-plane:
+        condition: service_healthy
+    # Legge il token gateway dal seed condiviso (o da GATEWAY_TOKEN se già noto).
+    command:
+      - sh
+      - -c
+      - >-
+        export GATEWAY_TOKEN="${GATEWAY_TOKEN:-$(node -e "process.stdout.write(require('/shared/seed.json').gatewayToken)")}" &&
+        exec node packages/llm-gateway/dist/cli.js
     restart: unless-stopped
 
 volumes:
   cp-data:
+  pg-data:
+  seed:

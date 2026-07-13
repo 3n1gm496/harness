@@ -1,13 +1,13 @@
 # Harness
 
-Harness AI aziendale basato su [PI Coding Agent](https://pi.dev/), con piattaforma amministrativa per la gestione centralizzata di configurazioni e policy sui client, pensato per ambienti di produzione.
+Harness AI aziendale con un **motore di enforcement agent-agnostic** e una piattaforma amministrativa per la gestione centralizzata di configurazioni e policy sui client, pensato per ambienti di produzione. Il motore non dipende da un coding agent specifico: [PI Coding Agent](https://pi.dev/) è **uno degli adapter** (vedi `examples/mock-agent` per un agente non-PI che usa lo stesso motore).
 
 ```
 ┌─────────────────────────────┐         ┌──────────────────────────────┐
 │  CLIENT (sandbox Docker)    │  HTTPS  │  CONTROL PLANE               │
-│  pi + @harness/fleet-ext    │◄───────►│  policy · config firmata     │
-│  policy enforcement         │         │  kill switch · audit · RBAC  │
-│  redaction · audit shipper  │         │  UI amministrativa           │
+│  agente + adapter +         │◄───────►│  policy · config firmata     │
+│  @harness/enforcement-core  │         │  kill switch · audit · RBAC  │
+│  enforcement · redaction    │         │  UI · /metrics · /readyz     │
 └──────────────┬──────────────┘         └──────────────┬───────────────┘
                │ inferenza (device token)              │ introspezione
                ▼                                       ▼
@@ -20,11 +20,12 @@ Harness AI aziendale basato su [PI Coding Agent](https://pi.dev/), con piattafor
 
 | Pacchetto | Ruolo |
 |---|---|
-| [`@harness/shared`](packages/shared) | Tipi, firma Ed25519 dei bundle di config, policy engine default-deny, redaction dei segreti |
-| [`@harness/control-plane`](packages/control-plane) | Piattaforma amministrativa: API, storage, RBAC, kill switch, audit, UI web |
-| [`@harness/fleet-extension`](packages/fleet-extension) | Estensione PI caricata su ogni client: enforcement su `tool_call`, redaction su `tool_result`, config sync fail-closed, audit |
+| [`@harness/shared`](packages/shared) | Tipi, firma Ed25519 dei bundle di config, policy engine default-deny, redaction, logger e metriche Prometheus |
+| [`@harness/enforcement-core`](packages/enforcement-core) | Motore di enforcement **agent-agnostic**: contratto neutro `AgentAdapter`, sync della config firmata (fail-closed, anti-rollback), audit, sandbox |
+| [`@harness/control-plane`](packages/control-plane) | Piattaforma amministrativa: API (router dichiarativo), storage (file o Postgres normalizzato), RBAC, kill switch, audit, UI web, osservabilità |
+| [`@harness/fleet-extension`](packages/fleet-extension) | **Adapter PI**: traduce la Extension API di PI sulle primitive neutre del core (integrare un altro agente = scrivere un adapter analogo) |
 | [`@harness/llm-gateway`](packages/llm-gateway) | Proxy Anthropic/OpenAI-compatibile: le API key dei provider non toccano mai i client |
-| [`@harness/agent-client`](packages/agent-client) | CLI del client gestito: enrollment, sync, avvio di `pi` con l'estensione fleet |
+| [`@harness/agent-client`](packages/agent-client) | CLI del client gestito: enrollment, sync, avvio di `pi` con l'adapter fleet |
 
 ## Proprietà di sicurezza
 
@@ -43,17 +44,37 @@ Harness AI aziendale basato su [PI Coding Agent](https://pi.dev/), con piattafor
 
 ## Quick start
 
+**Un comando (Docker):** Postgres + control plane + UI su http://localhost:8787, con auto-seeding delle credenziali (stampate nei log):
+
+```bash
+docker compose -f deploy/docker-compose.yml up --build
+# Gateway LLM opzionale (richiede una chiave provider):
+ANTHROPIC_API_KEY=sk-... docker compose -f deploy/docker-compose.yml --profile gateway up --build
+```
+
+**Esempio end-to-end senza PI** — un agente finto arruolato che passa dal motore di enforcement (dimostra il disaccoppiamento):
+
+```bash
+npm run example:mock-agent
+```
+
+**Sviluppo locale:**
+
 ```bash
 npm ci --ignore-scripts && npm run build && npm test
+npm run test:pg          # test inclusi gli adapter Postgres (Postgres effimero via Docker)
 
 # Control plane + UI su http://localhost:8787
-node packages/control-plane/dist/cli.js init
+node packages/control-plane/dist/cli.js init      # file store locale
+node packages/control-plane/dist/cli.js seed      # oppure: bootstrap admin + enroll + gateway token
 node packages/control-plane/dist/cli.js serve
 
-# Client (dalla UI: genera un token di enrollment)
+# Client (dalla UI o da `seed`: genera un token di enrollment)
 node packages/agent-client/dist/cli.js enroll --url http://localhost:8787 --token enr_...
 node packages/agent-client/dist/cli.js run
 ```
+
+Osservabilità: `GET /metrics` (Prometheus) e `GET /readyz` (readiness reale) su control plane e gateway.
 
 ## Documentazione
 

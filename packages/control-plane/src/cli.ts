@@ -75,6 +75,41 @@ async function main(): Promise<void> {
 		return;
 	}
 
+	if (command === "seed") {
+		// Seeding idempotente per sviluppo/CI e per il primo avvio via compose:
+		// garantisce un admin, un token di enrollment e un token gateway, e li
+		// stampa come JSON su stdout. L'accesso al data dir è già privilegiato.
+		const store = await openStore(dataDir);
+		const service = new ControlPlaneService(store);
+		let adminToken: string | undefined;
+		try {
+			adminToken = service.bootstrapAdminToken(flagValue(args, "--name") ?? "seed-admin");
+		} catch {
+			// admin già presente: si procede con identità di sistema privilegiata.
+		}
+		const identity = { name: "seed-cli", role: "admin" as const };
+		const groupId = service.overview(identity).groups[0]?.groupId as string;
+		const ttlMinutes = Number(flagValue(args, "--ttl") ?? "60");
+		const enrollToken = service.createEnrollToken(identity, groupId, ttlMinutes);
+		const gatewayToken = service.createGatewayToken(identity, flagValue(args, "--gateway-name") ?? "seed-gateway");
+		await store.flush();
+		process.stdout.write(
+			`${JSON.stringify(
+				{
+					...(adminToken ? { adminToken } : { adminToken: "(già esistente: usa quello salvato)" }),
+					groupId,
+					enrollToken,
+					gatewayToken,
+					publicKeyPem: `${dataDir}/keys/config-signing.pub`,
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		await store.close();
+		return;
+	}
+
 	if (command === "verify-audit") {
 		const store = new Store(dataDir, kekOptions());
 		const deviceId = flagValue(args, "--device");
@@ -102,7 +137,7 @@ async function main(): Promise<void> {
 	}
 
 	console.error(
-		"Uso: harness-cp <init|serve|verify-audit|export-audit-anchor> [--data-dir <dir>] [--port <porta>] [--name <nome>] [--device <id>]",
+		"Uso: harness-cp <init|seed|serve|verify-audit|export-audit-anchor> [--data-dir <dir>] [--port <porta>] [--name <nome>] [--ttl <min>] [--device <id>]",
 	);
 	process.exit(2);
 }

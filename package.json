@@ -12,7 +12,9 @@
 		"build": "npm run build --workspaces --if-present",
 		"clean": "npm run clean --workspaces --if-present",
 		"test": "npm run test --workspaces --if-present",
-		"typecheck": "tsc --build"
+		"test:pg": "node scripts/test-with-postgres.mjs",
+		"typecheck": "tsc --build",
+		"example:mock-agent": "npm run build && node examples/mock-agent/run.mjs"
 	},
 	"devDependencies": {
 		"@types/node": "22.10.2",
