@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import type { Kek } from "@harness/shared";
 import { createLogger, loadKekFromEnv } from "@harness/shared";
 import { ControlPlaneService } from "./service.js";
@@ -77,8 +77,7 @@ async function main(): Promise<void> {
 
 	if (command === "seed") {
 		// Seeding idempotente per sviluppo/CI e per il primo avvio via compose:
-		// garantisce un admin, un token di enrollment e un token gateway, e li
-		// stampa come JSON su stdout. L'accesso al data dir è già privilegiato.
+		// garantisce un admin, un token di enrollment e un token gateway.
 		const store = await openStore(dataDir);
 		const service = new ControlPlaneService(store);
 		let adminToken: string | undefined;
@@ -93,19 +92,31 @@ async function main(): Promise<void> {
 		const enrollToken = service.createEnrollToken(identity, groupId, ttlMinutes);
 		const gatewayToken = service.createGatewayToken(identity, flagValue(args, "--gateway-name") ?? "seed-gateway");
 		await store.flush();
-		process.stdout.write(
-			`${JSON.stringify(
-				{
-					...(adminToken ? { adminToken } : { adminToken: "(già esistente: usa quello salvato)" }),
-					groupId,
-					enrollToken,
-					gatewayToken,
-					publicKeyPem: `${dataDir}/keys/config-signing.pub`,
-				},
-				null,
-				2,
-			)}\n`,
-		);
+		const credentials = {
+			...(adminToken ? { adminToken } : { adminToken: "(già esistente: usa quello salvato)" }),
+			groupId,
+			enrollToken,
+			gatewayToken,
+			publicKeyPem: `${dataDir}/keys/config-signing.pub`,
+		};
+
+		const outFile = flagValue(args, "--out");
+		if (outFile) {
+			// Scrive i segreti solo su file (0600), mai su stdout: in un
+			// container orchestrato, stdout finisce nei log centralizzati
+			// (`docker logs`, aggregatori) — un posto sbagliato per un token
+			// amministrativo o di enrollment.
+			mkdirSync(dirname(resolve(outFile)), { recursive: true });
+			const tmp = `${outFile}.tmp`;
+			writeFileSync(tmp, JSON.stringify(credentials, null, 2), { mode: 0o600 });
+			renameSync(tmp, outFile);
+			console.log(`Credenziali di seed scritte in ${outFile} (0600).`);
+			console.log(`  Data dir: ${dataDir}`);
+			console.log(`  Gruppo:   ${groupId}`);
+		} else {
+			// Uso interattivo da terminale (come `init`): stampa le credenziali.
+			process.stdout.write(`${JSON.stringify(credentials, null, 2)}\n`);
+		}
 		await store.close();
 		return;
 	}
@@ -137,7 +148,7 @@ async function main(): Promise<void> {
 	}
 
 	console.error(
-		"Uso: harness-cp <init|seed|serve|verify-audit|export-audit-anchor> [--data-dir <dir>] [--port <porta>] [--name <nome>] [--ttl <min>] [--device <id>]",
+		"Uso: harness-cp <init|seed|serve|verify-audit|export-audit-anchor> [--data-dir <dir>] [--port <porta>] [--name <nome>] [--ttl <min>] [--device <id>] [--out <file>]",
 	);
 	process.exit(2);
 }

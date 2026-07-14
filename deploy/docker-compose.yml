@@ -1,19 +1,24 @@
 # Backend della piattaforma, avviabile con un solo comando:
 #
+#   export HARNESS_SIGNING_KEK=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
 #   docker compose -f deploy/docker-compose.yml up --build
+#
+# (vedi anche deploy/.env.example, caricabile con `docker compose --env-file`)
 #
 # Porta su: Postgres + control plane (con UI su http://localhost:8787).
 # Al primo avvio il control plane si auto-seeda (admin + token di enrollment +
-# token gateway) e stampa le credenziali nei log; il token gateway viene anche
-# scritto nel volume condiviso per il servizio gateway.
+# token gateway): le credenziali finiscono SOLO nel volume condiviso
+# (/shared/seed.json, 0600), mai su stdout — quindi mai in `docker logs`.
+# Recuperale con: docker compose exec control-plane cat /shared/seed.json
 #
 # Il gateway LLM è opzionale (richiede una chiave provider) e si abilita col
 # profilo `gateway`:
 #
 #   ANTHROPIC_API_KEY=sk-... docker compose -f deploy/docker-compose.yml --profile gateway up --build
 #
-# NB: HARNESS_SIGNING_KEK qui è un valore di SVILUPPO. In produzione fornisci
-# una KEK reale da un secret manager/KMS e non committarla.
+# HARNESS_SIGNING_KEK è obbligatoria (32 byte, base64 o hex) e non ha un
+# default committato: senza, il control plane rifiuta l'avvio in modalità
+# Postgres piuttosto che scrivere le chiavi di firma in chiaro nel database.
 services:
   postgres:
     image: postgres:16
@@ -38,8 +43,8 @@ services:
       - "8787:8787"
     environment:
       DATABASE_URL: "postgresql://harness:harness@postgres:5432/harness"
-      # KEK di SVILUPPO (32 byte hex). Sostituiscila in produzione.
-      HARNESS_SIGNING_KEK: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+      # Obbligatoria: nessun default committato (vedi deploy/.env.example).
+      HARNESS_SIGNING_KEK: "${HARNESS_SIGNING_KEK:?imposta HARNESS_SIGNING_KEK (32 byte base64/hex) — vedi deploy/.env.example}"
       HARNESS_LOG_LEVEL: "info"
     volumes:
       - cp-data:/data
@@ -47,12 +52,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # Seeding idempotente (stampa e salva le credenziali) poi avvio del server.
+    # Seeding idempotente (credenziali scritte solo su file, mai su stdout/log)
+    # poi avvio del server.
     command:
       - sh
       - -c
       - >-
-        node packages/control-plane/dist/cli.js seed --data-dir /data | tee /shared/seed.json &&
+        node packages/control-plane/dist/cli.js seed --data-dir /data --out /shared/seed.json &&
         exec node packages/control-plane/dist/cli.js serve --data-dir /data --port 8787
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8787/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]

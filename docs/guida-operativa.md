@@ -14,15 +14,22 @@ Requisiti: Node.js ≥ 22. Nessuna dipendenza runtime esterna: i pacchetti usano
 
 ### Avvio one-command (Docker)
 
-L'intero backend (Postgres + control plane con auto-seeding) parte con un solo comando; le credenziali iniziali sono stampate nei log del servizio `control-plane`:
+L'intero backend (Postgres + control plane con auto-seeding) parte con un solo comando. La KEK è obbligatoria e non ha un default committato:
 
 ```bash
+export HARNESS_SIGNING_KEK=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
 docker compose -f deploy/docker-compose.yml up --build
 # Gateway LLM opzionale (profilo `gateway`, richiede una chiave provider):
 ANTHROPIC_API_KEY=sk-... docker compose -f deploy/docker-compose.yml --profile gateway up --build
 ```
 
-La KEK nel compose è un valore di **sviluppo**: in produzione forniscila da un secret manager.
+(oppure copia `deploy/.env.example` in `deploy/.env`, valorizza la KEK e avvia con `--env-file deploy/.env`.)
+
+Le credenziali del seeding (admin, enroll token, gateway token) finiscono **solo** nel volume condiviso (`/shared/seed.json`, permessi 0600) — mai su stdout o `docker logs`. Recuperale con:
+
+```bash
+docker compose -f deploy/docker-compose.yml exec control-plane cat /shared/seed.json
+```
 
 ## 2. Control plane
 
@@ -206,6 +213,6 @@ Nota: `export-audit-anchor` e `verify-audit` da CLI operano con identità admin 
 - I percorsi vengono risolti con `realpath` (i symlink che escono dalla workspace sono negati), ma race TOCTOU tra verifica ed esecuzione restano possibili: anche qui il confine è la sandbox.
 - Il gateway inoltra solo gli endpoint di inferenza (`/v1/messages`, `/v1/chat/completions`, …): il device token non dà accesso al resto dell'API del provider.
 - La prompt injection da contenuti del repository non è prevenibile a livello di harness (posizione esplicita anche di PI): default-deny + sandbox + audit sono le mitigazioni.
-- Lo shim dei tipi dell'Extension API (`packages/fleet-extension/src/pi-types.ts`) è allineato a PI v0.80.x: quando si aggiorna la versione pinnata di PI sui client, riverificarlo.
+- Lo shim dei tipi dell'Extension API (`packages/fleet-extension/src/pi-types.ts`) è allineato a PI v0.80.x: quando si aggiorna la versione pinnata di PI sui client (`ARG PI_CODING_AGENT_VERSION` in `deploy/Dockerfile.agent`), riverificare lo shim e ritestare prima del rollout.
 - Lo storage a file JSON (default) è per singola istanza; per multi-istanza/HA usa il backend Postgres normalizzato (`DATABASE_URL`). In file mode va eseguita **una sola istanza** per data dir.
 - La UI amministrativa conserva il token in `localStorage` e usa script inline (CSP `unsafe-inline`): accettabile dietro rete interna/VPN; per esposizione più ampia prevedere una sessione server-side.

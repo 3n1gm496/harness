@@ -8,10 +8,14 @@ COPY packages ./packages
 RUN npm ci --ignore-scripts && npm run build
 
 FROM node:22-bookworm-slim
+# Versione pinnata: lo shim dei tipi della Extension API
+# (packages/fleet-extension/src/pi-types.ts) è allineato a questa release.
+# Aggiornare insieme: bump qui → riverificare/aggiornare lo shim → ritestare.
+ARG PI_CODING_AGENT_VERSION=0.80.3
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends bash ca-certificates git ripgrep \
 	&& rm -rf /var/lib/apt/lists/* \
-	&& npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+	&& npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}"
 COPY --from=build /app /opt/harness
 # Marker della sandbox sanzionata: la sua presenza attesta che l'agente gira
 # dentro questo container ufficiale. La policy di default (sandbox.required)
