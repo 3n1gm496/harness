@@ -1,5 +1,6 @@
 import type { AdminRole, DeepPartial, DeviceInfo, GroupInfo, PolicyDocument } from "@harness/shared";
 import { type AdminIdentity, ServiceContext, ServiceError, requireRole, toDeviceInfo } from "./context.js";
+import { type DeviceState, deviceState } from "./fleet-view.js";
 
 /** Organizzazione: panoramica della flotta e configurazione a livello org. */
 export class OrgService {
@@ -9,14 +10,20 @@ export class OrgService {
 		return this.ctx.store;
 	}
 
+	/**
+	 * Panoramica aggregata: org, gruppi (con conteggio device) e ruolo. Non
+	 * include più l'elenco device completo — su una flotta grande obbligava a
+	 * trasferire l'intera lista a ogni refresh della dashboard. Usa
+	 * `listDevices` (paginato/filtrato) e `fleetSummary` (contatori) per quello.
+	 */
 	overview(identity: AdminIdentity): {
 		role: AdminRole;
 		org: { orgId: string; name: string; configVersion: number; killSwitch: boolean; configTtlMinutes: number };
 		groups: GroupInfo[];
-		devices: DeviceInfo[];
 	} {
 		requireRole(identity, "viewer");
 		const { org, groups, devices } = this.store.state;
+		const deviceList = Object.values(devices);
 		return {
 			role: identity.role,
 			org: {
@@ -32,9 +39,66 @@ export class OrgService {
 				killSwitch: group.killSwitch,
 				policyOverride: group.policyOverride,
 				piSettingsOverride: group.piSettingsOverride,
+				deviceCount: deviceList.filter((d) => d.groupId === group.groupId).length,
 			})),
-			devices: Object.values(devices).map((device) => toDeviceInfo(device)),
 		};
+	}
+
+	/**
+	 * Elenco device paginato e filtrato lato server: `q` cerca su
+	 * nome/id/gruppo, `filter` su stato calcolato (active/stale/suspended).
+	 * `offset`/`limit` sono l'unica paginazione reale (quella della UI prima
+	 * di questo endpoint era solo client-side, sull'elenco completo).
+	 */
+	listDevices(
+		identity: AdminIdentity,
+		options: { offset?: number; limit?: number; q?: string; filter?: DeviceState | "all" },
+	): { devices: (DeviceInfo & { state: DeviceState })[]; total: number } {
+		requireRole(identity, "viewer");
+		const { org, groups, devices } = this.store.state;
+		const groupName = (groupId: string): string => groups[groupId]?.name ?? groupId;
+		const q = (options.q ?? "").trim().toLowerCase();
+		const filter = options.filter ?? "all";
+
+		let list = Object.values(devices).map((device) => ({ ...toDeviceInfo(device), state: deviceState(device, org) }));
+		if (q) {
+			list = list.filter(
+				(d) =>
+					d.name.toLowerCase().includes(q) ||
+					d.deviceId.toLowerCase().includes(q) ||
+					groupName(d.groupId).toLowerCase().includes(q),
+			);
+		}
+		if (filter !== "all") list = list.filter((d) => d.state === filter);
+
+		const total = list.length;
+		const offset = Math.max(0, options.offset ?? 0);
+		const limit = Math.min(Math.max(1, options.limit ?? 25), 200);
+		return { devices: list.slice(offset, offset + limit), total };
+	}
+
+	/** Contatori aggregati di flotta per la dashboard e per `/metrics`. */
+	fleetSummary(identity: AdminIdentity): {
+		total: number;
+		active: number;
+		stale: number;
+		suspended: number;
+		configVersion: number;
+		killSwitch: boolean;
+	} {
+		requireRole(identity, "viewer");
+		const { org, devices } = this.store.state;
+		let active = 0;
+		let stale = 0;
+		let suspended = 0;
+		const deviceList = Object.values(devices);
+		for (const device of deviceList) {
+			const state = deviceState(device, org);
+			if (state === "active") active += 1;
+			else if (state === "stale") stale += 1;
+			else suspended += 1;
+		}
+		return { total: deviceList.length, active, stale, suspended, configVersion: org.configVersion, killSwitch: org.killSwitch };
 	}
 
 	getOrgConfig(identity: AdminIdentity): {

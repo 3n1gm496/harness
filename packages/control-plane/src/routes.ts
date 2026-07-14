@@ -106,6 +106,31 @@ export function buildRoutes(): RouteDef[] {
 		},
 		{
 			method: "GET",
+			path: "/api/admin/fleet-summary",
+			auth: "admin",
+			handler: (ctx) => ctx.service.fleetSummary(ctx.identity!),
+		},
+		{
+			method: "GET",
+			path: "/api/admin/devices",
+			auth: "admin",
+			handler: (ctx) => {
+				const filterParam = ctx.url.searchParams.get("filter");
+				const filter =
+					filterParam === "active" || filterParam === "stale" || filterParam === "suspended"
+						? filterParam
+						: "all";
+				const q = ctx.url.searchParams.get("q");
+				return ctx.service.listDevices(ctx.identity!, {
+					offset: Number(ctx.url.searchParams.get("offset") ?? "0"),
+					limit: Number(ctx.url.searchParams.get("limit") ?? "25"),
+					filter,
+					...(q ? { q } : {}),
+				});
+			},
+		},
+		{
+			method: "GET",
 			path: "/api/admin/org/config",
 			auth: "admin",
 			handler: (ctx) => ctx.service.getOrgConfig(ctx.identity!),

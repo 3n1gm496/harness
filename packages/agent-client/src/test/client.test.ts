@@ -56,9 +56,9 @@ test("enroll scrive l'identità del device con permessi 0600", async () => {
 	// privata (mai trasmessa) resta solo nel file locale.
 	assert.ok(config.deviceSigningPrivateKeyPem?.includes("PRIVATE KEY"));
 	const identity = service.authenticateAdmin(adminToken);
-	const overview = service.overview(identity);
-	const registeredDevice = overview.devices.find((d) => d.deviceId === config.deviceId);
-	assert.ok(registeredDevice, "il device deve comparire nell'overview");
+	const { devices } = service.listDevices(identity, {});
+	const registeredDevice = devices.find((d) => d.deviceId === config.deviceId);
+	assert.ok(registeredDevice, "il device deve comparire nell'elenco");
 });
 
 test("flusso completo enroll → audit: il batch viene firmato e riconosciuto come provenance verificata", async () => {

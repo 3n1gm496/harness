@@ -117,6 +117,57 @@ test("flusso completo: enroll token → enrollment → config firmata", async ()
 	}
 });
 
+test("paginazione server-side dei device: ricerca, filtro, offset/limit e riepilogo di flotta", async () => {
+	// overview() non elenca più i device (solo gruppi con deviceCount) — l'elenco
+	// paginato vive su /api/admin/devices, i contatori su /api/admin/fleet-summary.
+	const overview = await call("GET", "/api/admin/overview", { token: adminToken });
+	assert.equal((overview.data as { devices?: unknown }).devices, undefined);
+	const groups = overview.data.groups as { groupId: string; deviceCount: number }[];
+	assert.ok(groups[0] && groups[0].deviceCount >= 1); // il device di prova arruolato sopra
+
+	const page1 = await call("GET", "/api/admin/devices?limit=1&offset=0", { token: adminToken });
+	assert.equal(page1.status, 200);
+	const devicesPage1 = page1.data.devices as { deviceId: string; state: string }[];
+	assert.equal(devicesPage1.length, 1);
+	assert.ok((page1.data.total as number) >= 1);
+	assert.ok(["active", "stale", "suspended"].includes(devicesPage1[0]?.state as string));
+
+	const byName = await call("GET", `/api/admin/devices?q=workstation`, { token: adminToken });
+	assert.ok((byName.data.devices as { name: string }[]).every((d) => d.name.toLowerCase().includes("workstation")));
+
+	const noMatch = await call("GET", "/api/admin/devices?q=xxnonexistentxx", { token: adminToken });
+	assert.equal((noMatch.data.devices as unknown[]).length, 0);
+	assert.equal(noMatch.data.total, 0);
+
+	const activeOnly = await call("GET", "/api/admin/devices?filter=active", { token: adminToken });
+	assert.ok((activeOnly.data.devices as { state: string }[]).every((d) => d.state === "active"));
+	const suspendedOnly = await call("GET", "/api/admin/devices?filter=suspended", { token: adminToken });
+	assert.ok((suspendedOnly.data.devices as { state: string }[]).every((d) => d.state === "suspended"));
+
+	const summary = await call("GET", "/api/admin/fleet-summary", { token: adminToken });
+	assert.equal(summary.status, 200);
+	assert.ok((summary.data.total as number) >= 1);
+	assert.equal(
+		summary.data.total,
+		(summary.data.active as number) + (summary.data.stale as number) + (summary.data.suspended as number),
+	);
+	assert.equal(typeof summary.data.configVersion, "number");
+	assert.equal(typeof summary.data.killSwitch, "boolean");
+
+	// viewer/operator possono leggere entrambi gli endpoint (solo lettura).
+	const viewerToken = await (async () => {
+		const created = await call("POST", "/api/admin/admin-tokens", {
+			token: adminToken,
+			body: { name: "viewer-devices-test", role: "viewer", ttlDays: 1 },
+		});
+		return created.data.token as string;
+	})();
+	const viewerDevices = await call("GET", "/api/admin/devices", { token: viewerToken });
+	assert.equal(viewerDevices.status, 200);
+	const viewerSummary = await call("GET", "/api/admin/fleet-summary", { token: viewerToken });
+	assert.equal(viewerSummary.status, 200);
+});
+
 test("il kill switch si propaga nel bundle firmato", async () => {
 	const update = await call("PUT", `/api/admin/devices/${deviceId}`, {
 		token: adminToken,

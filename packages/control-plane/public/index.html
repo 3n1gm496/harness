@@ -269,64 +269,45 @@ async function api(method, path, body) {
 	} finally { setBusy(false); }
 }
 
-// ---- Staleness / dashboard -------------------------------------------------
-function staleWindowMs() { return Math.max(2 * (overview.org.configTtlMinutes || 60), 10) * 60_000; }
-function isStale(d) {
-	if (d.revoked) return false;
-	const last = d.lastSeenAt ? Date.parse(d.lastSeenAt) : Date.parse(d.enrolledAt || 0);
-	return Date.now() - last > staleWindowMs();
+// ---- Dashboard e device: server-side (paginazione, filtro, ricerca, riepilogo) ---
+// Tutta la logica di stato/paginazione vive lato server (org-service.ts:
+// listDevices/fleetSummary): su una flotta grande la UI non trasferisce più
+// l'elenco device completo a ogni refresh.
+function groupName(id) { return (overview.groups.find((g) => g.groupId === id) || { name: id }).name; }
+function stateLabel(d) {
+	if (d.revoked) return '<span class="pill on">revocato</span>';
+	if (d.state === "suspended") return '<span class="pill on">sospeso</span>';
+	if (d.state === "stale") return '<span class="pill warn">stale</span>';
+	return '<span class="pill off">attivo</span>';
 }
-function deviceState(d) {
-	if (d.revoked) return { key: "suspended", label: '<span class="pill on">revocato</span>' };
-	if (d.killSwitch || overview.org.killSwitch) return { key: "suspended", label: '<span class="pill on">sospeso</span>' };
-	if (isStale(d)) return { key: "stale", label: '<span class="pill warn">stale</span>' };
-	return { key: "active", label: '<span class="pill off">attivo</span>' };
-}
-function renderDashboard() {
-	const ds = overview.devices;
-	const total = ds.length;
-	const suspended = ds.filter((d) => d.revoked || d.killSwitch || overview.org.killSwitch).length;
-	const stale = ds.filter((d) => deviceState(d).key === "stale").length;
-	const active = ds.filter((d) => deviceState(d).key === "active").length;
+async function renderDashboard() {
+	const summary = await api("GET", "/api/admin/fleet-summary");
 	const cards = [
-		{ n: total, l: "Device totali" },
-		{ n: active, l: "Attivi", cls: "ok" },
-		{ n: suspended, l: "Sospesi / revocati", cls: suspended ? "alert" : "" },
-		{ n: stale, l: "Stale (rischio fail-closed)", cls: stale ? "warn" : "" },
-		{ n: "v" + overview.org.configVersion, l: "Versione config" },
-		{ n: overview.org.killSwitch ? "ON" : "off", l: "Kill switch globale", cls: overview.org.killSwitch ? "alert" : "ok" },
+		{ n: summary.total, l: "Device totali" },
+		{ n: summary.active, l: "Attivi", cls: "ok" },
+		{ n: summary.suspended, l: "Sospesi / revocati", cls: summary.suspended ? "alert" : "" },
+		{ n: summary.stale, l: "Stale (rischio fail-closed)", cls: summary.stale ? "warn" : "" },
+		{ n: "v" + summary.configVersion, l: "Versione config" },
+		{ n: summary.killSwitch ? "ON" : "off", l: "Kill switch globale", cls: summary.killSwitch ? "alert" : "ok" },
 	];
 	$("dashboardCards").innerHTML = cards.map((c) =>
 		'<div class="card ' + (c.cls || "") + '"><div class="num">' + esc(c.n) + '</div><div class="lbl">' + esc(c.l) + "</div></div>"
 	).join("");
 }
-
-// ---- Device: filtro + paginazione -----------------------------------------
-function groupName(id) { return (overview.groups.find((g) => g.groupId === id) || { name: id }).name; }
-function filteredDevices() {
-	const q = $("deviceSearch").value.trim().toLowerCase();
-	const filter = $("deviceFilter").value;
-	return overview.devices.filter((d) => {
-		if (q && !(d.name.toLowerCase().includes(q) || groupName(d.groupId).toLowerCase().includes(q) || d.deviceId.toLowerCase().includes(q))) return false;
-		if (filter === "all") return true;
-		const st = deviceState(d).key;
-		if (filter === "active") return st === "active";
-		if (filter === "stale") return st === "stale";
-		if (filter === "suspended") return st === "suspended";
-		return true;
-	});
-}
-function renderDevices() {
-	const all = filteredDevices();
+async function renderDevices() {
 	const size = Number($("devPageSize").value);
-	const pages = Math.max(1, Math.ceil(all.length / size));
-	if (devPage >= pages) devPage = pages - 1;
-	if (devPage < 0) devPage = 0;
-	const slice = all.slice(devPage * size, devPage * size + size);
-	$("devicesBody").innerHTML = slice.map((d) =>
+	const q = $("deviceSearch").value.trim();
+	const filter = $("deviceFilter").value;
+	const params = new URLSearchParams({ offset: String(devPage * size), limit: String(size), filter });
+	if (q) params.set("q", q);
+	const { devices, total } = await api("GET", "/api/admin/devices?" + params.toString());
+	const pages = Math.max(1, Math.ceil(total / size));
+	if (devPage >= pages) { devPage = pages - 1; return renderDevices(); }
+
+	$("devicesBody").innerHTML = devices.map((d) =>
 		"<tr><td>" + esc(d.name) + "</td>" +
 		"<td>" + esc(groupName(d.groupId)) + "</td>" +
-		"<td>" + deviceState(d).label + "</td>" +
+		"<td>" + stateLabel(d) + "</td>" +
 		"<td>" + fmtDate(d.lastSeenAt) + "</td>" +
 		"<td>" + (d.lastConfigVersion ?? "—") + "</td>" +
 		"<td>" + killPill(d.killSwitch) + "</td>" +
@@ -335,7 +316,7 @@ function renderDevices() {
 		(d.revoked ? "" : '<button class="danger" onclick="revokeDevice(\'' + d.deviceId + '\')">revoca</button>') +
 		"</td></tr>"
 	).join("") || '<tr><td colspan="7" class="muted">Nessun device corrisponde ai filtri</td></tr>';
-	$("devPageInfo").textContent = all.length ? ("Pagina " + (devPage + 1) + " di " + pages + " · " + all.length + " device") : "0 device";
+	$("devPageInfo").textContent = total ? ("Pagina " + (devPage + 1) + " di " + pages + " · " + total + " device") : "0 device";
 	$("devPrev").disabled = devPage <= 0;
 	$("devNext").disabled = devPage >= pages - 1;
 }
@@ -468,18 +449,20 @@ async function refresh() {
 	$("btnRefresh").hidden = false;
 	$("btnLogout").hidden = false;
 
-	renderDashboard();
-	renderDevices();
+	await renderDashboard();
+	await renderDevices();
 
-	$("groupsBody").innerHTML = overview.groups.map((g) => {
-		const count = overview.devices.filter((d) => d.groupId === g.groupId).length;
-		return "<tr><td>" + esc(g.name) + "</td><td>" + count + "</td><td>" + killPill(g.killSwitch) + "</td>" +
-			'<td class="op-only"><button class="secondary" onclick="toggleGroupKill(\'' + g.groupId + "'," + g.killSwitch + ')">' + (g.killSwitch ? "riattiva" : "sospendi") + "</button></td></tr>";
-	}).join("");
+	$("groupsBody").innerHTML = overview.groups.map((g) =>
+		"<tr><td>" + esc(g.name) + "</td><td>" + g.deviceCount + "</td><td>" + killPill(g.killSwitch) + "</td>" +
+			'<td class="op-only"><button class="secondary" onclick="toggleGroupKill(\'' + g.groupId + "'," + g.killSwitch + ')">' + (g.killSwitch ? "riattiva" : "sospendi") + "</button></td></tr>"
+	).join("");
 
 	$("enrollGroup").innerHTML = overview.groups.map((g) => '<option value="' + g.groupId + '">' + esc(g.name) + "</option>").join("");
+	// Elenco per la select di audit: capped lato server (200) — su flotte
+	// molto grandi va sostituito con una ricerca, non un'unica select.
+	const auditDevices = (await api("GET", "/api/admin/devices?limit=200")).devices;
 	$("auditDevice").innerHTML = '<option value="">— audit amministrativo —</option>' +
-		overview.devices.map((d) => '<option value="' + d.deviceId + '">' + esc(d.name) + "</option>").join("");
+		auditDevices.map((d) => '<option value="' + d.deviceId + '">' + esc(d.name) + "</option>").join("");
 
 	for (const id of ["dashboardPanel", "devicesPanel", "groupsPanel", "enrollPanel", "auditPanel"]) $(id).hidden = false;
 	$("loginPanel").hidden = true;
@@ -557,8 +540,13 @@ $("btnAddKey").onclick = async () => { try { const r = await api("POST", "/api/a
 $("btnLogin").onclick = async () => { token = $("tokenInput").value.trim(); banner("loginErr", ""); try { await refresh(); localStorage.setItem("harnessAdminToken", token); } catch (e) { banner("loginErr", "Accesso fallito: " + e.message); } };
 $("btnLogout").onclick = () => { localStorage.removeItem("harnessAdminToken"); location.reload(); };
 
-// Device pagination/filter listeners.
-$("deviceSearch").addEventListener("input", () => { devPage = 0; renderDevices(); });
+// Device pagination/filter listeners. La ricerca è server-side ora (ogni
+// digitazione è una richiesta HTTP): debounce per non martellare il server.
+let searchDebounce;
+$("deviceSearch").addEventListener("input", () => {
+	clearTimeout(searchDebounce);
+	searchDebounce = setTimeout(() => { devPage = 0; renderDevices(); }, 250);
+});
 $("deviceFilter").addEventListener("change", () => { devPage = 0; renderDevices(); });
 $("devPageSize").addEventListener("change", () => { devPage = 0; renderDevices(); });
 $("devPrev").onclick = () => { devPage--; renderDevices(); };

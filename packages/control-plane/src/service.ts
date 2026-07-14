@@ -148,6 +148,12 @@ export class ControlPlaneService {
 	updateOrg(identity: AdminIdentity, update: Parameters<OrgService["updateOrg"]>[1]): void {
 		this.org.updateOrg(identity, update);
 	}
+	listDevices(identity: AdminIdentity, options: Parameters<OrgService["listDevices"]>[1]): ReturnType<OrgService["listDevices"]> {
+		return this.org.listDevices(identity, options);
+	}
+	fleetSummary(identity: AdminIdentity): ReturnType<OrgService["fleetSummary"]> {
+		return this.org.fleetSummary(identity);
+	}
 
 	// ---- Chiavi di firma (SigningKeyService) --------------------------------
 

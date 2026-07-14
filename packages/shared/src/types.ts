@@ -157,6 +157,9 @@ export interface GroupInfo {
 	killSwitch: boolean;
 	policyOverride: DeepPartial<PolicyDocument>;
 	piSettingsOverride: Record<string, unknown>;
+	/** Numero di device nel gruppo (calcolato lato server: evita di dover
+	 * scaricare l'intera lista device solo per contarli). */
+	deviceCount: number;
 }
 
 export type DeepPartial<T> = T extends (infer U)[]

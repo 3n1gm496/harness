@@ -48,7 +48,7 @@ node packages/control-plane/dist/cli.js serve --data-dir .data/control-plane
 
 La UI amministrativa è su `http://localhost:8787/`. Accedi con il token generato da `init`. Da lì puoi:
 
-- vedere i device (ultimo contatto, versione config applicata) e sospenderli/revocarli;
+- vedere i device (ultimo contatto, versione config applicata, ricerca e filtro per stato) e sospenderli/revocarli — la tabella e i contatori di flotta sono **paginati e filtrati lato server** (`GET /api/admin/devices?offset&limit&q&filter`, `GET /api/admin/fleet-summary`): anche con migliaia di device la dashboard non trasferisce più l'elenco completo a ogni refresh;
 - creare gruppi e attivare kill switch per device, gruppo o **globale**;
 - modificare la policy dell'organizzazione (override JSON sul default default-deny);
 - generare token di enrollment monouso;
