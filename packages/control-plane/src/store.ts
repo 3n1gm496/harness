@@ -163,6 +163,16 @@ export class Store {
 	private readonly signingKeysPath: string;
 	state: ControlPlaneState;
 	private signingKeys: SigningKeyRecord[];
+	/**
+	 * Indice tokenHash→deviceId, per non scandire linearmente tutti i device a
+	 * ogni autenticazione (ogni poll di config e ogni introspezione del
+	 * gateway). Ricostruito ogni volta che lo stato dei device può essere
+	 * cambiato: dopo `save()` (scelta deliberata: ogni mutazione locale dei
+	 * device — enroll, rotazione token, revoca — passa da `save()` prima di
+	 * tornare al chiamante) e dopo un refresh dal backend (convergenza
+	 * multi-istanza, che muta `state.devices` senza passare da `save()`).
+	 */
+	private tokenIndex = new Map<string, string>();
 	/** Backend durevole opzionale (Postgres); il file resta cache locale. */
 	private mirror: import("./state-store.js").DurableStateStore | undefined;
 	/** Catena di persistenza write-behind verso il mirror. */
@@ -224,6 +234,9 @@ export class Store {
 		if (snapshot) {
 			store.state = snapshot.state;
 			store.signingKeys = store.openKeys(snapshot.signingKeys);
+			// Il costruttore ha già indicizzato lo stato pre-idratazione (da file
+			// o initialState()): va ricostruito sullo stato reale del backend.
+			store.rebuildTokenIndex();
 		} else {
 			await backend.save({ state: store.state, signingKeys: store.sealKeys(store.signingKeys) });
 		}
@@ -381,6 +394,7 @@ export class Store {
 					this.applyDiffToState(diff);
 					this.changeCursor = cursor;
 					this.lastPersisted = this.snapshotStrings(this.state, this.sealKeys(this.signingKeys));
+					this.rebuildTokenIndex();
 				}
 			} else {
 				const snapshot = await backend.load();
@@ -388,6 +402,7 @@ export class Store {
 				this.state = snapshot.state;
 				this.signingKeys = this.openKeys(snapshot.signingKeys);
 				this.lastPersisted = this.snapshotStrings(this.state, this.sealKeys(this.signingKeys));
+				this.rebuildTokenIndex();
 			}
 		} catch (error) {
 			this.lastMirrorError = error instanceof Error ? error.message : String(error);
@@ -613,10 +628,24 @@ export class Store {
 	}
 
 	save(): void {
+		this.rebuildTokenIndex();
 		const tmpPath = `${this.statePath}.tmp`;
 		writeFileSync(tmpPath, JSON.stringify(this.state, null, "\t"), { mode: 0o600 });
 		renameSync(tmpPath, this.statePath);
 		this.mirrorNow();
+	}
+
+	/** Device per hash del token, in O(1) invece di scandire tutti i device. */
+	deviceByTokenHash(tokenHash: string): DeviceRecord | undefined {
+		const deviceId = this.tokenIndex.get(tokenHash);
+		return deviceId ? this.state.devices[deviceId] : undefined;
+	}
+
+	private rebuildTokenIndex(): void {
+		this.tokenIndex.clear();
+		for (const device of Object.values(this.state.devices)) {
+			this.tokenIndex.set(device.tokenHash, device.deviceId);
+		}
 	}
 
 	/** Ultimo hash della catena per file di audit, per l'append incrementale. */

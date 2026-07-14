@@ -63,6 +63,42 @@ test("Store.rekey senza una KEK corrente viene rifiutato", async () => {
 	}
 });
 
+test("Store.deviceByTokenHash: indice O(1) coerente dopo enroll, rotate e revoke", () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-token-index-"));
+	try {
+		const store = new Store(dir);
+		const service = new ControlPlaneService(store);
+		const admin = service.bootstrapAdminToken("root");
+		const identity = service.authenticateAdmin(admin);
+		const groupId = service.overview(identity).groups[0]?.groupId as string;
+
+		// Enroll: il device è subito risolvibile dall'indice.
+		const enr = service.createEnrollToken(identity, groupId, 10);
+		const dev = service.enrollDevice(enr, "d1");
+		assert.equal(service.authenticateDevice(dev.deviceToken).deviceId, dev.deviceId);
+
+		// Rotate: il vecchio token sparisce dall'indice, il nuovo compare.
+		const device = store.state.devices[dev.deviceId];
+		if (!device) throw new Error("device non trovato");
+		const rotated = service.rotateDeviceToken(device);
+		assert.throws(() => service.authenticateDevice(dev.deviceToken), /non valido/);
+		assert.equal(service.authenticateDevice(rotated).deviceId, dev.deviceId);
+
+		// Un secondo device non deve interferire con l'indice del primo.
+		const enr2 = service.createEnrollToken(identity, groupId, 10);
+		const dev2 = service.enrollDevice(enr2, "d2");
+		assert.equal(service.authenticateDevice(rotated).deviceId, dev.deviceId);
+		assert.equal(service.authenticateDevice(dev2.deviceToken).deviceId, dev2.deviceId);
+
+		// Revoca: il token resta nell'indice (mapping tokenHash→deviceId) ma
+		// l'autenticazione deve comunque fallire (device.revoked).
+		service.updateDevice(identity, dev2.deviceId, { revoked: true });
+		assert.throws(() => service.authenticateDevice(dev2.deviceToken), /revocato/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("Store con backend in-memory: idratazione e write-behind", async () => {
 	const dir1 = mkdtempSync(join(tmpdir(), "harness-ss-a-"));
 	const backend = new InMemoryStateStore();
@@ -176,6 +212,11 @@ test("Postgres normalizzato: scritture mirate e multi-istanza convergente (live)
 		await storeA.flush();
 		await storeB.refreshNow();
 		assert.ok(storeB.state.devices[dev.deviceId], "l'istanza B deve vedere il device creato da A");
+		// L'indice tokenHash→deviceId converge insieme allo stato: B deve poter
+		// autenticare il device via il proprio service, non solo vederlo in state.
+		assert.equal(svcA.authenticateDevice(dev.deviceToken).deviceId, dev.deviceId);
+		const svcBForAuth = new ControlPlaneService(storeB);
+		assert.equal(svcBForAuth.authenticateDevice(dev.deviceToken).deviceId, dev.deviceId);
 
 		// Mutazioni concorrenti su device diversi non si sovrascrivono (row-level).
 		const enr2 = svcA.createEnrollToken(idA, groupId, 10);

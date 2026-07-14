@@ -63,7 +63,7 @@ export class AuthService {
 	authenticateDevice(token: string | undefined, presentedFingerprint?: string): DeviceRecord {
 		if (!token) throw new ServiceError(401, "token device mancante");
 		const tokenHash = hashToken(token);
-		const device = Object.values(this.store.state.devices).find((d) => d.tokenHash === tokenHash);
+		const device = this.store.deviceByTokenHash(tokenHash);
 		if (!device) throw new ServiceError(401, "token device non valido");
 		if (device.revoked) throw new ServiceError(403, "device revocato");
 		// Scadenza server-side del token: oltre l'età massima va ruotato.
@@ -211,7 +211,7 @@ export class AuthService {
 		presentedFingerprint?: string,
 	): { active: boolean; deviceId?: string; groupId?: string } {
 		const tokenHash = hashToken(deviceToken);
-		const device = Object.values(this.store.state.devices).find((d) => d.tokenHash === tokenHash);
+		const device = this.store.deviceByTokenHash(tokenHash);
 		if (!device || device.revoked) return { active: false };
 		const killSwitch =
 			device.killSwitch || this.store.state.org.killSwitch || this.store.state.groups[device.groupId]?.killSwitch;
