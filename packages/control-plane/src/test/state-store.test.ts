@@ -30,6 +30,39 @@ test("con KEK le chiavi private sono sigillate su disco ma usabili in memoria", 
 	}
 });
 
+test("Store.rekey ruota la KEK: la nuova apre, la vecchia no, la chiave pubblica resta stabile", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-rekey-"));
+	try {
+		const store = new Store(dir, KEK);
+		const publicKeyBefore = store.signingPublicKeyPem;
+
+		const newKek = { kek: { key: Buffer.from(generateKek(), "base64") } }.kek;
+		await store.rekey(newKek);
+
+		// La chiave pubblica (identità di firma) non cambia con la rotazione.
+		assert.equal(store.signingPublicKeyPem, publicKeyBefore);
+		const token = signPayload(store.signingPrivateKeyPem, { ok: true });
+		assert.equal(token.split(".").length, 3);
+
+		// Su disco: sigillata con la nuova KEK, non più apribile con la vecchia.
+		const reopenedWithNewKek = new Store(dir, { kek: newKek });
+		assert.equal(reopenedWithNewKek.signingPublicKeyPem, publicKeyBefore);
+		assert.throws(() => new Store(dir, KEK));
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("Store.rekey senza una KEK corrente viene rifiutato", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-rekey-nokek-"));
+	try {
+		const store = new Store(dir); // nessuna KEK: chiavi in chiaro
+		await assert.rejects(store.rekey({ key: Buffer.from(generateKek(), "base64") }), /nessuna KEK corrente/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("Store con backend in-memory: idratazione e write-behind", async () => {
 	const dir1 = mkdtempSync(join(tmpdir(), "harness-ss-a-"));
 	const backend = new InMemoryStateStore();

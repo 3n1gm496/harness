@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { generateKek, generateSigningKeyPair, isSealed, loadKekFromEnv, openPrivateKey, sealPrivateKey } from "../index.js";
+import {
+	generateKek,
+	generateSigningKeyPair,
+	isSealed,
+	loadKekFromEnv,
+	openPrivateKey,
+	resealAll,
+	sealPrivateKey,
+} from "../index.js";
 
 function kek() {
 	return { key: Buffer.from(generateKek(), "base64") };
@@ -39,4 +47,24 @@ test("loadKekFromEnv accetta base64 e hex da 32 byte, rifiuta lunghezze errate",
 	const hex = Buffer.from(b64, "base64").toString("hex");
 	assert.ok(loadKekFromEnv({ HARNESS_SIGNING_KEK: hex }));
 	assert.throws(() => loadKekFromEnv({ HARNESS_SIGNING_KEK: "dHJvcHBvY29ydG8=" }));
+});
+
+test("loadKekFromEnv legge una variabile alternativa (rotazione)", () => {
+	const b64 = generateKek();
+	assert.equal(loadKekFromEnv({ HARNESS_SIGNING_KEK_NEW: b64 }, "HARNESS_SIGNING_KEK_NEW")?.key.length, 32);
+	assert.equal(loadKekFromEnv({}, "HARNESS_SIGNING_KEK_NEW"), undefined);
+});
+
+test("resealAll ri-sigilla da una vecchia KEK a una nuova: la vecchia smette di aprire", () => {
+	const oldKek = kek();
+	const newKek = kek();
+	const { privateKeyPem } = generateSigningKeyPair();
+	const records = [{ keyId: "key_1", privateKeyPem: sealPrivateKey(oldKek, privateKeyPem), active: true }];
+
+	const resealed = resealAll(oldKek, newKek, records);
+	assert.equal(resealed.length, 1);
+	assert.ok(isSealed(resealed[0]?.privateKeyPem as string));
+	assert.equal(resealed[0]?.keyId, "key_1"); // altri campi preservati
+	assert.equal(openPrivateKey(newKek, resealed[0]?.privateKeyPem as string), privateKeyPem);
+	assert.throws(() => openPrivateKey(oldKek, resealed[0]?.privateKeyPem as string));
 });

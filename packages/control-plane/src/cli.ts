@@ -147,8 +147,33 @@ async function main(): Promise<void> {
 		return;
 	}
 
+	if (command === "rekey") {
+		// Rotazione della KEK: la corrente viene da HARNESS_SIGNING_KEK (come
+		// sempre), la nuova da HARNESS_SIGNING_KEK_NEW o --new-kek-file.
+		const currentKek = loadKekFromEnv();
+		if (!currentKek) {
+			console.error("HARNESS_SIGNING_KEK (la KEK corrente) è obbligatoria per la rotazione.");
+			process.exit(1);
+		}
+		const newKekFile = flagValue(args, "--new-kek-file");
+		const newKek = newKekFile
+			? loadKekFromEnv({ HARNESS_SIGNING_KEK_NEW: readFileSync(newKekFile, "utf8").trim() }, "HARNESS_SIGNING_KEK_NEW")
+			: loadKekFromEnv(process.env, "HARNESS_SIGNING_KEK_NEW");
+		if (!newKek) {
+			console.error("Nuova KEK mancante: imposta HARNESS_SIGNING_KEK_NEW oppure passa --new-kek-file <path>.");
+			process.exit(1);
+		}
+		const store = new Store(dataDir, { kek: currentKek });
+		const keyCount = store.listSigningKeys().length;
+		await store.rekey(newKek);
+		await store.close();
+		console.log(`Rotazione completata: ${keyCount} chiave/i di firma ri-sigillata/e con la nuova KEK.`);
+		console.log("Aggiorna HARNESS_SIGNING_KEK con il valore usato come HARNESS_SIGNING_KEK_NEW e riavvia il servizio.");
+		return;
+	}
+
 	console.error(
-		"Uso: harness-cp <init|seed|serve|verify-audit|export-audit-anchor> [--data-dir <dir>] [--port <porta>] [--name <nome>] [--ttl <min>] [--device <id>] [--out <file>]",
+		"Uso: harness-cp <init|seed|serve|verify-audit|export-audit-anchor|rekey> [--data-dir <dir>] [--port <porta>] [--name <nome>] [--ttl <min>] [--device <id>] [--out <file>] [--new-kek-file <path>]",
 	);
 	process.exit(2);
 }

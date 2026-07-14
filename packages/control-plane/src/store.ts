@@ -169,8 +169,11 @@ export class Store {
 	private pending: Promise<void> = Promise.resolve();
 	lastMirrorError = "";
 
-	/** KEK per l'envelope encryption delle chiavi private a riposo (opzionale in file mode). */
-	private readonly kek: Kek | undefined;
+	/**
+	 * KEK per l'envelope encryption delle chiavi private a riposo (opzionale in
+	 * file mode). Non readonly: `rekey()` la sostituisce per la rotazione.
+	 */
+	private kek: Kek | undefined;
 
 	constructor(dataDir: string, options: { kek?: Kek } = {}) {
 		this.dataDir = dataDir;
@@ -492,6 +495,27 @@ export class Store {
 		writeFileSync(tmp, JSON.stringify(this.sealKeys(keys), null, "\t"), { mode: 0o600 });
 		renameSync(tmp, this.signingKeysPath);
 		this.mirrorNow();
+	}
+
+	/**
+	 * Rotazione della KEK: sostituisce la KEK corrente e ri-sigilla tutte le
+	 * chiavi di firma con quella nuova (file locale e backend durevole, se
+	 * presente). Le chiavi restano in chiaro in memoria per tutto il ciclo di
+	 * vita dello Store (`sealKeys`/`openKeys` operano solo in persistenza), per
+	 * cui la rotazione è: sostituire la KEK, poi ripersistere lo stato attuale.
+	 * Richiede una KEK corrente: per la prima cifratura di chiavi in chiaro
+	 * basta impostare `HARNESS_SIGNING_KEK` e riavviare (il costruttore la
+	 * applica già in automatico).
+	 */
+	async rekey(newKek: Kek): Promise<void> {
+		if (!this.kek) {
+			throw new Error(
+				"nessuna KEK corrente da ruotare: per la prima cifratura imposta HARNESS_SIGNING_KEK e riavvia",
+			);
+		}
+		this.kek = newKek;
+		this.persistSigningKeys(this.signingKeys);
+		await this.flush();
 	}
 
 	get activeSigningKey(): SigningKeyRecord {

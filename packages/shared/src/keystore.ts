@@ -14,12 +14,17 @@ export interface Kek {
 	key: Buffer; // 32 byte
 }
 
-/** Carica la KEK da variabile d'ambiente (base64/hex, 32 byte). */
-export function loadKekFromEnv(env: NodeJS.ProcessEnv = process.env): Kek | undefined {
-	const raw = env.HARNESS_SIGNING_KEK;
+/**
+ * Carica una KEK da variabile d'ambiente (base64/hex, 32 byte). `varName`
+ * permette di leggere una KEK "alternativa" con lo stesso formato — usato per
+ * la rotazione, dove la nuova KEK viaggia in una variabile diversa
+ * (`HARNESS_SIGNING_KEK_NEW`) da quella corrente.
+ */
+export function loadKekFromEnv(env: NodeJS.ProcessEnv = process.env, varName = "HARNESS_SIGNING_KEK"): Kek | undefined {
+	const raw = env[varName];
 	if (!raw) return undefined;
 	const key = decodeKeyMaterial(raw);
-	if (key.length !== 32) throw new Error("HARNESS_SIGNING_KEK deve essere di 32 byte (base64 o hex)");
+	if (key.length !== 32) throw new Error(`${varName} deve essere di 32 byte (base64 o hex)`);
 	return { key };
 }
 
@@ -55,4 +60,17 @@ export function openPrivateKey(kek: Kek, sealed: string): string {
 	decipher.setAuthTag(Buffer.from(tagB64, "base64url"));
 	const plaintext = Buffer.concat([decipher.update(Buffer.from(ctB64, "base64url")), decipher.final()]);
 	return plaintext.toString("utf8");
+}
+
+/**
+ * Ri-sigilla un insieme di record con una privateKeyPem sigillata, passando
+ * da una vecchia KEK a una nuova (rotazione della KEK). Generico sul tipo del
+ * record per non accoppiare `shared` ai tipi di storage del control plane;
+ * usabile anche offline su un export di `signing-keys.json`.
+ */
+export function resealAll<T extends { privateKeyPem: string }>(oldKek: Kek, newKek: Kek, sealed: readonly T[]): T[] {
+	return sealed.map((record) => ({
+		...record,
+		privateKeyPem: sealPrivateKey(newKek, isSealed(record.privateKeyPem) ? openPrivateKey(oldKek, record.privateKeyPem) : record.privateKeyPem),
+	}));
 }

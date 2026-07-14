@@ -200,7 +200,7 @@ I container girano come utente non-root: l'immagine backend crea `/data` di prop
 | Incidente diffuso | Kill switch **globale** dalla testata della UI |
 | Device compromesso/dismesso | UI → device → **revoca**: il token smette di funzionare su config, audit e gateway |
 | Rotazione chiave di firma | Procedura a tre fasi senza re-enrollment: `POST /signing-keys` (add) → attendi un sync → `POST /signing-keys/:id/promote` → `DELETE /signing-keys/:oldId` (retire) |
-| Custodia della KEK | `HARNESS_SIGNING_KEK` va conservata in un secret manager/KMS: senza non si aprono le chiavi di firma. La rotazione della KEK richiede oggi un re-seal manuale (decifra con la vecchia, ri-cifra con la nuova) — automatizzarla è un follow-up |
+| Custodia della KEK | `HARNESS_SIGNING_KEK` va conservata in un secret manager/KMS: senza non si aprono le chiavi di firma. Rotazione: `HARNESS_SIGNING_KEK_NEW=<nuova> harness-cp rekey --data-dir ...` (o `--new-kek-file <path>`), poi promuovi la nuova KEK a `HARNESS_SIGNING_KEK` e riavvia — nessun re-seal manuale |
 | Sicurezza elevata per un team | Gruppo con `policyOverride` restrittiva + `requireDeviceCert=true` (mTLS all'enroll, no TOFU) |
 | Verifica di una policy | `GET /api/admin/devices/:id/effective-policy` mostra la policy esattamente come la vedrà il client |
 | Non-ripudiabilità audit | Esporta periodicamente l'anchor (`export-audit-anchor`) su WORM esterno; verifica con `verify-audit` |
