@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import type { AgentConfig } from "@harness/fleet-extension";
 import { FleetState, defaultAgentConfigPath } from "@harness/fleet-extension";
 import type { ConfigBundle } from "@harness/shared";
-import { deepMerge } from "@harness/shared";
+import { deepMerge, generateSigningKeyPair } from "@harness/shared";
 
 /**
  * Operazioni del client gestito: enrollment presso il control plane,
@@ -20,10 +20,18 @@ export interface EnrollOptions {
 }
 
 export async function enroll(options: EnrollOptions, fetchImpl: typeof fetch = fetch): Promise<AgentConfig> {
+	// Coppia di chiavi Ed25519 propria del device, per firmare i batch di audit
+	// (provenance): la privata resta solo in agent.json, mai trasmessa.
+	const deviceSigningKeyPair = generateSigningKeyPair();
+
 	const response = await fetchImpl(`${options.controlPlaneUrl}/api/enroll`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ enrollToken: options.enrollToken, deviceName: options.deviceName }),
+		body: JSON.stringify({
+			enrollToken: options.enrollToken,
+			deviceName: options.deviceName,
+			deviceSigningPublicKeyPem: deviceSigningKeyPair.publicKeyPem,
+		}),
 		signal: AbortSignal.timeout(15_000),
 	});
 	if (!response.ok) {
@@ -39,6 +47,7 @@ export async function enroll(options: EnrollOptions, fetchImpl: typeof fetch = f
 		publicKeyPem: enrollment.publicKeyPem,
 		publicKeyPems: [enrollment.publicKeyPem],
 		tokenIssuedAt: new Date().toISOString(),
+		deviceSigningPrivateKeyPem: deviceSigningKeyPair.privateKeyPem,
 	};
 	writeAgentConfig(options.configPath ?? defaultAgentConfigPath(), config);
 	return config;

@@ -1,5 +1,5 @@
 import type { AuditEvent, ConfigBundle, DeepPartial, PolicyDocument } from "@harness/shared";
-import { deepMerge, lockedPiSettings, newId, newSecretToken, resolvePolicy, signPayload } from "@harness/shared";
+import { deepMerge, lockedPiSettings, newId, newSecretToken, resolvePolicy, signPayload, verifyToken } from "@harness/shared";
 import type { DeviceRecord } from "../store.js";
 import { hashToken } from "../store.js";
 import { type AdminIdentity, ServiceContext, ServiceError, normalizeFingerprint, requireRole } from "./context.js";
@@ -39,6 +39,7 @@ export class DeviceService {
 		enrollToken: string,
 		deviceName: string,
 		certFingerprint?: string,
+		deviceSigningPublicKeyPem?: string,
 	): { deviceId: string; deviceToken: string; publicKeyPem: string } {
 		const tokenHash = hashToken(enrollToken);
 		const record = this.store.state.enrollTokens[tokenHash];
@@ -65,6 +66,10 @@ export class DeviceService {
 		};
 		const boundFp = normalizeFingerprint(certFingerprint);
 		if (boundFp) device.certFingerprint = boundFp;
+		// Chiave di firma propria del device (provenance dei batch di audit): il
+		// client la genera all'enrollment e ne consegna solo la pubblica; la
+		// privata non lascia mai il device.
+		if (deviceSigningPublicKeyPem) device.deviceSigningPublicKeyPem = deviceSigningPublicKeyPem;
 		this.store.state.devices[deviceId] = device;
 		record.usedBy = deviceId;
 		this.store.save();
@@ -110,11 +115,47 @@ export class DeviceService {
 		return signPayload(this.store.signingPrivateKeyPem, bundle);
 	}
 
-	ingestAudit(device: DeviceRecord, events: unknown[]): number {
+	/**
+	 * Ingest dell'audit di un device. Se il device ha una chiave di firma
+	 * propria registrata (`deviceSigningPublicKeyPem`), il batch deve arrivare
+	 * firmato con quella chiave (provenance "signed"): un device token rubato
+	 * non basta più per iniettare eventi falsi, serve anche la chiave privata
+	 * che non lascia mai il device. I device pre-esistenti senza chiave
+	 * restano garantiti dal solo device token (provenance "token-only"),
+	 * per retrocompatibilità.
+	 */
+	ingestAudit(device: DeviceRecord, events: unknown[], signature?: string): number {
+		let rawEvents: unknown[] = events;
+		let provenance: AuditEvent["provenance"] = "token-only";
+
+		if (device.deviceSigningPublicKeyPem) {
+			if (!signature) {
+				throw new ServiceError(400, "firma del batch richiesta: il device ha una chiave di firma registrata");
+			}
+			const verified = verifyToken<{ deviceId: string; events: unknown[] }>(
+				device.deviceSigningPublicKeyPem,
+				signature,
+			);
+			if (!verified.valid) {
+				throw new ServiceError(400, `firma del batch di audit non valida: ${verified.error}`);
+			}
+			if (verified.payload.deviceId !== device.deviceId) {
+				throw new ServiceError(400, "firma del batch emessa per un altro device");
+			}
+			if (!Array.isArray(verified.payload.events)) {
+				throw new ServiceError(400, "payload firmato senza un array di eventi valido");
+			}
+			rawEvents = verified.payload.events;
+			provenance = "signed";
+		}
+
 		const sanitized: AuditEvent[] = [];
-		for (const raw of events.slice(0, 500)) {
+		for (const raw of rawEvents.slice(0, 500)) {
 			const event = sanitizeAuditEvent(raw, device.deviceId);
-			if (event) sanitized.push(event);
+			if (event) {
+				event.provenance = provenance;
+				sanitized.push(event);
+			}
 		}
 		this.store.appendDeviceAudit(device.deviceId, sanitized);
 		device.lastSeenAt = new Date().toISOString();

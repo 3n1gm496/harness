@@ -51,6 +51,43 @@ test("enroll scrive l'identità del device con permessi 0600", async () => {
 
 	const persisted = JSON.parse(readFileSync(configPath, "utf8")) as { deviceToken: string };
 	assert.equal(persisted.deviceToken, config.deviceToken);
+
+	// Provenance: enroll genera una coppia di firma propria del device e la
+	// privata (mai trasmessa) resta solo nel file locale.
+	assert.ok(config.deviceSigningPrivateKeyPem?.includes("PRIVATE KEY"));
+	const identity = service.authenticateAdmin(adminToken);
+	const overview = service.overview(identity);
+	const registeredDevice = overview.devices.find((d) => d.deviceId === config.deviceId);
+	assert.ok(registeredDevice, "il device deve comparire nell'overview");
+});
+
+test("flusso completo enroll → audit: il batch viene firmato e riconosciuto come provenance verificata", async () => {
+	const identity = service.authenticateAdmin(adminToken);
+	const groupId = service.overview(identity).groups[0]?.groupId as string;
+	const freshEnrollToken = service.createEnrollToken(identity, groupId, 10);
+	const configPath = join(clientDir, "agent-signed.json");
+
+	const config = await enroll({
+		controlPlaneUrl: baseUrl,
+		enrollToken: freshEnrollToken,
+		deviceName: "signed-workstation",
+		configPath,
+	});
+	config.bundleCachePath = join(clientDir, "agent-signed-bundle.jws");
+	config.auditFlushSeconds = 3600;
+	config.syncIntervalSeconds = 3600;
+
+	const { FleetState } = await import("@harness/fleet-extension");
+	const state = new FleetState(config, configPath);
+	await state.initialLoad();
+	assert.equal(state.status, "ok");
+
+	state.pushAudit("agent_start", { cwd: "/workspace" });
+	await state.flushAudit();
+
+	const events = await service.readDeviceAudit(identity, config.deviceId, 10);
+	assert.ok(events.length > 0);
+	assert.ok(events.every((e) => e.provenance === "signed"), "tutti gli eventi devono essere provenance=signed");
 });
 
 test("syncConfig scarica e verifica il bundle, e applica i settings gestiti", async () => {

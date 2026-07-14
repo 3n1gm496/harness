@@ -83,6 +83,13 @@ export interface DeviceRecord {
 	 * quel certificato: un token rubato non basta senza la chiave privata.
 	 */
 	certFingerprint?: string;
+	/**
+	 * Chiave pubblica Ed25519 generata dal device all'enrollment, usata per
+	 * verificare la firma dei batch di audit (provenance): un device token
+	 * rubato non basta per iniettare eventi falsi senza anche la chiave
+	 * privata, mai trasmessa al control plane.
+	 */
+	deviceSigningPublicKeyPem?: string;
 }
 
 export interface EnrollTokenRecord {

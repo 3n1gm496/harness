@@ -172,6 +172,7 @@ function rowToDevice(r: Row): DeviceRecord {
 		d.lastConfigVersion = Number(r.last_config_version);
 	}
 	if (r.cert_fingerprint) d.certFingerprint = r.cert_fingerprint;
+	if (r.device_signing_public_key_pem) d.deviceSigningPublicKeyPem = r.device_signing_public_key_pem;
 	return d;
 }
 
@@ -330,11 +331,12 @@ export class PostgresStateStore implements IncrementalStateStore {
 				await client.query(
 					`INSERT INTO cp_devices (device_id, name, group_id, token_hash, token_issued_at, enrolled_at,
 						last_seen_at, last_config_version, kill_switch, revoked, cert_fingerprint,
-						policy_override, pi_settings_override)
-					 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+						policy_override, pi_settings_override, device_signing_public_key_pem)
+					 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 					 ON CONFLICT (device_id) DO UPDATE SET name=$2, group_id=$3, token_hash=$4, token_issued_at=$5,
 						enrolled_at=$6, last_seen_at=$7, last_config_version=$8, kill_switch=$9, revoked=$10,
-						cert_fingerprint=$11, policy_override=$12, pi_settings_override=$13`,
+						cert_fingerprint=$11, policy_override=$12, pi_settings_override=$13,
+						device_signing_public_key_pem=$14`,
 					[
 						d.deviceId,
 						d.name,
@@ -349,6 +351,7 @@ export class PostgresStateStore implements IncrementalStateStore {
 						d.certFingerprint ?? null,
 						JSON.stringify(d.policyOverride),
 						JSON.stringify(d.piSettingsOverride),
+						d.deviceSigningPublicKeyPem ?? null,
 					],
 				);
 				changes.push(["device", d.deviceId, "upsert"]);
@@ -470,7 +473,7 @@ export class PostgresStateStore implements IncrementalStateStore {
 		let cursor = sinceId;
 		for (const r of rows) {
 			cursor = Math.max(cursor, Number(r.id));
-			latest.set(`${r.entity} ${r.entity_key}`, { entity: r.entity, key: r.entity_key, op: r.op });
+			latest.set(`${r.entity} ${r.entity_key}`, { entity: r.entity, key: r.entity_key, op: r.op });
 		}
 
 		const upsertKeys: Record<string, string[]> = { group: [], device: [], admin_token: [], gateway_token: [], enroll_token: [] };

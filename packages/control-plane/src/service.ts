@@ -88,14 +88,15 @@ export class ControlPlaneService {
 		enrollToken: string,
 		deviceName: string,
 		certFingerprint?: string,
+		deviceSigningPublicKeyPem?: string,
 	): { deviceId: string; deviceToken: string; publicKeyPem: string } {
-		return this.devices.enrollDevice(enrollToken, deviceName, certFingerprint);
+		return this.devices.enrollDevice(enrollToken, deviceName, certFingerprint, deviceSigningPublicKeyPem);
 	}
 	issueConfigBundle(device: DeviceRecord): string {
 		return this.devices.issueConfigBundle(device);
 	}
-	ingestAudit(device: DeviceRecord, events: unknown[]): number {
-		return this.devices.ingestAudit(device, events);
+	ingestAudit(device: DeviceRecord, events: unknown[], signature?: string): number {
+		return this.devices.ingestAudit(device, events, signature);
 	}
 	updateDevice(
 		identity: AdminIdentity,

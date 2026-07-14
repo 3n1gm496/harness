@@ -5,7 +5,13 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
 import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
-import { verifyConfigBundle, verifyConfigBundleMulti, verifyToken } from "@harness/shared";
+import {
+	generateSigningKeyPair,
+	signPayload,
+	verifyConfigBundle,
+	verifyConfigBundleMulti,
+	verifyToken,
+} from "@harness/shared";
 import { ControlPlaneService } from "../service.js";
 import { createControlPlaneServer } from "../server.js";
 import { Store } from "../store.js";
@@ -177,6 +183,86 @@ test("l'audit ingest scarta eventi malformati e tronca payload enormi", async ()
 	assert.ok(!Number.isNaN(Date.parse(fixedTimestamp.timestamp)));
 });
 
+test("provenance dell'audit: batch firmato accettato e marcato, batch manomesso rifiutato", async () => {
+	// Device arruolato con una chiave di firma propria (come farebbe agent-client).
+	const deviceKeyPair = generateSigningKeyPair();
+	const overview = await call("GET", "/api/admin/overview", { token: adminToken });
+	const groupId = (overview.data.groups as { groupId: string }[])[0]?.groupId as string;
+	const enrollResult = await call("POST", "/api/admin/enroll-tokens", {
+		token: adminToken,
+		body: { groupId, ttlMinutes: 10 },
+	});
+	const enrollToken = enrollResult.data.enrollToken as string;
+	const enrollResponse = await call("POST", "/api/enroll", {
+		body: { enrollToken, deviceName: "signed-device", deviceSigningPublicKeyPem: deviceKeyPair.publicKeyPem },
+	});
+	assert.equal(enrollResponse.status, 200);
+	const signedDeviceId = enrollResponse.data.deviceId as string;
+	const signedDeviceToken = enrollResponse.data.deviceToken as string;
+
+	const events = [
+		{ eventId: "sig_1", deviceId: signedDeviceId, timestamp: new Date().toISOString(), type: "agent_start", data: {} },
+	];
+
+	// Batch senza firma: rifiutato, il device ha una chiave registrata.
+	const noSig = await call("POST", "/api/device/audit", { token: signedDeviceToken, body: { events } });
+	assert.equal(noSig.status, 400);
+	assert.match(noSig.data.error as string, /firma/);
+
+	// Batch firmato correttamente: accettato e marcato "signed".
+	const signature = signPayload(deviceKeyPair.privateKeyPem, { deviceId: signedDeviceId, events });
+	const signed = await call("POST", "/api/device/audit", {
+		token: signedDeviceToken,
+		body: { events, signature },
+	});
+	assert.equal(signed.status, 200);
+	assert.equal(signed.data.accepted, 1);
+
+	const readBack = await call("GET", `/api/admin/audit?deviceId=${signedDeviceId}`, { token: adminToken });
+	const readEvents = readBack.data.events as { provenance?: string }[];
+	assert.equal(readEvents.length, 1);
+	assert.equal(readEvents[0]?.provenance, "signed");
+
+	// Batch manomesso dopo la firma (eventi diversi da quelli firmati): rifiutato.
+	const tamperedEvents = [
+		{ eventId: "sig_evil", deviceId: signedDeviceId, timestamp: new Date().toISOString(), type: "agent_start", data: {} },
+	];
+	const tampered = await call("POST", "/api/device/audit", {
+		token: signedDeviceToken,
+		body: { events: tamperedEvents, signature },
+	});
+	assert.equal(tampered.status, 200); // la richiesta è valida...
+	// ...ma il server usa gli eventi *firmati*, non quelli in chiaro: solo l'evento originale è stato persistito.
+	const afterTamper = await call("GET", `/api/admin/audit?deviceId=${signedDeviceId}`, { token: adminToken });
+	const afterTamperEvents = afterTamper.data.events as { eventId: string }[];
+	assert.equal(afterTamperEvents.length, 2); // il primo signed + questo (dal payload firmato, non da tamperedEvents)
+	assert.ok(afterTamperEvents.every((e) => e.eventId === "sig_1"));
+
+	// Firma con una chiave diversa da quella registrata: rifiutata.
+	const otherKeyPair = generateSigningKeyPair();
+	const forgedSignature = signPayload(otherKeyPair.privateKeyPem, { deviceId: signedDeviceId, events });
+	const forged = await call("POST", "/api/device/audit", {
+		token: signedDeviceToken,
+		body: { events, signature: forgedSignature },
+	});
+	assert.equal(forged.status, 400);
+	assert.match(forged.data.error as string, /firma.*non valida/);
+
+	// Device legacy senza chiave registrata: continua a funzionare "token-only".
+	const legacyIngest = await call("POST", "/api/device/audit", {
+		token: deviceToken,
+		body: {
+			events: [
+				{ eventId: "legacy_1", deviceId, timestamp: new Date().toISOString(), type: "agent_start", data: {} },
+			],
+		},
+	});
+	assert.equal(legacyIngest.status, 200);
+	const legacyRead = await call("GET", `/api/admin/audit?deviceId=${deviceId}&limit=1`, { token: adminToken });
+	const legacyEvents = legacyRead.data.events as { provenance?: string }[];
+	assert.equal(legacyEvents.at(-1)?.provenance, "token-only");
+});
+
 test("RBAC: viewer non può mutare, operator non può cambiare policy", async () => {
 	const viewerResult = await call("POST", "/api/admin/admin-tokens", {
 		token: adminToken,
@@ -292,11 +378,13 @@ test("la catena di audit è integra e la manomissione viene rilevata", async () 
 	assert.equal(intact.data.valid, true);
 	assert.ok((intact.data.entries as number) > 0);
 
-	// Manomissione: si altera una riga in mezzo al file.
-	const { readFileSync: readSync, writeFileSync: writeSync, readdirSync } = await import("node:fs");
+	// Manomissione: si altera una riga in mezzo al file. Si punta esplicitamente
+	// al file di questo device (non al primo trovato nella dir: con più device
+	// arruolati coesistono più file di audit).
+	const { readFileSync: readSync, writeFileSync: writeSync } = await import("node:fs");
 	const { join: joinPath } = await import("node:path");
 	const auditDir = joinPath(dataDir, "audit");
-	const file = joinPath(auditDir, readdirSync(auditDir)[0] as string);
+	const file = joinPath(auditDir, `${deviceId}.jsonl`);
 	const lines = readSync(file, "utf8").trim().split("\n");
 	const target = JSON.parse(lines[0] as string) as { entry: { type: string } };
 	target.entry.type = "manomesso";

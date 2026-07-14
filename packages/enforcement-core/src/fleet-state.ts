@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AuditEvent, ConfigBundle, PolicyDocument } from "@harness/shared";
-import { failClosedPolicy, newId, verifyConfigBundleMulti } from "@harness/shared";
+import { failClosedPolicy, newId, signPayload, verifyConfigBundleMulti } from "@harness/shared";
 
 /** File di identità del device scritto dall'agent-client in fase di enrollment. */
 export interface AgentConfig {
@@ -34,6 +34,13 @@ export interface AgentConfig {
 	 * sostituendo la cache e bloccando la rete.
 	 */
 	minConfigVersion?: number;
+	/**
+	 * Chiave privata Ed25519 generata dal device all'enrollment, mai trasmessa
+	 * al control plane. Se presente, ogni batch di audit viene firmato prima
+	 * dell'invio (provenance): un device token rubato non basta più per
+	 * iniettare eventi falsi indistinguibili, serve anche questa chiave.
+	 */
+	deviceSigningPrivateKeyPem?: string;
 }
 
 export function defaultAgentConfigPath(): string {
@@ -256,13 +263,23 @@ export class FleetState {
 		if (this.auditBuffer.length === 0) return;
 		const batch = this.auditBuffer.slice(0, 200);
 		try {
+			const body: { events: AuditEvent[]; signature?: string } = { events: batch };
+			// Firma il batch con la chiave privata propria del device, se
+			// presente: il server la verifica contro la chiave pubblica
+			// registrata all'enrollment (provenance dell'audit).
+			if (this.config.deviceSigningPrivateKeyPem) {
+				body.signature = signPayload(this.config.deviceSigningPrivateKeyPem, {
+					deviceId: this.config.deviceId,
+					events: batch,
+				});
+			}
 			const response = await fetchImpl(`${this.config.controlPlaneUrl}/api/device/audit`, {
 				method: "POST",
 				headers: {
 					authorization: `Bearer ${this.config.deviceToken}`,
 					"content-type": "application/json",
 				},
-				body: JSON.stringify({ events: batch }),
+				body: JSON.stringify(body),
 				signal: AbortSignal.timeout(15_000),
 			});
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);

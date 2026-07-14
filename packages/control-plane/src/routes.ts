@@ -40,7 +40,10 @@ export function buildRoutes(): RouteDef[] {
 				// Il device può legarsi al proprio certificato client già all'enrollment,
 				// presentandolo via mTLS oppure indicandone il fingerprint nel body.
 				const certFingerprint = peerCertFingerprint(ctx.req) ?? optionalString(body, "certFingerprint");
-				return ctx.service.enrollDevice(enrollToken, deviceName, certFingerprint);
+				// Chiave pubblica di firma propria del device (provenance dell'audit),
+				// generata dal client all'enrollment: opzionale per retrocompatibilità.
+				const deviceSigningPublicKeyPem = optionalString(body, "deviceSigningPublicKeyPem");
+				return ctx.service.enrollDevice(enrollToken, deviceName, certFingerprint, deviceSigningPublicKeyPem);
 			},
 		},
 		{
@@ -56,7 +59,10 @@ export function buildRoutes(): RouteDef[] {
 			handler: async (ctx) => {
 				const body = await ctx.json();
 				const events: unknown[] = Array.isArray(body.events) ? body.events : [];
-				return { accepted: ctx.service.ingestAudit(ctx.device!, events) };
+				// Firma del batch (JWS con la chiave di firma propria del device):
+				// verificata dal service se il device ne ha registrata una.
+				const signature = optionalString(body, "signature");
+				return { accepted: ctx.service.ingestAudit(ctx.device!, events, signature) };
 			},
 		},
 		{

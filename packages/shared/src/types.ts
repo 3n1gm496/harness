@@ -114,6 +114,13 @@ export interface AuditEvent {
 	type: AuditEventType;
 	sessionId?: string;
 	data: Record<string, unknown>;
+	/**
+	 * Provenienza del batch, assegnata dal server all'ingest (mai dal client):
+	 * "signed" se il device ha una chiave di firma propria e il batch è stato
+	 * verificato; "token-only" se il device non ne ha una (retrocompatibilità)
+	 * — in tal caso l'evento è garantito solo dal possesso del device token.
+	 */
+	provenance?: "signed" | "token-only";
 }
 
 /**
