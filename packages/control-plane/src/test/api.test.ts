@@ -463,11 +463,17 @@ test("binding mTLS: la logica richiede il certificato legato", () => {
 		// Certificato giusto (normalizzazione dei due-punti/maiuscole) → ok.
 		assert.equal(svc.authenticateDevice(bound.deviceToken, "aabbccdd").deviceId, bound.deviceId);
 
-		// Device non legato: funziona con solo token, e può legarsi TOFU.
+		// Device non legato, TOFU disabilitato (default): il bind è rifiutato.
 		const enr2 = svc.createEnrollToken(identity, groupId, 10);
 		const free = svc.enrollDevice(enr2, "free");
 		const dev = svc.authenticateDevice(free.deviceToken);
 		assert.equal(dev.deviceId, free.deviceId);
+		assert.throws(() => svc.bindDeviceCertificate(dev, "12:34:56:78"), /trust-on-first-use disabilitato/);
+		// Il device resta autenticabile col solo token (nessun binding avvenuto).
+		assert.equal(svc.authenticateDevice(free.deviceToken).deviceId, free.deviceId);
+
+		// Con l'opt-in esplicito, il TOFU funziona come prima.
+		svc.updateOrg(identity, { allowCertTofu: true });
 		svc.bindDeviceCertificate(dev, "12:34:56:78");
 		assert.throws(() => svc.authenticateDevice(free.deviceToken), /richiesto/);
 		assert.equal(svc.authenticateDevice(free.deviceToken, "12345678").deviceId, free.deviceId);

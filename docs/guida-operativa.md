@@ -114,7 +114,9 @@ I client verificano i bundle contro l'insieme di chiavi fidate e aggiornano il p
 
 ### Binding mTLS dei device
 
-Per legare un device al suo certificato client (un token rubato senza chiave privata diventa inutile): servi il control plane in TLS (`HARNESS_TLS_*`) e arruola presentando il certificato client, oppure passa `certFingerprint` (SHA-256 hex) nel body di enrollment. Da quel momento le richieste `/api/device/*` di quel device richiedono il certificato combaciante. I device senza binding restano compatibili (solo token) e possono legarsi in trust-on-first-use via `POST /api/device/bind-cert`.
+Per legare un device al suo certificato client (un token rubato senza chiave privata diventa inutile): servi il control plane in TLS (`HARNESS_TLS_*`) e arruola presentando il certificato client, oppure passa `certFingerprint` (SHA-256 hex) nel body di enrollment. Da quel momento le richieste `/api/device/*` di quel device richiedono il certificato combaciante.
+
+Il binding **dopo** l'enrollment (`POST /api/device/bind-cert`, trust-on-first-use) è **disabilitato di default**: un token rubato non deve poter legare un certificato arbitrario prima che lo faccia il device legittimo. Con `requireDeviceCert=true` è vietato sempre (il binding va fatto solo all'enrollment); con `requireDeviceCert=false` va abilitato esplicitamente con `PUT /api/admin/org { "allowCertTofu": true }` se serve per un flusso operativo specifico.
 
 ### Storage Postgres (flotte grandi)
 

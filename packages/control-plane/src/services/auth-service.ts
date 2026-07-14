@@ -89,10 +89,21 @@ export class AuthService {
 	 * first use: da qui in poi le sue richieste richiedono quel certificato.
 	 */
 	bindDeviceCertificate(device: DeviceRecord, presentedFingerprint: string | undefined): void {
-		if (this.store.state.org.requireDeviceCert && !device.certFingerprint) {
-			// TOFU disabilitato: il binding deve avvenire all'enrollment, non dopo
-			// (chiude la race del trust-on-first-use su token rubato).
-			throw new ServiceError(403, "trust-on-first-use disabilitato: il certificato va legato all'enrollment");
+		if (!device.certFingerprint) {
+			// Nessun certificato ancora legato: è un trust-on-first-use, per
+			// natura vulnerabile a un token rubato usato prima del device
+			// legittimo. requireDeviceCert=true lo vieta sempre (il binding deve
+			// avvenire all'enrollment); altrimenti serve l'opt-in esplicito
+			// allowCertTofu (default false: TOFU disabilitato out-of-the-box).
+			if (this.store.state.org.requireDeviceCert) {
+				throw new ServiceError(403, "trust-on-first-use disabilitato: il certificato va legato all'enrollment");
+			}
+			if (!this.store.state.org.allowCertTofu) {
+				throw new ServiceError(
+					403,
+					"trust-on-first-use disabilitato: abilita org.allowCertTofu per legare un certificato dopo l'enrollment",
+				);
+			}
 		}
 		const presented = normalizeFingerprint(presentedFingerprint);
 		if (!presented) throw new ServiceError(400, "nessun certificato client presentato da legare");

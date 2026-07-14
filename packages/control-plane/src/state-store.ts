@@ -126,6 +126,7 @@ function orgToParams(o: OrgRecord): unknown[] {
 		o.requireDeviceCert,
 		JSON.stringify(o.policyOverride),
 		JSON.stringify(o.piSettingsOverride),
+		o.allowCertTofu,
 	];
 }
 function rowToOrg(r: Row): OrgRecord {
@@ -139,6 +140,7 @@ function rowToOrg(r: Row): OrgRecord {
 		requireDeviceCert: r.require_device_cert,
 		policyOverride: r.policy_override,
 		piSettingsOverride: r.pi_settings_override,
+		allowCertTofu: r.allow_cert_tofu ?? false,
 	};
 }
 
@@ -308,11 +310,12 @@ export class PostgresStateStore implements IncrementalStateStore {
 			if (diff.org) {
 				await client.query(
 					`INSERT INTO cp_org (id, org_id, name, config_version, kill_switch, config_ttl_minutes,
-						device_token_max_age_days, require_device_cert, policy_override, pi_settings_override)
-					 VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9)
+						device_token_max_age_days, require_device_cert, policy_override, pi_settings_override,
+						allow_cert_tofu)
+					 VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 					 ON CONFLICT (id) DO UPDATE SET org_id=$1, name=$2, config_version=$3, kill_switch=$4,
 						config_ttl_minutes=$5, device_token_max_age_days=$6, require_device_cert=$7,
-						policy_override=$8, pi_settings_override=$9`,
+						policy_override=$8, pi_settings_override=$9, allow_cert_tofu=$10`,
 					orgToParams(diff.org),
 				);
 				changes.push(["org", "", "upsert"]);

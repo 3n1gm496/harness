@@ -51,6 +51,14 @@ export interface OrgRecord {
 	deviceTokenMaxAgeDays: number;
 	/** Se true, l'enrollment richiede un certificato client e il TOFU è disabilitato. */
 	requireDeviceCert: boolean;
+	/**
+	 * Se true, un device senza certificato ancora legato può legarlo alla prima
+	 * richiesta autenticata con token (trust-on-first-use). Default false: il
+	 * TOFU è disabilitato out-of-the-box, perché vulnerabile a un token rubato
+	 * usato prima del device legittimo. Irrilevante se requireDeviceCert è
+	 * true (in quel caso il binding è comunque vietato dopo l'enrollment).
+	 */
+	allowCertTofu: boolean;
 	policyOverride: DeepPartial<PolicyDocument>;
 	piSettingsOverride: Record<string, unknown>;
 }
@@ -568,6 +576,7 @@ export class Store {
 				configTtlMinutes: 60,
 				deviceTokenMaxAgeDays: 90,
 				requireDeviceCert: false,
+				allowCertTofu: false,
 				policyOverride: {},
 				piSettingsOverride: {},
 			},

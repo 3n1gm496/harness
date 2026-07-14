@@ -201,6 +201,7 @@ test("Postgres incrementale: pullDelta consegna solo i cambi e NOTIFY sveglia i 
 				configTtlMinutes: 60,
 				deviceTokenMaxAgeDays: 90,
 				requireDeviceCert: false,
+				allowCertTofu: false,
 				policyOverride: {},
 				piSettingsOverride: {},
 			},

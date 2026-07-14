@@ -58,12 +58,14 @@ export class OrgService {
 			piSettingsOverride?: Record<string, unknown>;
 			deviceTokenMaxAgeDays?: number;
 			requireDeviceCert?: boolean;
+			allowCertTofu?: boolean;
 		},
 	): void {
 		const changesPolicy =
 			update.policyOverride !== undefined ||
 			update.piSettingsOverride !== undefined ||
-			update.requireDeviceCert !== undefined;
+			update.requireDeviceCert !== undefined ||
+			update.allowCertTofu !== undefined;
 		requireRole(identity, changesPolicy || update.configTtlMinutes !== undefined ? "admin" : "operator");
 		const { org } = this.store.state;
 		if (update.name !== undefined) org.name = update.name;
@@ -81,6 +83,7 @@ export class OrgService {
 			org.deviceTokenMaxAgeDays = update.deviceTokenMaxAgeDays;
 		}
 		if (update.requireDeviceCert !== undefined) org.requireDeviceCert = update.requireDeviceCert;
+		if (update.allowCertTofu !== undefined) org.allowCertTofu = update.allowCertTofu;
 		if (update.policyOverride !== undefined) org.policyOverride = update.policyOverride;
 		if (update.piSettingsOverride !== undefined) org.piSettingsOverride = update.piSettingsOverride;
 		this.ctx.bumpConfig();
