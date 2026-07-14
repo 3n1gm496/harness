@@ -1,5 +1,6 @@
 import type { ChainVerification } from "@harness/shared";
 import { CHAIN_GENESIS, computeChainHash, verifyChain } from "@harness/shared";
+import { runMigrations } from "./pg-migrations.js";
 import type {
 	AdminTokenRecord,
 	ControlPlaneState,
@@ -233,70 +234,11 @@ export class PostgresStateStore implements IncrementalStateStore {
 		};
 		// Pool limitato: evita di esaurire le connessioni del server sotto carico.
 		this.pool = new pg.Pool({ connectionString: this.connectionString, max: 8 });
-		await this.query(`
-			CREATE TABLE IF NOT EXISTS cp_org (
-				id int PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-				org_id text NOT NULL,
-				name text NOT NULL,
-				config_version int NOT NULL,
-				kill_switch boolean NOT NULL,
-				config_ttl_minutes int NOT NULL,
-				device_token_max_age_days int NOT NULL,
-				require_device_cert boolean NOT NULL,
-				policy_override jsonb NOT NULL,
-				pi_settings_override jsonb NOT NULL);
-			CREATE TABLE IF NOT EXISTS cp_groups (
-				group_id text PRIMARY KEY,
-				name text NOT NULL,
-				kill_switch boolean NOT NULL,
-				policy_override jsonb NOT NULL,
-				pi_settings_override jsonb NOT NULL);
-			CREATE TABLE IF NOT EXISTS cp_devices (
-				device_id text PRIMARY KEY,
-				name text NOT NULL,
-				group_id text NOT NULL REFERENCES cp_groups(group_id),
-				token_hash text NOT NULL UNIQUE,
-				token_issued_at timestamptz,
-				enrolled_at timestamptz NOT NULL,
-				last_seen_at timestamptz,
-				last_config_version int,
-				kill_switch boolean NOT NULL,
-				revoked boolean NOT NULL,
-				cert_fingerprint text,
-				policy_override jsonb NOT NULL,
-				pi_settings_override jsonb NOT NULL);
-			CREATE INDEX IF NOT EXISTS cp_devices_group_id_idx ON cp_devices(group_id);
-			CREATE TABLE IF NOT EXISTS cp_admin_tokens (
-				token_hash text PRIMARY KEY,
-				name text NOT NULL,
-				role text NOT NULL,
-				created_at timestamptz NOT NULL,
-				expires_at timestamptz);
-			CREATE TABLE IF NOT EXISTS cp_gateway_tokens (
-				token_hash text PRIMARY KEY,
-				name text NOT NULL,
-				created_at timestamptz NOT NULL);
-			CREATE TABLE IF NOT EXISTS cp_enroll_tokens (
-				token_hash text PRIMARY KEY,
-				group_id text NOT NULL,
-				created_at timestamptz NOT NULL,
-				expires_at timestamptz NOT NULL,
-				used_by text);
-			CREATE INDEX IF NOT EXISTS cp_enroll_expires_idx ON cp_enroll_tokens(expires_at);
-			CREATE TABLE IF NOT EXISTS cp_signing_keys (
-				key_id text PRIMARY KEY,
-				public_key_pem text NOT NULL,
-				private_key_pem text NOT NULL,
-				created_at timestamptz NOT NULL,
-				active boolean NOT NULL);
-			CREATE TABLE IF NOT EXISTS cp_audit_events (
-				stream_id text NOT NULL, seq bigint NOT NULL, prev_hash text NOT NULL, hash text NOT NULL,
-				entry text NOT NULL, ts timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (stream_id, seq));
-			CREATE TABLE IF NOT EXISTS cp_audit_heads (stream_id text PRIMARY KEY, seq bigint NOT NULL, head text NOT NULL);
-			CREATE TABLE IF NOT EXISTS cp_changelog (
-				id bigserial PRIMARY KEY, entity text NOT NULL, entity_key text NOT NULL, op text NOT NULL,
-				ts timestamptz NOT NULL DEFAULT now());
-		`);
+		// Migrazioni versionate (packages/control-plane/src/pg-migrations.ts): un
+		// database già popolato converge allo schema atteso applicando solo le
+		// migrazioni mancanti, invece del solo CREATE TABLE IF NOT EXISTS (che non
+		// fa nulla se la tabella esiste già con una forma diversa).
+		await runMigrations(this.pool, (text, params) => this.query(text, params));
 		this.ready = true;
 	}
 

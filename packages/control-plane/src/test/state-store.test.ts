@@ -88,7 +88,8 @@ async function resetPgSchema(url: string): Promise<void> {
 	// biome-ignore lint/suspicious/noExplicitAny: query di reset
 	await (s as any).query(
 		`TRUNCATE cp_org, cp_groups, cp_devices, cp_admin_tokens, cp_gateway_tokens,
-			cp_enroll_tokens, cp_signing_keys, cp_audit_events, cp_audit_heads, cp_changelog
+			cp_enroll_tokens, cp_signing_keys, cp_audit_events, cp_audit_heads, cp_changelog,
+			cp_rate_buckets
 		 RESTART IDENTITY CASCADE`,
 	);
 	await s.close();
@@ -252,3 +253,81 @@ test("Postgres incrementale: pullDelta consegna solo i cambi e NOTIFY sveglia i 
 		await reader.close();
 	}
 });
+
+test("migrazioni PG: converge alla versione più alta ed è idempotente (live)", { skip: !PG_URL }, async () => {
+	const url = PG_URL as string;
+	await resetPgSchema(url);
+	const store = new PostgresStateStore(url);
+	try {
+		// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
+		const s = store as any;
+		await s.ensureReady();
+
+		const versions = (
+			(await s.query("SELECT version FROM cp_schema_version ORDER BY version ASC")).rows as { version: number }[]
+		).map((r) => Number(r.version));
+		assert.deepEqual(versions, [1, 2, 3, 4]);
+
+		// Le colonne aggiunte dalle migrazioni 2/3 esistono davvero.
+		const deviceCols = (
+			await s.query(
+				"SELECT column_name FROM information_schema.columns WHERE table_name = 'cp_devices' AND column_name = 'device_signing_public_key_pem'",
+			)
+		).rows;
+		assert.equal(deviceCols.length, 1);
+		const orgCols = (
+			await s.query(
+				"SELECT column_name FROM information_schema.columns WHERE table_name = 'cp_org' AND column_name = 'allow_cert_tofu'",
+			)
+		).rows;
+		assert.equal(orgCols.length, 1);
+
+		// Riapplicare (nuova ensureReady su una nuova connessione) è un no-op:
+		// nessuna migrazione ri-applicata, nessun errore di doppia esecuzione.
+		// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
+		await (store as any).ensureReady();
+		const rows2 = (await s.query("SELECT COUNT(*) AS n FROM cp_schema_version")).rows as { n: string }[];
+		assert.equal(Number(rows2[0]?.n), 4);
+	} finally {
+		await store.close();
+	}
+});
+
+test(
+	"migrazioni PG: partendo da uno schema fermo alla versione 1 applica le successive (live)",
+	{ skip: !PG_URL },
+	async () => {
+		const url = PG_URL as string;
+		await resetPgSchema(url);
+		const bootstrap = new PostgresStateStore(url);
+		// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
+		const b = bootstrap as any;
+		await b.ensureReady();
+		// Rimuove ciò che le migrazioni 2+ hanno introdotto, per simulare un
+		// database fermo alla versione 1 (come un deploy esistente pre-upgrade).
+		await b.query("ALTER TABLE cp_devices DROP COLUMN IF EXISTS device_signing_public_key_pem");
+		await b.query("ALTER TABLE cp_org DROP COLUMN IF EXISTS allow_cert_tofu");
+		await b.query("DROP TABLE IF EXISTS cp_rate_buckets");
+		await b.query("DELETE FROM cp_schema_version WHERE version > 1");
+		await bootstrap.close();
+
+		const upgraded = new PostgresStateStore(url);
+		try {
+			// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
+			const u = upgraded as any;
+			await u.ensureReady();
+			const versions = (
+				(await u.query("SELECT version FROM cp_schema_version ORDER BY version ASC")).rows as {
+					version: number;
+				}[]
+			).map((r) => Number(r.version));
+			assert.deepEqual(versions, [1, 2, 3, 4]);
+			const rateBuckets = (await u.query("SELECT to_regclass('cp_rate_buckets') AS reg")).rows as {
+				reg: string | null;
+			}[];
+			assert.ok(rateBuckets[0]?.reg, "cp_rate_buckets deve esistere dopo l'upgrade");
+		} finally {
+			await upgraded.close();
+		}
+	},
+);
