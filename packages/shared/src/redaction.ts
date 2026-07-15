@@ -67,6 +67,9 @@ const BUILTIN_PATTERNS: BuiltinPattern[] = [
  */
 const SAFE_ASSIGNMENT_KEYS = new Set(["path", "authors", "author", "authority", "tokenizer", "tokens"]);
 
+/** Tetto di lunghezza del testo su cui si applicano i pattern custom admin (mitigazione ReDoS). */
+const MAX_CUSTOM_PATTERN_INPUT = 256 * 1024;
+
 export interface RedactionResult {
 	text: string;
 	/** Etichette dei pattern che hanno prodotto almeno una sostituzione. */
@@ -107,10 +110,20 @@ export function redactSecrets(text: string, extraPatterns: string[] = []): Redac
 		} catch {
 			continue; // una regex custom malformata non deve rompere il flusso
 		}
-		if (regex.test(result)) {
+		// ReDoS: i pattern custom sono forniti dall'admin ed eseguiti su testo
+		// (output dei tool) controllato dall'attaccante. Un pattern con
+		// backtracking catastrofico + testo lungo appenderebbe l'enforcement. Li
+		// applichiamo solo a un prefisso limitato: la coda oltre il tetto non
+		// passa dai pattern custom (i builtin, sicuri per costruzione, l'hanno
+		// già coperta). Non è una garanzia completa contro il backtracking
+		// esponenziale, ma bonifica il caso realistico.
+		const bounded = result.length > MAX_CUSTOM_PATTERN_INPUT;
+		const target = bounded ? result.slice(0, MAX_CUSTOM_PATTERN_INPUT) : result;
+		if (regex.test(target)) {
 			matches.add(`custom:${pattern}`);
 			regex.lastIndex = 0;
-			result = result.replace(regex, "[REDACTED:custom]");
+			const redactedHead = target.replace(regex, "[REDACTED:custom]");
+			result = bounded ? redactedHead + result.slice(MAX_CUSTOM_PATTERN_INPUT) : redactedHead;
 		}
 	}
 

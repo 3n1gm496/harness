@@ -109,6 +109,18 @@ test("regex di policy malformata fallisce in modo chiuso", () => {
 	assert.equal(evaluateBashCommand(policy, "ls").action, "deny");
 });
 
+test("i pattern deny sono testati su un prefisso limitato del comando (mitigazione ReDoS)", () => {
+	const policy = defaultPolicy().bash;
+	policy.mode = "denylist";
+	policy.deny = ["evilmarker"];
+	// Entro il tetto (16KB): il deny scatta.
+	assert.equal(evaluateBashCommand(policy, "echo evilmarker").action, "deny");
+	// Oltre il tetto: il marker nella coda non è testato (comando patologico,
+	// >16KB: nessun uso legittimo; in allowlist sarebbe comunque rifiutato).
+	const huge = `echo ${"a".repeat(16 * 1024)} evilmarker`;
+	assert.equal(evaluateBashCommand(policy, huge).action, "allow");
+});
+
 test("path fuori workspace negato", () => {
 	const decision = evaluateToolCall(defaultPolicy(), request("read", { path: "/etc/passwd" }));
 	assert.equal(decision.action, "deny");
@@ -121,6 +133,33 @@ test("path traversal fuori workspace negato", () => {
 
 test("path nella workspace consentito", () => {
 	const decision = evaluateToolCall(defaultPolicy(), request("write", { path: "src/nuovo.ts", content: "x" }));
+	assert.equal(decision.action, "allow");
+});
+
+test("path fuori workspace in chiavi annidate/array viene negato (non solo top-level)", () => {
+	// Tool consentiti (edit/read/write sono nell'allowlist di default): così il
+	// deny arriva davvero dall'enforcement dei path, non dal nome del tool.
+	// {old_path,new_path}: uno dei due fuori workspace → deny.
+	assert.equal(
+		evaluateToolCall(defaultPolicy(), request("edit", { old_path: "src/a.ts", new_path: "/etc/cron.d/evil" })).action,
+		"deny",
+	);
+	// Path annidato in un array di edit → deny.
+	assert.equal(
+		evaluateToolCall(defaultPolicy(), request("edit", { edits: [{ path: "/etc/passwd", text: "x" }] })).action,
+		"deny",
+	);
+	// Array di file sotto una chiave path-like → deny se uno è fuori.
+	assert.equal(
+		evaluateToolCall(defaultPolicy(), request("read", { files: ["src/a.ts", "/etc/shadow"] })).action,
+		"deny",
+	);
+});
+
+test("chiavi che contengono 'file' ma non sono percorsi non sono falsi positivi", () => {
+	// 'profile' contiene 'file' ma non è una chiave-percorso: non deve attivare
+	// l'enforcement dei path (che negherebbe un valore non-percorso fuori workspace).
+	const decision = evaluateToolCall(defaultPolicy(), request("read", { profile: "/etc/qualcosa" }));
 	assert.equal(decision.action, "allow");
 });
 

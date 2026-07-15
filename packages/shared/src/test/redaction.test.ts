@@ -70,6 +70,19 @@ test("assegnazioni innocue non vengono redatte (nessun falso positivo)", () => {
 	assert.ok(!result.matches.includes("generic-assignment-unquoted"));
 });
 
+test("i pattern custom si applicano solo a un prefisso limitato (mitigazione ReDoS)", () => {
+	// Il match cade oltre il tetto di 256KB: non viene redatto dai pattern custom
+	// (i builtin, sicuri per costruzione, vedono comunque tutto il testo). È il
+	// trade-off che bonifica il caso ReDoS su output di tool enormi.
+	const filler = "x".repeat(256 * 1024);
+	const beyond = redactSecrets(`${filler}CUSTOMSECRET1`, ["CUSTOMSECRET1"]);
+	assert.ok(beyond.text.includes("CUSTOMSECRET1"), "oltre il tetto: non redatto (bound applicato)");
+	// Entro il tetto: redatto regolarmente.
+	const within = redactSecrets("prefisso CUSTOMSECRET1 fine", ["CUSTOMSECRET1"]);
+	assert.ok(!within.text.includes("CUSTOMSECRET1"), "entro il tetto: redatto");
+	assert.ok(within.matches.includes("custom:CUSTOMSECRET1"));
+});
+
 test("deepMerge non attraversa __proto__ (prototype pollution)", () => {
 	const malicious = JSON.parse('{"__proto__": {"polluted": true}, "constructor": {"x": 1}, "safe": 2}') as object;
 	const merged = deepMerge({ a: 1 }, malicious) as Record<string, unknown>;

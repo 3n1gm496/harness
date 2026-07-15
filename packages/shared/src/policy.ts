@@ -4,6 +4,9 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { parseBashCommand, stripLeadingAssignments } from "./bash-parse.js";
 import type { BashPolicy, PathsPolicy, PolicyDecision, PolicyDocument, ToolCallRequest } from "./types.js";
 
+/** Tetto di lunghezza del testo testato contro i pattern `deny` admin (mitigazione ReDoS). */
+const MAX_DENY_REGEX_INPUT = 16 * 1024;
+
 /**
  * Motore di valutazione delle policy, invocato dall'estensione fleet
  * sull'evento `tool_call` di PI prima di ogni esecuzione.
@@ -56,6 +59,14 @@ export function evaluateBashCommand(policy: BashPolicy, command: string): Policy
 		return { action: "deny", reason: "esecuzione bash disabilitata dalla policy" };
 	}
 
+	// I pattern `deny` sono forniti dall'admin ed eseguiti su testo (il comando)
+	// influenzato dall'agente/utente: un pattern con backtracking catastrofico +
+	// input lungo potrebbe appendere l'enforcement (ReDoS). Limitiamo la
+	// lunghezza del testo testato: comandi oltre questa soglia sono già
+	// patologici (nessun uso legittimo). Non è una garanzia completa contro il
+	// backtracking esponenziale — la sandbox e il process guard restano il vero
+	// confine — ma bonifica il caso realistico.
+	const denyTarget = trimmed.length > MAX_DENY_REGEX_INPUT ? trimmed.slice(0, MAX_DENY_REGEX_INPUT) : trimmed;
 	for (const pattern of policy.deny) {
 		let regex: RegExp;
 		try {
@@ -64,7 +75,7 @@ export function evaluateBashCommand(policy: BashPolicy, command: string): Policy
 			// Una regex malformata in policy non deve mai aprire un varco.
 			return { action: "deny", reason: `pattern di policy non valido: ${pattern}` };
 		}
-		if (regex.test(trimmed)) {
+		if (regex.test(denyTarget)) {
 			return { action: "deny", reason: `comando corrisponde a pattern negato: ${pattern}` };
 		}
 	}
@@ -237,16 +248,61 @@ function isArgvAllowed(allow: string[], argv: string[]): boolean {
 	});
 }
 
-/** Campi di input dei tool built-in di PI che contengono percorsi. */
-const PATH_INPUT_KEYS = ["path", "file_path", "filePath", "directory", "dir"] as const;
+/**
+ * Nomi di campo (normalizzati: minuscoli, senza `_`/`-`) che contengono un
+ * percorso. Il confronto è esatto sul nome normalizzato — non su sottostringa —
+ * per non catturare falsi positivi come `profile`/`makefile` (che contengono
+ * "file" ma non sono percorsi).
+ */
+const PATH_KEYS = new Set([
+	"path",
+	"paths",
+	"filepath",
+	"file",
+	"files",
+	"dir",
+	"dirs",
+	"directory",
+	"directories",
+	"dirname",
+	"filename",
+	"oldpath",
+	"newpath",
+	"sourcepath",
+	"srcpath",
+	"destpath",
+	"destinationpath",
+	"targetpath",
+]);
+
+/**
+ * Estrae ricorsivamente i valori-percorso dall'input di un tool, non solo dalle
+ * chiavi top-level: un tool con input `{edits:[{path:…}]}` o `{old_path,new_path}`
+ * bypasserebbe altrimenti l'enforcement dei percorsi. Raccoglie le stringhe (o
+ * gli array di stringhe) sotto una chiave path-like a qualunque profondità, con
+ * limiti di profondità/quantità per non degenerare su input ostili.
+ */
+function collectPathInputs(input: Record<string, unknown>): string[] {
+	const out: string[] = [];
+	const visit = (obj: unknown, depth: number): void => {
+		if (depth > 6 || out.length > 200 || obj === null || typeof obj !== "object") return;
+		for (const [key, value] of Object.entries(obj)) {
+			if (PATH_KEYS.has(key.toLowerCase().replace(/[_-]/g, ""))) {
+				if (typeof value === "string" && value.trim() !== "") out.push(value);
+				else if (Array.isArray(value)) {
+					for (const item of value) if (typeof item === "string" && item.trim() !== "") out.push(item);
+				}
+			}
+			if (value && typeof value === "object") visit(value, depth + 1);
+		}
+	};
+	visit(input, 0);
+	return out;
+}
 
 export function evaluatePathAccess(policy: PathsPolicy, request: ToolCallRequest): PolicyDecision {
 	const home = request.home ?? homedir();
-	const paths: string[] = [];
-	for (const key of PATH_INPUT_KEYS) {
-		const value = request.input[key];
-		if (typeof value === "string" && value.trim() !== "") paths.push(value);
-	}
+	const paths = collectPathInputs(request.input);
 	if (paths.length === 0) return { action: "allow" };
 
 	const denyPrefixes = policy.deny.map((p) => resolveReal(normalizePrefix(p, home, request.cwd)));
