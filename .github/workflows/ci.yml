@@ -33,12 +33,31 @@ jobs:
           cache: npm
       - name: Installa dipendenze (senza lifecycle script)
         run: npm ci --ignore-scripts
+      - name: Installa Chromium per il test UI (playwright-core)
+        run: |
+          npx --yes playwright-core install --with-deps chromium
+          echo "HARNESS_TEST_CHROMIUM_PATH=$(node -e "console.log(require('playwright-core').chromium.executablePath())")" >> "$GITHUB_ENV"
       - name: Build
         run: npm run build
       - name: Lint (Biome)
         run: npm run lint
-      - name: Test (incluso adapter Postgres e mTLS)
+      - name: Test (incluso adapter Postgres, mTLS e UI browser)
         run: npm test
+      - name: Coverage (soglia minima di regressione)
+        run: >-
+          node --test --experimental-test-coverage
+          --test-coverage-lines=85 --test-coverage-functions=85 --test-coverage-branches=75
+          packages/*/dist/test/*.test.js
+      - name: Esempio end-to-end senza PI (dimostra il disaccoppiamento dell'enforcement)
+        run: node examples/mock-agent/run.mjs
+      - name: Valida deploy/docker-compose.yml
+        run: |
+          export HARNESS_SIGNING_KEK=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
+          docker compose -f deploy/docker-compose.yml config > /dev/null
+      - name: Build immagine Docker del control plane
+        run: docker build -f deploy/Dockerfile.backend -t harness-backend:ci .
+      - name: Build immagine Docker del client gestito
+        run: docker build -f deploy/Dockerfile.agent -t harness-agent:ci .
       - name: Audit dipendenze di produzione
         run: npm audit --omit=dev
         continue-on-error: true

@@ -30,6 +30,10 @@ HARNESS_TEST_PG_URL=postgresql://... npm run load-test -- --devices 500   # back
 
 Flag: `--devices` (default 200), `--requests-per-device` (default 5), `--concurrency` (default 50), `--p95-threshold-ms` (default 750, soglia di regressione — generosa apposta per ambienti CI condivisi: l'obiettivo è cogliere una regressione O(n), non misurare uno SLA di produzione). Con `HARNESS_TEST_PG_URL` impostata azzera lo schema del database indicato prima di partire: puntarla solo a un'istanza Postgres dedicata/effimera, mai a dati che contano.
 
+### CI (`.github/workflows/ci.yml`)
+
+Ogni push/PR esercita davvero ciò che il repo promette, non solo build+test: installa Chromium (per il test UI, P3.3), build, lint (Biome), suite completa (Postgres, mTLS, UI browser), coverage con soglia minima di regressione (`node --test --experimental-test-coverage`, linee/funzioni/branch), l'esempio end-to-end senza PI (`examples/mock-agent`, la prova del disaccoppiamento dell'enforcement), la validazione di `deploy/docker-compose.yml`, e il build delle due immagini Docker (`Dockerfile.backend`, `Dockerfile.agent`). Un quick-start "one-command" che si rompe silenziosamente non se ne accorgerebbe altrimenti.
+
 ### Avvio one-command (Docker)
 
 L'intero backend (Postgres + control plane con auto-seeding) parte con un solo comando. La KEK è obbligatoria e non ha un default committato:
