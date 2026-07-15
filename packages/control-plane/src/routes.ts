@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { peerCertFingerprint } from "@harness/shared";
 import type { RouteContext, RouteDef } from "./http-router.js";
 import { ServiceError } from "./services/context.js";
-import { checkEnrollRateLimit, clientIp } from "./rate-limit.js";
+import { clientIp } from "./rate-limit.js";
 
 function requireString(body: Record<string, unknown>, key: string): string {
 	const value = body[key];
@@ -31,7 +31,7 @@ export function buildRoutes(): RouteDef[] {
 			path: "/api/enroll",
 			auth: "none",
 			handler: async (ctx: RouteContext) => {
-				if (!checkEnrollRateLimit(clientIp(ctx.req))) {
+				if (!(await ctx.service.checkEnrollRateLimit(clientIp(ctx.req)))) {
 					throw new ServiceError(429, "troppi tentativi di enrollment, riprovare tra un minuto");
 				}
 				const body = await ctx.json();

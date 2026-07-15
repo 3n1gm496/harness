@@ -491,6 +491,34 @@ test(
 );
 
 test(
+	"Postgres: checkRateLimit condivide il conteggio tra istanze diverse (chiude B5, live)",
+	{ skip: !PG_URL },
+	async () => {
+		const url = PG_URL as string;
+		await resetPgSchema(url);
+		const a = new PostgresStateStore(url);
+		const b = new PostgresStateStore(url);
+		try {
+			// Soglia 5: le prime 5 richieste (su entrambe le istanze insieme) sono
+			// entro soglia, la sesta no — un limiter per-istanza lascerebbe passare
+			// 5 richieste *per ciascuna* istanza (10 in tutto), il bug che questo
+			// backend condiviso chiude.
+			const key = "enroll:203.0.113.9";
+			const results: boolean[] = [];
+			for (let i = 0; i < 5; i += 1) results.push(await a.checkRateLimit(key, 5));
+			for (let i = 0; i < 5; i += 1) results.push(await b.checkRateLimit(key, 5));
+			assert.equal(results.filter(Boolean).length, 5, "solo le prime 5 richieste, condivise tra le due istanze, passano");
+
+			// Chiavi diverse hanno bucket indipendenti.
+			assert.equal(await a.checkRateLimit("enroll:203.0.113.10", 5), true);
+		} finally {
+			await a.close();
+			await b.close();
+		}
+	},
+);
+
+test(
 	"Postgres: un'istanza rimasta indietro converge con un resync completo dopo il pruning del changelog (live)",
 	{ skip: !PG_URL },
 	async () => {

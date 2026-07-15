@@ -81,6 +81,9 @@ export class ControlPlaneService {
 
 	// ---- Device (DeviceService) ---------------------------------------------
 
+	async checkEnrollRateLimit(ip: string): Promise<boolean> {
+		return this.devices.checkEnrollRateLimit(ip);
+	}
 	createEnrollToken(identity: AdminIdentity, groupId: string, ttlMinutes: number): string {
 		return this.devices.createEnrollToken(identity, groupId, ttlMinutes);
 	}

@@ -752,6 +752,37 @@ test("retention: pruneAudit in file-mode non cancella righe (ruota su archivio p
 	}
 });
 
+test("rate limit sull'enrollment: oltre la soglia risponde 429 (in-memory, file-mode)", async () => {
+	// Server isolato: il rate limit è per-IP e condiviso da tutte le richieste
+	// che colpiscono lo stesso processo, quindi non va condiviso col fixture
+	// principale (già usato da molti altri test di enrollment su 127.0.0.1).
+	const dir = mkdtempSync(join(tmpdir(), "harness-rate-limit-"));
+	const isolatedStore = new Store(dir);
+	const isolatedService = new ControlPlaneService(isolatedStore);
+	const isolatedServer = createControlPlaneServer(isolatedService, { readiness: () => isolatedStore.checkReady() });
+	try {
+		await new Promise<void>((resolve) => isolatedServer.listen(0, resolve));
+		const port = (isolatedServer.address() as AddressInfo).port;
+		const url = `http://127.0.0.1:${port}/api/enroll`;
+		const attempt = () =>
+			fetch(url, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ enrollToken: "enr_non_valido", deviceName: "x" }),
+			});
+
+		// Il controllo del rate limit precede la validazione del token: ogni
+		// richiesta conta, valida o meno. Soglia di default: 20/minuto.
+		const statuses: number[] = [];
+		for (let i = 0; i < 21; i += 1) statuses.push((await attempt()).status);
+		assert.ok(statuses.slice(0, 20).every((s) => s === 401), "le prime 20 falliscono per token non valido, non per rate limit");
+		assert.equal(statuses[20], 429, "la ventunesima richiesta nella stessa finestra deve essere respinta");
+	} finally {
+		await new Promise((resolve) => isolatedServer.close(resolve));
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("la UI statica viene servita con la dashboard, la paginazione e l'editor policy", async () => {
 	const response = await fetch(`${baseUrl}/`);
 	assert.equal(response.status, 200);

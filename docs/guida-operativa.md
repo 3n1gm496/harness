@@ -129,6 +129,8 @@ Il binding **dopo** l'enrollment (`POST /api/device/bind-cert`, trust-on-first-u
 
 Il default è il file store locale (zero dipendenze, singola istanza). Per alta disponibilità/scala, imposta `DATABASE_URL`: lo stato è **normalizzato** (una riga per entità — org, gruppi, device, token, chiavi) con **scritture mirate** (niente riscrittura del blob), e l'**audit è centralizzato** nel DB (`cp_audit_events` con testa di catena per-stream serializzata via lock di riga). Più istanze condividono lo stesso DB: convergono via reload periodico, le scritture sono row-level (niente conflitti globali), l'audit è unico e non frammentato. Richiede la dipendenza opzionale `pg` e `HARNESS_SIGNING_KEK` (obbligatoria: le chiavi private sono cifrate a riposo anche nel DB). L'heartbeat dei device (`lastSeenAt`) è persistito con throttling (≤ ogni 30s per device).
 
+Il rate limit dell'enrollment (`POST /api/enroll`) segue lo stesso backend: con Postgres il conteggio è condiviso tra tutte le istanze (`cp_rate_buckets`, upsert atomico), quindi la soglia (20/min per IP) resta quella dichiarata indipendentemente da quante istanze girano dietro il load balancer; in file-mode è in-memory (corretto solo a singola istanza). Il rate limit del **gateway LLM** resta invece per-istanza deliberatamente: condividerlo sincronicamente col control plane aggiungerebbe latenza e un accoppiamento sul percorso d'inferenza.
+
 ```bash
 DATABASE_URL=postgresql://user:pass@db:5432/harness node packages/control-plane/dist/cli.js serve
 ```

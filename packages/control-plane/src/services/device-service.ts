@@ -19,6 +19,15 @@ export class DeviceService {
 		return this.ctx.store;
 	}
 
+	/**
+	 * Rate limit sull'endpoint di enrollment (non autenticato): condiviso tra
+	 * istanze se il backend è Postgres, altrimenti in-memory (vedi
+	 * `Store.checkEnrollRateLimit`).
+	 */
+	async checkEnrollRateLimit(ip: string): Promise<boolean> {
+		return this.store.checkEnrollRateLimit(ip);
+	}
+
 	createEnrollToken(identity: AdminIdentity, groupId: string, ttlMinutes: number): string {
 		requireRole(identity, "operator");
 		this.ctx.requireGroup(groupId);

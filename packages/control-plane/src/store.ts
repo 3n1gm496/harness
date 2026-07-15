@@ -23,6 +23,7 @@ import {
 } from "@harness/shared";
 import { ChangelogPrunedError, isIncremental, isNormalized } from "./state-store.js";
 import type { StateDiff } from "./state-store.js";
+import { InMemoryRateLimiter } from "./rate-limiter.js";
 
 /** Confronta due mappe per chiave e invoca upsert sui cambiati, del sui rimossi. */
 function diffMaps<T>(
@@ -669,6 +670,21 @@ export class Store {
 	/** Backend normalizzato attivo (Postgres), se presente: audit centralizzato in DB. */
 	private normalizedBackend(): import("./state-store.js").NormalizedStateStore | undefined {
 		return this.mirror && isNormalized(this.mirror) ? this.mirror : undefined;
+	}
+
+	/** Limiter di riserva per il rate limit dell'enrollment quando non c'è un backend Postgres condiviso. */
+	private readonly enrollRateLimiter = new InMemoryRateLimiter();
+
+	/**
+	 * Rate limit dell'enrollment: con backend Postgres il conteggio è condiviso
+	 * tra tutte le istanze (`cp_rate_buckets`); altrimenti (file-mode, singola
+	 * istanza) resta in-memory, sufficiente perché non c'è un secondo processo
+	 * con cui condividerlo.
+	 */
+	async checkEnrollRateLimit(key: string, limitPerMinute = 20): Promise<boolean> {
+		const backend = this.normalizedBackend();
+		if (backend) return backend.checkRateLimit(`enroll:${key}`, limitPerMinute);
+		return this.enrollRateLimiter.check(`enroll:${key}`, limitPerMinute);
 	}
 
 	appendDeviceAudit(deviceId: string, events: AuditEvent[]): void {

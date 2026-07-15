@@ -67,6 +67,12 @@ export interface NormalizedStateStore extends DurableStateStore {
 	 * né ricalcolare nulla.
 	 */
 	pruneAudit(streamId: string, olderThanDays: number): Promise<{ prunedRows: number }>;
+	/**
+	 * Rate limit a finestra fissa (60s) condiviso tra tutte le istanze che
+	 * puntano allo stesso database (`cp_rate_buckets`, upsert atomico): ritorna
+	 * true se `key` è ancora entro `limitPerWindow` in questa finestra.
+	 */
+	checkRateLimit(key: string, limitPerWindow: number): Promise<boolean>;
 }
 
 /**
@@ -758,6 +764,30 @@ export class PostgresStateStore implements IncrementalStateStore {
 			deviceStreamIds.map(async (deviceId) => ({ deviceId, ...(await headOf(deviceId)) })),
 		);
 		return { admin, devices };
+	}
+
+	/**
+	 * Upsert atomico su `cp_rate_buckets`: o crea il bucket (prima richiesta
+	 * nella finestra) o avanza il conteggio, resettando la finestra se è scaduta
+	 * (60s) — un solo round-trip, senza lock espliciti, così N istanze che
+	 * condividono il DB condividono anche il conteggio invece di applicare
+	 * ciascuna la propria soglia in memoria (N×soglia effettiva).
+	 */
+	async checkRateLimit(key: string, limitPerWindow: number): Promise<boolean> {
+		await this.ensureReady();
+		const result = await this.query(
+			`INSERT INTO cp_rate_buckets (bucket_key, window_start, count)
+			 VALUES ($1, now(), 1)
+			 ON CONFLICT (bucket_key) DO UPDATE SET
+				count = CASE WHEN cp_rate_buckets.window_start < now() - interval '60 seconds'
+					THEN 1 ELSE cp_rate_buckets.count + 1 END,
+				window_start = CASE WHEN cp_rate_buckets.window_start < now() - interval '60 seconds'
+					THEN now() ELSE cp_rate_buckets.window_start END
+			 RETURNING count`,
+			[key],
+		);
+		const count = Number(result.rows[0]?.count ?? 1);
+		return count <= limitPerWindow;
 	}
 
 	async close(): Promise<void> {
