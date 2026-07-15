@@ -371,6 +371,42 @@ test("migrazioni PG: converge alla versione più alta ed è idempotente (live)",
 	}
 });
 
+test("migrazioni PG: due istanze in cold-start concorrente non vanno in race (advisory lock, live)", {
+	skip: !PG_URL,
+}, async () => {
+	const url = PG_URL as string;
+	// DB davvero vuoto: elimina anche cp_schema_version, così entrambe le istanze
+	// partono dovendo applicare TUTTE le migrazioni insieme (lo scenario di race).
+	const cleaner = new PostgresStateStore(url);
+	// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
+	const c = cleaner as any;
+	await c.ensureReady();
+	await c.query(`DROP TABLE IF EXISTS cp_org, cp_groups, cp_devices, cp_admin_tokens,
+		cp_gateway_tokens, cp_enroll_tokens, cp_signing_keys, cp_audit_events, cp_audit_heads,
+		cp_changelog, cp_rate_buckets, cp_audit_prune_state, cp_changelog_prune_floor,
+		cp_schema_version CASCADE`);
+	await cleaner.close();
+
+	const a = new PostgresStateStore(url);
+	const b = new PostgresStateStore(url);
+	try {
+		// Senza l'advisory lock, questi due ensureReady applicherebbero le stesse
+		// migrazioni insieme e uno crasherebbe sul conflitto di PK.
+		// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
+		await Promise.all([(a as any).ensureReady(), (b as any).ensureReady()]);
+		// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
+		const versions = (
+			(await (a as any).query("SELECT version FROM cp_schema_version ORDER BY version")).rows as {
+				version: number;
+			}[]
+		).map((r) => Number(r.version));
+		assert.deepEqual(versions, [1, 2, 3, 4, 5]);
+	} finally {
+		await a.close();
+		await b.close();
+	}
+});
+
 test("migrazioni PG: partendo da uno schema fermo alla versione 1 applica le successive (live)", {
 	skip: !PG_URL,
 }, async () => {

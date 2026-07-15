@@ -129,43 +129,69 @@ export interface MigrationQueryable {
 }
 
 /**
+ * Chiave costante per il lock advisory delle migrazioni ("HRMG" in ASCII).
+ * Serializza il processo di migrazione tra istanze diverse che condividono il
+ * database, così due processi in cold-start concorrente non applicano la stessa
+ * migrazione insieme (con uno che crasha sul conflitto di PK di
+ * `cp_schema_version`).
+ */
+const MIGRATION_LOCK_KEY = 0x48524d47;
+
+/**
  * Applica in ordine le migrazioni non ancora registrate, ciascuna nella
  * propria transazione. `connect` apre una connessione dedicata (serve una
  * connessione singola per BEGIN/COMMIT coerenti, non il pool condiviso).
+ * L'intero processo è serializzato da un advisory lock a livello di sessione:
+ * un'istanza concorrente attende il rilascio, poi rilegge la versione corrente
+ * e salta le migrazioni già applicate nel frattempo.
  */
 export async function runMigrations(
 	pool: { connect(): Promise<MigrationQueryable & { release(): void }> },
 	query: (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>,
 ): Promise<void> {
-	await query(`
-		CREATE TABLE IF NOT EXISTS cp_schema_version (
-			version int PRIMARY KEY,
-			description text NOT NULL,
-			applied_at timestamptz NOT NULL DEFAULT now());
-	`);
-	const current = await query("SELECT COALESCE(MAX(version), 0) AS v FROM cp_schema_version");
-	const currentVersion = Number(current.rows[0]?.v ?? 0);
-	const pending = MIGRATIONS.filter((m) => m.version > currentVersion).sort((a, b) => a.version - b.version);
+	const lockClient = await pool.connect();
+	try {
+		await lockClient.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK_KEY]);
 
-	for (const migration of pending) {
-		const client = await pool.connect();
-		try {
-			await client.query("BEGIN");
-			await client.query(migration.sql);
-			await client.query("INSERT INTO cp_schema_version (version, description) VALUES ($1, $2)", [
-				migration.version,
-				migration.description,
-			]);
-			await client.query("COMMIT");
-		} catch (error) {
-			await client.query("ROLLBACK");
-			throw new Error(
-				`migrazione ${migration.version} (${migration.description}) fallita: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
-		} finally {
-			client.release();
+		await query(`
+			CREATE TABLE IF NOT EXISTS cp_schema_version (
+				version int PRIMARY KEY,
+				description text NOT NULL,
+				applied_at timestamptz NOT NULL DEFAULT now());
+		`);
+		// Riletta DOPO aver preso il lock: un'altra istanza potrebbe aver appena
+		// migrato mentre attendevamo, quindi il floor va ricalcolato ora.
+		const current = await query("SELECT COALESCE(MAX(version), 0) AS v FROM cp_schema_version");
+		const currentVersion = Number(current.rows[0]?.v ?? 0);
+		const pending = MIGRATIONS.filter((m) => m.version > currentVersion).sort((a, b) => a.version - b.version);
+
+		for (const migration of pending) {
+			const client = await pool.connect();
+			try {
+				await client.query("BEGIN");
+				await client.query(migration.sql);
+				await client.query("INSERT INTO cp_schema_version (version, description) VALUES ($1, $2)", [
+					migration.version,
+					migration.description,
+				]);
+				await client.query("COMMIT");
+			} catch (error) {
+				await client.query("ROLLBACK");
+				throw new Error(
+					`migrazione ${migration.version} (${migration.description}) fallita: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			} finally {
+				client.release();
+			}
 		}
+	} finally {
+		try {
+			await lockClient.query("SELECT pg_advisory_unlock($1)", [MIGRATION_LOCK_KEY]);
+		} catch {
+			// Rilascio best-effort: alla chiusura della connessione il lock cade comunque.
+		}
+		lockClient.release();
 	}
 }

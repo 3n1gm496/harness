@@ -269,22 +269,55 @@ export class PostgresStateStore implements IncrementalStateStore {
 	// biome-ignore lint/suspicious/noExplicitAny: client dedicato per LISTEN/NOTIFY
 	private listenClient: any;
 	private ready = false;
+	/** Inizializzazione memoizzata: N chiamate concorrenti condividono una sola init (niente pool duplicati). */
+	private initPromise: Promise<void> | undefined;
 
 	constructor(private readonly connectionString: string) {}
 
-	private async ensureReady(): Promise<void> {
-		if (this.ready) return;
+	private ensureReady(): Promise<void> {
+		if (this.ready) return Promise.resolve();
+		if (this.initPromise) return this.initPromise;
+		this.initPromise = this.initialize().then(
+			() => {
+				this.ready = true;
+			},
+			async (error: unknown) => {
+				// Inizializzazione fallita (es. migrazione o connettività): chiudi il
+				// pool half-open per non lasciarlo orfano (senza, ogni retry creava un
+				// nuovo Pool sovrascrivendo il precedente → leak fino a max=8/retry) e
+				// azzera la promise così un retry successivo ricomincia pulito.
+				this.initPromise = undefined;
+				if (this.pool) {
+					try {
+						await this.pool.end();
+					} catch {
+						// chiusura best-effort
+					}
+					this.pool = undefined;
+				}
+				throw error;
+			},
+		);
+		return this.initPromise;
+	}
+
+	private async initialize(): Promise<void> {
 		const pg = (await import("pg")).default as unknown as {
 			Pool: new (config: { connectionString: string; max: number }) => unknown;
 		};
 		// Pool limitato: evita di esaurire le connessioni del server sotto carico.
-		this.pool = new pg.Pool({ connectionString: this.connectionString, max: 8 });
+		const pool = new pg.Pool({ connectionString: this.connectionString, max: 8 });
+		// Un errore su una connessione idle del pool (es. il server chiude la
+		// connessione) emette un evento 'error' sul Pool: senza handler,
+		// abbatterebbe l'intero processo. Lo assorbiamo — il pool rimpiazza da sé
+		// la connessione difettosa — così un blip del DB non causa un crash.
+		(pool as { on(event: string, cb: (err: unknown) => void): void }).on("error", () => {});
+		this.pool = pool;
 		// Migrazioni versionate (packages/control-plane/src/pg-migrations.ts): un
 		// database già popolato converge allo schema atteso applicando solo le
 		// migrazioni mancanti, invece del solo CREATE TABLE IF NOT EXISTS (che non
 		// fa nulla se la tabella esiste già con una forma diversa).
 		await runMigrations(this.pool, (text, params) => this.query(text, params));
-		this.ready = true;
 	}
 
 	private async query(text: string, params: unknown[] = []): Promise<{ rows: Row[] }> {
@@ -805,6 +838,11 @@ export class PostgresStateStore implements IncrementalStateStore {
 			}
 			this.listenClient = undefined;
 		}
-		if (this.pool) await this.pool.end();
+		if (this.pool) {
+			await this.pool.end();
+			this.pool = undefined;
+		}
+		this.ready = false;
+		this.initPromise = undefined;
 	}
 }

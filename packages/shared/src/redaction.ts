@@ -50,7 +50,7 @@ const BUILTIN_PATTERNS: BuiltinPattern[] = [
 		label: "generic-assignment-unquoted",
 		regex:
 			/\b([A-Za-z0-9_]*(?:passwd|password|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth)[A-Za-z0-9_]*)(\s*[=:]\s*)(?!["'])(\S{8,})/gi,
-		replace: (match, groups) => {
+		replace: (_match, groups) => {
 			const key = (groups[0] ?? "").toLowerCase();
 			if (SAFE_ASSIGNMENT_KEYS.has(key)) return null; // falso positivo (es. AUTHORS=…): non redigere
 			// Mantiene la chiave e l'operatore, redige solo il valore.
