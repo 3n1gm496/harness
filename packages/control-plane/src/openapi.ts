@@ -127,6 +127,19 @@ const ROUTE_DOCS: Record<string, RouteDoc> = {
 		requestBody: true,
 	},
 	"GET /healthz": { summary: "Liveness: sempre 200 se il processo risponde", tags: ["osservabilità"] },
+	"POST /api/admin/session/login": {
+		summary: "Login della UI: scambia un token amministrativo per un cookie di sessione httpOnly + CSRF token",
+		tags: ["admin"],
+		requestBody: true,
+	},
+	"GET /api/admin/session/me": {
+		summary: "Verifica non autenticante se il cookie di sessione corrente è valido (per riprendere dopo un reload)",
+		tags: ["admin"],
+	},
+	"POST /api/admin/session/logout": {
+		summary: "Invalida la sessione UI corrente e cancella il cookie",
+		tags: ["admin"],
+	},
 };
 
 /** Converte `/api/admin/groups/:id` in `/api/admin/groups/{id}` (sintassi OpenAPI) e ne estrae i nomi dei parametri. */

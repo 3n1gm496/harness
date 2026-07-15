@@ -2,10 +2,14 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { peerCertFingerprint } from "@harness/shared";
+import { buildSessionCookie, clearSessionCookie, isSecureRequest, sessionCookieValue } from "./cookies.js";
 import type { RouteContext, RouteDef } from "./http-router.js";
 import { generateOpenApiDocument } from "./openapi.js";
 import { clientIp } from "./rate-limit.js";
 import { ServiceError } from "./services/context.js";
+
+/** Durata del cookie di sessione della UI, in secondi (coerente col TTL lato AuthService). */
+const SESSION_COOKIE_MAX_AGE_SECONDS = 12 * 60 * 60;
 
 function requireString(body: Record<string, unknown>, key: string): string {
 	const value = body[key];
@@ -295,22 +299,98 @@ export function buildRoutes(): RouteDef[] {
 			}),
 		},
 
+		// ---- Sessione della UI amministrativa (A2) --------------------------
+		// Sostituisce il bearer token in `localStorage`: la UI POSTa il token
+		// amministrativo una sola volta al login, riceve un cookie httpOnly (mai
+		// letto da JS) più un CSRF token nel body (allegato dal JS come header
+		// sulle richieste mutanti). Il bearer resta invariato per API/CLI.
+		{
+			method: "POST",
+			path: "/api/admin/session/login",
+			auth: "none",
+			handler: async (ctx) => {
+				const body = await ctx.json();
+				const { sessionId, csrfToken, identity } = ctx.service.auth.createAdminSession(optionalString(body, "token"));
+				ctx.res.setHeader(
+					"set-cookie",
+					buildSessionCookie(sessionId, SESSION_COOKIE_MAX_AGE_SECONDS, isSecureRequest(ctx.req)),
+				);
+				return { name: identity.name, role: identity.role, csrfToken };
+			},
+		},
+		{
+			method: "GET",
+			path: "/api/admin/session/me",
+			auth: "none",
+			// Usato dopo un reload di pagina: il cookie httpOnly sopravvive, il
+			// CSRF token tenuto in memoria JS no — questo endpoint lo riconsegna
+			// senza richiedere un nuovo login, se la sessione è ancora valida.
+			// Risponde sempre 200 (anche senza sessione): è un probe, non una
+			// route protetta, per non generare un 401 atteso a ogni caricamento
+			// di pagina senza sessione (il caso più comune, prima del login).
+			handler: (ctx) => ctx.service.auth.probeSession(sessionCookieValue(ctx.req)),
+		},
+		{
+			method: "POST",
+			path: "/api/admin/session/logout",
+			auth: "none",
+			handler: (ctx) => {
+				ctx.service.auth.destroySession(sessionCookieValue(ctx.req));
+				ctx.res.setHeader("set-cookie", clearSessionCookie(isSecureRequest(ctx.req)));
+				return { ok: true };
+			},
+		},
+
 		// ---- Salute e UI statica --------------------------------------------
 		{ method: "GET", path: "/healthz", auth: "none", handler: () => ({ ok: true }) },
 		{ method: "GET", path: "/api/openapi.json", auth: "none", handler: () => generateOpenApiDocument() },
 		{ method: "GET", path: "/", auth: "none", raw: true, handler: serveIndexHtml },
 		{ method: "GET", path: "/index.html", auth: "none", raw: true, handler: serveIndexHtml },
+		{
+			method: "GET",
+			path: "/app.css",
+			auth: "none",
+			raw: true,
+			handler: (ctx) => serveStaticAsset(ctx, "app.css", "text/css; charset=utf-8"),
+		},
+		{
+			method: "GET",
+			path: "/app.js",
+			auth: "none",
+			raw: true,
+			handler: (ctx) => serveStaticAsset(ctx, "app.js", "text/javascript; charset=utf-8"),
+		},
 	];
 }
 
+/**
+ * CSP dell'unica pagina statica servita: nessun `'unsafe-inline'` (A2), grazie
+ * a script e stile esternalizzati in `app.js`/`app.css` e alla rimozione di
+ * ogni `onclick=` inline (l'HTML delega gli eventi via `addEventListener`).
+ */
+const CSP = "default-src 'self'; img-src 'self' data:";
+
 function serveIndexHtml(ctx: RouteContext): void {
-	const dir = dirname(fileURLToPath(import.meta.url));
-	const html = readFileSync(join(dir, "..", "public", "index.html"), "utf8");
+	const html = readPublicFile("index.html");
 	ctx.res.writeHead(200, {
 		"content-type": "text/html; charset=utf-8",
 		"x-content-type-options": "nosniff",
-		"content-security-policy":
-			"default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:",
+		"content-security-policy": CSP,
 	});
 	ctx.res.end(html);
+}
+
+function serveStaticAsset(ctx: RouteContext, filename: string, contentType: string): void {
+	const body = readPublicFile(filename);
+	ctx.res.writeHead(200, {
+		"content-type": contentType,
+		"x-content-type-options": "nosniff",
+		"cache-control": "no-cache",
+	});
+	ctx.res.end(body);
+}
+
+function readPublicFile(filename: string): string {
+	const dir = dirname(fileURLToPath(import.meta.url));
+	return readFileSync(join(dir, "..", "public", filename), "utf8");
 }

@@ -11,10 +11,19 @@ import {
 	ServiceError,
 } from "./context.js";
 
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+
+interface AdminSessionRecord {
+	name: string;
+	role: AdminRole;
+	csrfToken: string;
+	expiresAt: number;
+}
+
 /**
  * Autenticazione (admin/device/gateway) e ciclo di vita dei token/credenziali:
  * bootstrap, token amministrativi, token gateway, binding e rotazione dei
- * device token, introspezione per il gateway.
+ * device token, introspezione per il gateway, sessioni della UI.
  */
 export class AuthService {
 	constructor(private readonly ctx: ServiceContext) {}
@@ -22,6 +31,17 @@ export class AuthService {
 	private get store() {
 		return this.ctx.store;
 	}
+
+	/**
+	 * Sessioni della UI amministrativa (cookie httpOnly al posto del bearer in
+	 * `localStorage` — vedi `createAdminSession`). Vivono solo in memoria di
+	 * processo, mai su file/PG: sono credenziali derivate ed effimere (TTL 12h,
+	 * rinnovabili con un nuovo login), non dati di dominio che richiedono
+	 * durabilità o convergenza multi-istanza come device o admin token — dietro
+	 * un load balancer senza sticky session basta un nuovo login se si finisce
+	 * su un'altra istanza, esattamente come ci si aspetta da una sessione web.
+	 */
+	private readonly sessions = new Map<string, AdminSessionRecord>();
 
 	authenticateAdmin(token: string | undefined): AdminIdentity {
 		if (!token) throw new ServiceError(401, "token amministrativo mancante");
@@ -220,6 +240,98 @@ export class AuthService {
 		this.store.save();
 		this.ctx.audit("system", "device_token_rotated", { deviceId: device.deviceId });
 		return token;
+	}
+
+	/**
+	 * Login della UI: valida il bearer token amministrativo esistente (statico
+	 * o OIDC, stessa `authenticateAdmin` usata da API/CLI) e apre una sessione
+	 * server-side. Il chiamante (route di login) mette `sessionId` in un cookie
+	 * httpOnly+Secure+SameSite e ritorna `csrfToken` nel body: da qui in poi il
+	 * bearer non tocca più il browser (né `localStorage` né altro storage JS).
+	 */
+	createAdminSession(token: string | undefined): { sessionId: string; csrfToken: string; identity: AdminIdentity } {
+		const identity = this.authenticateAdmin(token);
+		const sessionId = newSecretToken("ses");
+		const csrfToken = newSecretToken("csrf");
+		this.sessions.set(hashToken(sessionId), {
+			name: identity.name,
+			role: identity.role,
+			csrfToken,
+			expiresAt: Date.now() + SESSION_TTL_MS,
+		});
+		return { sessionId, csrfToken, identity };
+	}
+
+	/**
+	 * Verifica "morbida" di una sessione (mai un errore, sempre 200): usata dopo
+	 * un reload di pagina, quando il cookie httpOnly può ancora essere valido
+	 * ma il CSRF token in memoria JS è andato perso. Deliberatamente non
+	 * lancia su sessione assente/scaduta (il caso più comune: prima visita,
+	 * nessun cookie) — altrimenti ogni caricamento di pagina produrrebbe un
+	 * 401 "atteso" ma comunque loggato dal browser come errore di rete.
+	 */
+	probeSession(
+		sessionId: string | undefined,
+	): { authenticated: false } | { authenticated: true; name: string; role: AdminRole; csrfToken: string } {
+		if (!sessionId) return { authenticated: false };
+		const key = hashToken(sessionId);
+		const record = this.sessions.get(key);
+		if (!record || record.expiresAt < Date.now()) {
+			if (record) this.sessions.delete(key);
+			return { authenticated: false };
+		}
+		return { authenticated: true, name: record.name, role: record.role, csrfToken: record.csrfToken };
+	}
+
+	/**
+	 * Autentica una richiesta della UI via cookie di sessione. Sulle richieste
+	 * mutanti (`requireCsrf`) pretende anche l'header `x-csrf-token`: il cookie
+	 * da solo verrebbe comunque allegato dal browser a una richiesta cross-site
+	 * (mitigato da SameSite=Strict, ma in profondità), mentre il CSRF token è
+	 * noto solo a chi ha già letto la risposta di login/`describeSession` sulla
+	 * stessa origine.
+	 */
+	authenticateSession(
+		sessionId: string | undefined,
+		csrfToken: string | undefined,
+		requireCsrf: boolean,
+	): AdminIdentity {
+		const record = this.lookupSession(sessionId);
+		if (requireCsrf && (!csrfToken || csrfToken !== record.csrfToken)) {
+			throw new ServiceError(403, "token CSRF mancante o non valido");
+		}
+		return { name: record.name, role: record.role };
+	}
+
+	private lookupSession(sessionId: string | undefined): AdminSessionRecord {
+		if (!sessionId) throw new ServiceError(401, "sessione mancante");
+		const key = hashToken(sessionId);
+		const record = this.sessions.get(key);
+		if (!record) throw new ServiceError(401, "sessione non valida o scaduta");
+		if (record.expiresAt < Date.now()) {
+			this.sessions.delete(key);
+			throw new ServiceError(401, "sessione non valida o scaduta");
+		}
+		return record;
+	}
+
+	/** Logout: invalida la sessione lato server (il cookie va comunque cancellato dal chiamante). */
+	destroySession(sessionId: string | undefined): void {
+		if (!sessionId) return;
+		this.sessions.delete(hashToken(sessionId));
+	}
+
+	/** Rimuove le sessioni scadute da tempo (retention in memoria — vedi `pruneExpiredAdminTokens`). */
+	pruneExpiredSessions(): number {
+		const now = Date.now();
+		let pruned = 0;
+		for (const [key, record] of this.sessions) {
+			if (record.expiresAt < now) {
+				this.sessions.delete(key);
+				pruned += 1;
+			}
+		}
+		return pruned;
 	}
 
 	/** Introspezione dei device token per il gateway LLM. */

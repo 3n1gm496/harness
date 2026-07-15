@@ -59,6 +59,15 @@ Versioning pubblico — la versione `0.1.0` copre l'intero sviluppo fino a oggi.
   invece che da `@harness/fleet-extension` (che resta solo per lanciare `pi`).
 - Indice O(1) token→device in memoria (`authenticateDevice`/
   `introspectDeviceToken` non scandiscono più linearmente la flotta).
+- UI amministrativa: sessione server-side (cookie httpOnly+Secure+SameSite,
+  CSRF token, logout) al posto del bearer token in `localStorage`; JS/CSS
+  esternalizzati (`app.js`/`app.css`) e nessun `onclick=` inline, così la CSP
+  scende a `default-src 'self'` senza `'unsafe-inline'`. Il bearer token
+  resta invariato per API/CLI.
+- `Store.save()` in file-mode con un backend Postgres attivo throttla la
+  riscrittura del file locale (cache di bootstrap, non fonte di verità)
+  invece di riscrivere l'intero blob a ogni mutazione — elimina
+  l'amplificazione di scrittura dell'heartbeat di flotte grandi.
 
 ### Fixed
 
@@ -66,3 +75,6 @@ Versioning pubblico — la versione `0.1.0` copre l'intero sviluppo fino a oggi.
   (richiede l'opt-in esplicito `allowCertTofu`).
 - Rimozione della facciata duplicata e di un private class member morto in
   un test di `enforcement-core` (rilievi Biome, non solo soppressi).
+- `deploy/Dockerfile.backend`: `/shared` ora creata e di proprietà
+  dell'utente non-root `node` (senza, il seeding falliva con `EACCES` su un
+  named volume montato da Docker come root).

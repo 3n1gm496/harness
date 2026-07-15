@@ -259,5 +259,16 @@ Nota: `export-audit-anchor` e `verify-audit` da CLI operano con identità admin 
 - Il gateway inoltra solo gli endpoint di inferenza (`/v1/messages`, `/v1/chat/completions`, …): il device token non dà accesso al resto dell'API del provider.
 - La prompt injection da contenuti del repository non è prevenibile a livello di harness (posizione esplicita anche di PI): default-deny + sandbox + audit sono le mitigazioni.
 - Lo shim dei tipi dell'Extension API (`packages/fleet-extension/src/pi-types.ts`) è allineato a PI v0.80.x: quando si aggiorna la versione pinnata di PI sui client (`ARG PI_CODING_AGENT_VERSION` in `deploy/Dockerfile.agent`), riverificare lo shim e ritestare prima del rollout.
-- Lo storage a file JSON (default) è per singola istanza; per multi-istanza/HA usa il backend Postgres normalizzato (`DATABASE_URL`). In file mode va eseguita **una sola istanza** per data dir.
-- La UI amministrativa conserva il token in `localStorage` e usa script inline (CSP `unsafe-inline`): accettabile dietro rete interna/VPN; per esposizione più ampia prevedere una sessione server-side.
+- Lo storage a file JSON (default) è per singola istanza; per multi-istanza/HA usa il backend Postgres normalizzato (`DATABASE_URL`). In file mode va eseguita **una sola istanza** per data dir. Con un backend Postgres attivo, il file locale (`state.json`) resta solo una cache di bootstrap: `Store.save()` ne throttla la riscrittura (al più ogni 30s, forzata comunque all'arresto pulito) invece di riscrivere l'intero blob a ogni mutazione — evita l'amplificazione di scrittura dell'heartbeat di flotte grandi senza cambiare nulla lato Postgres (che riceve comunque scritture mirate a ogni `save()`).
+
+### Sessione della UI amministrativa
+
+La UI non conserva più il token amministrativo in `localStorage` né esegue script/style inline: la CSP servita è `default-src 'self'; img-src 'self' data:` (nessun `'unsafe-inline'`), con JS e CSS esternalizzati (`/app.js`, `/app.css`) e senza alcun `onclick=` inline (delega d'eventi via `data-action`).
+
+Il login (`POST /api/admin/session/login`, body `{"token": "<bearer>"}`) scambia il bearer token amministrativo — statico o OIDC, la stessa validazione usata da API/CLI — per:
+- un cookie `harness_session` **httpOnly + Secure (su TLS/dietro proxy con `x-forwarded-proto: https`) + SameSite=Strict**, TTL 12h;
+- un **CSRF token** nel body della risposta, tenuto solo in memoria JS (mai in `localStorage`): va allegato come header `x-csrf-token` su ogni richiesta mutante (POST/PUT/DELETE) autenticata via cookie — le GET non lo richiedono.
+
+Le sessioni vivono **solo in memoria di processo** (mai su file/Postgres): sono credenziali derivate ed effimere, non dati di dominio che richiedono durabilità o convergenza multi-istanza come device/token — dietro un load balancer senza sticky session, finire su un'altra istanza richiede solo un nuovo login. `GET /api/admin/session/me` (sempre 200, mai un 401 rumoroso) permette alla UI di recuperare identità e CSRF token dopo un reload di pagina, finché il cookie resta valido; `POST /api/admin/session/logout` invalida la sessione e cancella il cookie.
+
+Il bearer token resta **invariato** per API/CLI (header `Authorization: Bearer ...`): il meccanismo di sessione è un percorso aggiuntivo, non una sostituzione.

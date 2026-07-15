@@ -499,6 +499,10 @@ export class Store {
 			this.unsubscribe = undefined;
 		}
 		await this.flush();
+		// Con un mirror, `save()` throttla la scrittura della cache locale (vedi
+		// sopra): allo shutdown ne forziamo un'ultima, per lasciare sul disco lo
+		// stato più fresco possibile a beneficio di un'ispezione offline.
+		if (this.mirror) this.writeStateFile();
 		if (this.mirror) await this.mirror.close();
 	}
 
@@ -659,12 +663,42 @@ export class Store {
 		};
 	}
 
+	/** Ultima scrittura effettiva del file di cache locale, per il throttling in `save()` quando esiste un mirror. */
+	private lastFileWriteAt = 0;
+	/** Intervallo minimo tra due riscritture del file quando è solo una cache (vedi `save()`). */
+	private static readonly FILE_CACHE_THROTTLE_MS = 30_000;
+
+	/**
+	 * Con un backend durevole attivo (`this.mirror`), il file locale è solo una
+	 * cache di bootstrap: allo start successivo verrà comunque sovrascritta
+	 * dallo snapshot del backend (`openWithBackend`), a meno che il backend sia
+	 * vuoto (nel qual caso il file fa da seed iniziale, una tantum). La sua
+	 * freschezza durante l'esecuzione non ha quindi alcun effetto sulla
+	 * correttezza: la fonte di verità sono le scritture mirate di `mirrorNow()`.
+	 * Senza throttling, ogni mutazione — incluso l'heartbeat throttled di un
+	 * singolo device — riscriverebbe comunque l'intero blob di stato (tutti i
+	 * device, gruppi, token), un costo O(dimensione flotta) per un
+	 * aggiornamento che riguarda una sola entità: a 10k device che pollano,
+	 * pura amplificazione di scrittura per mantenere aggiornata una cache che
+	 * nessuno legge finché il processo non riparte. In file-mode puro (nessun
+	 * mirror: il file È la fonte di verità) la scrittura resta sincrona e
+	 * immediata a ogni mutazione, invariata.
+	 */
 	save(): void {
 		this.rebuildTokenIndex();
+		if (this.mirror) {
+			if (Date.now() - this.lastFileWriteAt >= Store.FILE_CACHE_THROTTLE_MS) this.writeStateFile();
+		} else {
+			this.writeStateFile();
+		}
+		this.mirrorNow();
+	}
+
+	private writeStateFile(): void {
 		const tmpPath = `${this.statePath}.tmp`;
 		writeFileSync(tmpPath, JSON.stringify(this.state, null, "\t"), { mode: 0o600 });
 		renameSync(tmpPath, this.statePath);
-		this.mirrorNow();
+		this.lastFileWriteAt = Date.now();
 	}
 
 	/** Device per hash del token, in O(1) invece di scandire tutti i device. */

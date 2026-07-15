@@ -2,6 +2,7 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { type Logger, MetricsRegistry, peerCertFingerprint } from "@harness/shared";
+import { sessionCookieValue } from "./cookies.js";
 import { type CompiledRoute, compileRoutes, matchRoute, type RouteContext } from "./http-router.js";
 import { buildRoutes } from "./routes.js";
 import type { ControlPlaneService } from "./service.js";
@@ -150,7 +151,22 @@ async function dispatch(
 	// Autenticazione dichiarata dalla route, risolta prima dell'handler.
 	switch (matched.route.def.auth) {
 		case "admin":
-			ctx.identity = service.auth.authenticateAdmin(bearer);
+			// Il bearer resta il percorso per API/CLI, invariato. La UI browser
+			// (A2) non tocca più il bearer dopo il login: si autentica col cookie
+			// di sessione httpOnly, con CSRF obbligatorio sulle richieste mutanti
+			// (il cookie da solo verrebbe comunque allegato dal browser a una
+			// richiesta cross-site, mitigato da SameSite=Strict ma in profondità).
+			if (bearer) {
+				ctx.identity = service.auth.authenticateAdmin(bearer);
+			} else {
+				const requireCsrf = method !== "GET" && method !== "HEAD";
+				const csrfHeader = req.headers["x-csrf-token"];
+				ctx.identity = service.auth.authenticateSession(
+					sessionCookieValue(req),
+					typeof csrfHeader === "string" ? csrfHeader : undefined,
+					requireCsrf,
+				);
+			}
 			break;
 		case "device":
 			ctx.device = service.auth.authenticateDevice(bearer, fp);

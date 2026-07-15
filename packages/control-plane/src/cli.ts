@@ -52,9 +52,16 @@ async function main(): Promise<void> {
 		// (nessuna route li elimina, solo `authenticateAdmin` li rifiuta): senza
 		// questo timer resterebbero per sempre nello stato. Il pruning più
 		// pesante (audit/changelog) resta un'azione esplicita (`harness-cp
-		// prune`, schedulata via cron esterno), non automatica al boot.
+		// prune`, schedulata via cron esterno), non automatica al boot. Le
+		// sessioni della UI (A2) vivono solo in memoria di processo e scadono da
+		// sole, ma vanno comunque liberate periodicamente per non trattenerle
+		// oltre il TTL in caso di traffico di login sostenuto.
 		service.auth.pruneExpiredAdminTokens();
-		const adminTokenPruneTimer = setInterval(() => service.auth.pruneExpiredAdminTokens(), 6 * 3_600_000);
+		service.auth.pruneExpiredSessions();
+		const adminTokenPruneTimer = setInterval(() => {
+			service.auth.pruneExpiredAdminTokens();
+			service.auth.pruneExpiredSessions();
+		}, 6 * 3_600_000);
 		adminTokenPruneTimer.unref();
 		const tls = loadTlsFromEnv();
 		const logger = createLogger("control-plane");
