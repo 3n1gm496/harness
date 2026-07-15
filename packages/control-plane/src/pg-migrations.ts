@@ -136,6 +136,11 @@ export const MIGRATIONS: Migration[] = [
 			CREATE INDEX IF NOT EXISTS cp_sessions_expires_idx ON cp_sessions(expires_at);
 		`,
 	},
+	{
+		version: 7,
+		description: "rate limit a finestra scorrevole: conteggio della finestra precedente per il weighting",
+		sql: `ALTER TABLE cp_rate_buckets ADD COLUMN IF NOT EXISTS prev_count int NOT NULL DEFAULT 0;`,
+	},
 ];
 
 /** Query minimale richiesta dal migration runner (sottoinsieme del client pg). */

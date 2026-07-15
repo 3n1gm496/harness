@@ -25,6 +25,9 @@
 	"dependencies": {
 		"@harness/shared": "0.1.0"
 	},
+	"optionalDependencies": {
+		"pg": "^8.13.1"
+	},
 	"devDependencies": {
 		"@harness/control-plane": "0.1.0"
 	}

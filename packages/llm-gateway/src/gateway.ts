@@ -4,6 +4,7 @@ import { createServer as createHttpsServer, type Server as HttpsServer } from "n
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { type Logger, MetricsRegistry, peerCertFingerprint } from "@harness/shared";
+import { type GatewayRateLimiter, InMemoryGatewayRateLimiter } from "./rate-limit.js";
 
 /**
  * Gateway LLM: i client si autenticano con il token di device (verificato via
@@ -32,6 +33,13 @@ export interface GatewayOptions {
 	 * chiude) resta appesa per sempre, tenendo occupata la richiesta client.
 	 */
 	upstreamTimeoutMs?: number;
+	/**
+	 * Limiter opzionale (iniettabile): se assente, il gateway ne crea uno
+	 * in-memory (per-istanza). Il CLI passa un limiter Postgres condiviso quando
+	 * è configurato `DATABASE_URL`, così N istanze del gateway condividono la
+	 * soglia invece di applicarne una a testa (N×soglia effettiva).
+	 */
+	rateLimiter?: GatewayRateLimiter;
 	log?: (entry: Record<string, unknown>) => void;
 	/** Logger strutturato (in aggiunta o al posto di `log`). */
 	logger?: Logger;
@@ -61,7 +69,7 @@ const MODEL_PEEK_BYTES = 65_536;
 
 export function createGatewayServer(options: GatewayOptions): Server | HttpsServer {
 	const introspectionCache = new Map<string, IntrospectionEntry>();
-	const rateBuckets = new Map<string, { windowStart: number; count: number }>();
+	const rateLimiter = options.rateLimiter ?? new InMemoryGatewayRateLimiter();
 	const rateLimit = options.rateLimitPerMinute ?? 60;
 	const ttl = options.introspectionTtlMs ?? 60_000;
 	const upstreamTimeoutMs = options.upstreamTimeoutMs ?? 120_000;
@@ -102,17 +110,6 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 		if (data.deviceId !== undefined) entry.deviceId = data.deviceId;
 		introspectionCache.set(cacheKey, entry);
 		return entry;
-	}
-
-	function checkRateLimit(deviceId: string): boolean {
-		const now = Date.now();
-		const bucket = rateBuckets.get(deviceId);
-		if (!bucket || now - bucket.windowStart >= 60_000) {
-			rateBuckets.set(deviceId, { windowStart: now, count: 1 });
-			return true;
-		}
-		bucket.count += 1;
-		return bucket.count <= rateLimit;
 	}
 
 	const listener = (req: IncomingMessage, res: ServerResponse): void => {
@@ -184,7 +181,7 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 			sendJson(res, 401, { error: "device non autorizzato (token non valido, revocato o sospeso)" });
 			return;
 		}
-		if (!checkRateLimit(introspection.deviceId)) {
+		if (!(await rateLimiter.check(introspection.deviceId, rateLimit))) {
 			sendJson(res, 429, { error: "rate limit superato" });
 			return;
 		}

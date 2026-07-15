@@ -378,7 +378,7 @@ test("migrazioni PG: converge alla versione più alta ed è idempotente (live)",
 		const versions = (
 			(await s.query("SELECT version FROM cp_schema_version ORDER BY version ASC")).rows as { version: number }[]
 		).map((r) => Number(r.version));
-		assert.deepEqual(versions, [1, 2, 3, 4, 5, 6]);
+		assert.deepEqual(versions, [1, 2, 3, 4, 5, 6, 7]);
 
 		// Le colonne aggiunte dalle migrazioni 2/3 esistono davvero.
 		const deviceCols = (
@@ -399,7 +399,7 @@ test("migrazioni PG: converge alla versione più alta ed è idempotente (live)",
 		// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
 		await (store as any).ensureReady();
 		const rows2 = (await s.query("SELECT COUNT(*) AS n FROM cp_schema_version")).rows as { n: string }[];
-		assert.equal(Number(rows2[0]?.n), 6);
+		assert.equal(Number(rows2[0]?.n), 7);
 	} finally {
 		await store.close();
 	}
@@ -434,7 +434,7 @@ test("migrazioni PG: due istanze in cold-start concorrente non vanno in race (ad
 				version: number;
 			}[]
 		).map((r) => Number(r.version));
-		assert.deepEqual(versions, [1, 2, 3, 4, 5, 6]);
+		assert.deepEqual(versions, [1, 2, 3, 4, 5, 6, 7]);
 	} finally {
 		await a.close();
 		await b.close();
@@ -468,7 +468,7 @@ test("migrazioni PG: partendo da uno schema fermo alla versione 1 applica le suc
 				version: number;
 			}[]
 		).map((r) => Number(r.version));
-		assert.deepEqual(versions, [1, 2, 3, 4, 5, 6]);
+		assert.deepEqual(versions, [1, 2, 3, 4, 5, 6, 7]);
 		const rateBuckets = (await u.query("SELECT to_regclass('cp_rate_buckets') AS reg")).rows as {
 			reg: string | null;
 		}[];

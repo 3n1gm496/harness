@@ -1043,11 +1043,17 @@ test("cap sugli input e path param malformato (F2.8)", async () => {
 	const groupId = (overview.data.groups as { groupId: string }[])[0]?.groupId as string;
 
 	// ttlMinutes fuori range → 400.
-	const badTtl = await call("POST", "/api/admin/enroll-tokens", { token: adminToken, body: { groupId, ttlMinutes: 999999 } });
+	const badTtl = await call("POST", "/api/admin/enroll-tokens", {
+		token: adminToken,
+		body: { groupId, ttlMinutes: 999999 },
+	});
 	assert.equal(badTtl.status, 400);
 
 	// deviceName gigante → 400.
-	const enroll = await call("POST", "/api/admin/enroll-tokens", { token: adminToken, body: { groupId, ttlMinutes: 10 } });
+	const enroll = await call("POST", "/api/admin/enroll-tokens", {
+		token: adminToken,
+		body: { groupId, ttlMinutes: 10 },
+	});
 	const enrollToken = enroll.data.enrollToken as string;
 	const bigName = await call("POST", "/api/enroll", { body: { enrollToken, deviceName: "x".repeat(500) } });
 	assert.equal(bigName.status, 400);

@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { createLogger, installProcessGuards } from "@harness/shared";
 import { createGatewayServer, type GatewayOptions } from "./gateway.js";
+import { type GatewayRateLimiter, PostgresGatewayRateLimiter } from "./rate-limit.js";
 
 /**
  * Avvio del gateway LLM. Configurazione via variabili d'ambiente:
@@ -54,6 +55,15 @@ function main(): void {
 	if (process.env.UPSTREAM_TIMEOUT_MS) {
 		options.upstreamTimeoutMs = Number(process.env.UPSTREAM_TIMEOUT_MS);
 	}
+	// Rate limit condiviso multi-istanza: con DATABASE_URL (lo stesso Postgres del
+	// control plane) il conteggio è condiviso tra le istanze del gateway; senza,
+	// resta per-istanza (in memoria), documentato come tale.
+	let gatewayRateLimiter: GatewayRateLimiter | undefined;
+	if (process.env.DATABASE_URL) {
+		gatewayRateLimiter = new PostgresGatewayRateLimiter(process.env.DATABASE_URL);
+		options.rateLimiter = gatewayRateLimiter;
+		logger.info("rate_limit_shared", { backend: "postgres" });
+	}
 	if (process.env.HARNESS_TLS_CERT_FILE && process.env.HARNESS_TLS_KEY_FILE) {
 		options.tls = {
 			cert: readFileSync(process.env.HARNESS_TLS_CERT_FILE, "utf8"),
@@ -66,7 +76,11 @@ function main(): void {
 	server.listen(port, () => {
 		logger.info("listening", { url: `${options.tls ? "https" : "http"}://localhost:${port}` });
 	});
-	const shutdown = () => server.close(() => process.exit(0));
+	const shutdown = () => {
+		server.close(() => {
+			void (gatewayRateLimiter?.close() ?? Promise.resolve()).finally(() => process.exit(0));
+		});
+	};
 	process.on("SIGINT", shutdown);
 	process.on("SIGTERM", shutdown);
 }

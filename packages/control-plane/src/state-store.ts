@@ -827,19 +827,37 @@ export class PostgresStateStore implements IncrementalStateStore {
 	 */
 	async checkRateLimit(key: string, limitPerWindow: number): Promise<boolean> {
 		await this.ensureReady();
+		// Finestra scorrevole (weighted two-window) atomica, condivisa tra istanze.
+		// `window_start` è allineato al confine dei 60s. All'upsert:
+		//  - stessa finestra → incrementa count;
+		//  - finestra immediatamente precedente → ruota (prev = count, count = 1);
+		//  - più vecchia → riparte (prev = 0, count = 1).
+		// Poi la stima pesa la finestra precedente per la frazione ancora in vista.
 		const result = await this.query(
-			`INSERT INTO cp_rate_buckets (bucket_key, window_start, count)
-			 VALUES ($1, now(), 1)
+			`INSERT INTO cp_rate_buckets (bucket_key, window_start, count, prev_count)
+			 VALUES ($1, to_timestamp(floor(extract(epoch from now()) / 60) * 60), 1, 0)
 			 ON CONFLICT (bucket_key) DO UPDATE SET
-				count = CASE WHEN cp_rate_buckets.window_start < now() - interval '60 seconds'
-					THEN 1 ELSE cp_rate_buckets.count + 1 END,
-				window_start = CASE WHEN cp_rate_buckets.window_start < now() - interval '60 seconds'
-					THEN now() ELSE cp_rate_buckets.window_start END
-			 RETURNING count`,
+				prev_count = CASE
+					WHEN cp_rate_buckets.window_start = to_timestamp(floor(extract(epoch from now()) / 60) * 60)
+						THEN cp_rate_buckets.prev_count
+					WHEN cp_rate_buckets.window_start = to_timestamp(floor(extract(epoch from now()) / 60) * 60 - 60)
+						THEN cp_rate_buckets.count
+					ELSE 0 END,
+				count = CASE
+					WHEN cp_rate_buckets.window_start = to_timestamp(floor(extract(epoch from now()) / 60) * 60)
+						THEN cp_rate_buckets.count + 1
+					ELSE 1 END,
+				window_start = to_timestamp(floor(extract(epoch from now()) / 60) * 60)
+			 RETURNING count, prev_count,
+				extract(epoch from now()) - extract(epoch from window_start) AS elapsed_seconds`,
 			[key],
 		);
-		const count = Number(result.rows[0]?.count ?? 1);
-		return count <= limitPerWindow;
+		const row = result.rows[0];
+		const count = Number(row?.count ?? 1);
+		const prevCount = Number(row?.prev_count ?? 0);
+		const elapsedFraction = Math.min(1, Number(row?.elapsed_seconds ?? 60) / 60);
+		const estimate = count + prevCount * (1 - elapsedFraction);
+		return estimate <= limitPerWindow;
 	}
 
 	async createSession(session: AdminSessionRecord): Promise<void> {

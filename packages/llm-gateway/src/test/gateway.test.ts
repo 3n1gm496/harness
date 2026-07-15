@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { ControlPlaneService, createControlPlaneServer, Store } from "@harness/control-plane";
 import { createGatewayServer } from "../gateway.js";
+import { PostgresGatewayRateLimiter } from "../rate-limit.js";
 
 let dataDir: string;
 let controlPlane: ReturnType<typeof createControlPlaneServer>;
@@ -434,5 +435,27 @@ test("la disconnessione del client a metà stream aborta la richiesta upstream",
 	} finally {
 		await new Promise((resolve) => abortGateway.close(resolve));
 		await new Promise((resolve) => slow.close(resolve));
+	}
+});
+
+const PG_URL = process.env.HARNESS_TEST_PG_URL;
+
+test("rate limit del gateway condiviso su Postgres tra istanze diverse (live)", { skip: !PG_URL }, async () => {
+	const url = PG_URL as string;
+	// Chiave univoca per non collidere con residui di altri test sullo stesso DB.
+	const deviceKey = `dev-${Math.random().toString(36).slice(2)}`;
+	const a = new PostgresGatewayRateLimiter(url);
+	const b = new PostgresGatewayRateLimiter(url);
+	try {
+		// Soglia 5 condivisa: due istanze (a, b) che puntano allo stesso DB devono
+		// condividere il conteggio — un limiter per-istanza lascerebbe passare 5
+		// richieste per ciascuna (10 in tutto), il bug che il backend chiude.
+		const results: boolean[] = [];
+		for (let i = 0; i < 5; i += 1) results.push(await a.check(deviceKey, 5));
+		for (let i = 0; i < 5; i += 1) results.push(await b.check(deviceKey, 5));
+		assert.equal(results.filter(Boolean).length, 5, "solo 5 richieste totali passano, condivise tra le due istanze");
+	} finally {
+		await a.close();
+		await b.close();
 	}
 });
