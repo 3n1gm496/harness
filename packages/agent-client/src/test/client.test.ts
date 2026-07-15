@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
-import { ControlPlaneService, Store, createControlPlaneServer } from "@harness/control-plane";
+import { ControlPlaneService, createControlPlaneServer, Store } from "@harness/control-plane";
 import { verifyConfigBundle } from "@harness/shared";
 import { applyManagedPiSettings, buildPiArgs, enroll, maybeRotateToken, syncConfig } from "../client.js";
 
@@ -87,7 +87,10 @@ test("flusso completo enroll → audit: il batch viene firmato e riconosciuto co
 
 	const events = await service.auditLog.readDeviceAudit(identity, config.deviceId, 10);
 	assert.ok(events.length > 0);
-	assert.ok(events.every((e) => e.provenance === "signed"), "tutti gli eventi devono essere provenance=signed");
+	assert.ok(
+		events.every((e) => e.provenance === "signed"),
+		"tutti gli eventi devono essere provenance=signed",
+	);
 });
 
 test("syncConfig scarica e verifica il bundle, e applica i settings gestiti", async () => {

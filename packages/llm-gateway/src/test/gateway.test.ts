@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
-import { ControlPlaneService, Store, createControlPlaneServer } from "@harness/control-plane";
+import { ControlPlaneService, createControlPlaneServer, Store } from "@harness/control-plane";
 import { createGatewayServer } from "../gateway.js";
 
 let dataDir: string;

@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { generateKek, signPayload } from "@harness/shared";
 import { ControlPlaneService } from "../service.js";
@@ -251,7 +250,9 @@ test("Postgres normalizzato: scritture mirate e multi-istanza convergente (live)
 	}
 });
 
-test("Postgres incrementale: pullDelta consegna solo i cambi e NOTIFY sveglia i listener (live)", { skip: !PG_URL }, async () => {
+test("Postgres incrementale: pullDelta consegna solo i cambi e NOTIFY sveglia i listener (live)", {
+	skip: !PG_URL,
+}, async () => {
 	const url = PG_URL as string;
 	await resetPgSchema(url);
 	const writer = new PostgresStateStore(url);
@@ -304,7 +305,9 @@ test("Postgres incrementale: pullDelta consegna solo i cambi e NOTIFY sveglia i 
 
 		// Una seconda scrittura mirata (solo il gruppo) appare come singolo delta.
 		await writer.applyDiff({
-			groupsUpsert: [{ groupId: "grp_1", name: "prod-2", killSwitch: true, policyOverride: {}, piSettingsOverride: {} }],
+			groupsUpsert: [
+				{ groupId: "grp_1", name: "prod-2", killSwitch: true, policyOverride: {}, piSettingsOverride: {} },
+			],
 			groupsDelete: [],
 			devicesUpsert: [],
 			devicesDelete: [],
@@ -368,46 +371,46 @@ test("migrazioni PG: converge alla versione più alta ed è idempotente (live)",
 	}
 });
 
-test(
-	"migrazioni PG: partendo da uno schema fermo alla versione 1 applica le successive (live)",
-	{ skip: !PG_URL },
-	async () => {
-		const url = PG_URL as string;
-		await resetPgSchema(url);
-		const bootstrap = new PostgresStateStore(url);
+test("migrazioni PG: partendo da uno schema fermo alla versione 1 applica le successive (live)", {
+	skip: !PG_URL,
+}, async () => {
+	const url = PG_URL as string;
+	await resetPgSchema(url);
+	const bootstrap = new PostgresStateStore(url);
+	// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
+	const b = bootstrap as any;
+	await b.ensureReady();
+	// Rimuove ciò che le migrazioni 2+ hanno introdotto, per simulare un
+	// database fermo alla versione 1 (come un deploy esistente pre-upgrade).
+	await b.query("ALTER TABLE cp_devices DROP COLUMN IF EXISTS device_signing_public_key_pem");
+	await b.query("ALTER TABLE cp_org DROP COLUMN IF EXISTS allow_cert_tofu");
+	await b.query("DROP TABLE IF EXISTS cp_rate_buckets");
+	await b.query("DELETE FROM cp_schema_version WHERE version > 1");
+	await bootstrap.close();
+
+	const upgraded = new PostgresStateStore(url);
+	try {
 		// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
-		const b = bootstrap as any;
-		await b.ensureReady();
-		// Rimuove ciò che le migrazioni 2+ hanno introdotto, per simulare un
-		// database fermo alla versione 1 (come un deploy esistente pre-upgrade).
-		await b.query("ALTER TABLE cp_devices DROP COLUMN IF EXISTS device_signing_public_key_pem");
-		await b.query("ALTER TABLE cp_org DROP COLUMN IF EXISTS allow_cert_tofu");
-		await b.query("DROP TABLE IF EXISTS cp_rate_buckets");
-		await b.query("DELETE FROM cp_schema_version WHERE version > 1");
-		await bootstrap.close();
+		const u = upgraded as any;
+		await u.ensureReady();
+		const versions = (
+			(await u.query("SELECT version FROM cp_schema_version ORDER BY version ASC")).rows as {
+				version: number;
+			}[]
+		).map((r) => Number(r.version));
+		assert.deepEqual(versions, [1, 2, 3, 4, 5]);
+		const rateBuckets = (await u.query("SELECT to_regclass('cp_rate_buckets') AS reg")).rows as {
+			reg: string | null;
+		}[];
+		assert.ok(rateBuckets[0]?.reg, "cp_rate_buckets deve esistere dopo l'upgrade");
+	} finally {
+		await upgraded.close();
+	}
+});
 
-		const upgraded = new PostgresStateStore(url);
-		try {
-			// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
-			const u = upgraded as any;
-			await u.ensureReady();
-			const versions = (
-				(await u.query("SELECT version FROM cp_schema_version ORDER BY version ASC")).rows as {
-					version: number;
-				}[]
-			).map((r) => Number(r.version));
-			assert.deepEqual(versions, [1, 2, 3, 4, 5]);
-			const rateBuckets = (await u.query("SELECT to_regclass('cp_rate_buckets') AS reg")).rows as {
-				reg: string | null;
-			}[];
-			assert.ok(rateBuckets[0]?.reg, "cp_rate_buckets deve esistere dopo l'upgrade");
-		} finally {
-			await upgraded.close();
-		}
-	},
-);
-
-test("Postgres: pruneAudit elimina le righe più vecchie mantenendo la catena verificabile (live)", { skip: !PG_URL }, async () => {
+test("Postgres: pruneAudit elimina le righe più vecchie mantenendo la catena verificabile (live)", {
+	skip: !PG_URL,
+}, async () => {
 	const url = PG_URL as string;
 	await resetPgSchema(url);
 	const store = new PostgresStateStore(url);
@@ -450,117 +453,111 @@ test("Postgres: pruneAudit elimina le righe più vecchie mantenendo la catena ve
 	}
 });
 
-test(
-	"Postgres: pruneChangelog registra una soglia e pullDelta rifiuta un cursore troppo indietro (live)",
-	{ skip: !PG_URL },
-	async () => {
-		const url = PG_URL as string;
-		await resetPgSchema(url);
-		const store = new PostgresStateStore(url);
+test("Postgres: pruneChangelog registra una soglia e pullDelta rifiuta un cursore troppo indietro (live)", {
+	skip: !PG_URL,
+}, async () => {
+	const url = PG_URL as string;
+	await resetPgSchema(url);
+	const store = new PostgresStateStore(url);
+	try {
+		const groupDiff = (name: string) => ({
+			groupsUpsert: [{ groupId: "grp_1", name, killSwitch: false, policyOverride: {}, piSettingsOverride: {} }],
+			groupsDelete: [],
+			devicesUpsert: [],
+			devicesDelete: [],
+			adminTokensUpsert: [],
+			adminTokensDelete: [],
+			gatewayTokensUpsert: [],
+			enrollTokensUpsert: [],
+			enrollTokensDelete: [],
+		});
+		await store.applyDiff(groupDiff("a0"));
+		const earlyCursor = await store.changelogCursor();
+		for (let i = 1; i <= 5; i += 1) await store.applyDiff(groupDiff(`a${i}`));
+		const latestCursor = await store.changelogCursor();
+		assert.ok(latestCursor > earlyCursor);
+
+		// Mantiene solo l'ultima riga di changelog: la soglia finisce ben oltre earlyCursor.
+		const pruned = await store.pruneChangelog(1);
+		assert.ok(pruned.prunedRows > 0);
+
+		await assert.rejects(store.pullDelta(earlyCursor), (error: unknown) => error instanceof ChangelogPrunedError);
+
+		// Un cursore alla testa (o oltre la soglia) continua a funzionare.
+		const ok = await store.pullDelta(latestCursor - 1);
+		assert.equal(ok.cursor, latestCursor);
+	} finally {
+		await store.close();
+	}
+});
+
+test("Postgres: checkRateLimit condivide il conteggio tra istanze diverse (chiude B5, live)", {
+	skip: !PG_URL,
+}, async () => {
+	const url = PG_URL as string;
+	await resetPgSchema(url);
+	const a = new PostgresStateStore(url);
+	const b = new PostgresStateStore(url);
+	try {
+		// Soglia 5: le prime 5 richieste (su entrambe le istanze insieme) sono
+		// entro soglia, la sesta no — un limiter per-istanza lascerebbe passare
+		// 5 richieste *per ciascuna* istanza (10 in tutto), il bug che questo
+		// backend condiviso chiude.
+		const key = "enroll:203.0.113.9";
+		const results: boolean[] = [];
+		for (let i = 0; i < 5; i += 1) results.push(await a.checkRateLimit(key, 5));
+		for (let i = 0; i < 5; i += 1) results.push(await b.checkRateLimit(key, 5));
+		assert.equal(results.filter(Boolean).length, 5, "solo le prime 5 richieste, condivise tra le due istanze, passano");
+
+		// Chiavi diverse hanno bucket indipendenti.
+		assert.equal(await a.checkRateLimit("enroll:203.0.113.10", 5), true);
+	} finally {
+		await a.close();
+		await b.close();
+	}
+});
+
+test("Postgres: un'istanza rimasta indietro converge con un resync completo dopo il pruning del changelog (live)", {
+	skip: !PG_URL,
+}, async () => {
+	const url = PG_URL as string;
+	await resetPgSchema(url);
+	const dirA = mkdtempSync(join(tmpdir(), "harness-pg-prune-a-"));
+	const dirB = mkdtempSync(join(tmpdir(), "harness-pg-prune-b-"));
+	const storeA = await Store.openWithBackend(dirA, new PostgresStateStore(url), KEK);
+	try {
+		const svcA = new ControlPlaneService(storeA);
+		const admin = svcA.auth.bootstrapAdminToken("root");
+		const idA = svcA.auth.authenticateAdmin(admin);
+
+		// B si connette e cattura il cursore corrente, poi resta indietro.
+		const storeB = await Store.openWithBackend(dirB, new PostgresStateStore(url), KEK);
 		try {
-			const groupDiff = (name: string) => ({
-				groupsUpsert: [{ groupId: "grp_1", name, killSwitch: false, policyOverride: {}, piSettingsOverride: {} }],
-				groupsDelete: [],
-				devicesUpsert: [],
-				devicesDelete: [],
-				adminTokensUpsert: [],
-				adminTokensDelete: [],
-				gatewayTokensUpsert: [],
-				enrollTokensUpsert: [],
-				enrollTokensDelete: [],
-			});
-			await store.applyDiff(groupDiff("a0"));
-			const earlyCursor = await store.changelogCursor();
-			for (let i = 1; i <= 5; i += 1) await store.applyDiff(groupDiff(`a${i}`));
-			const latestCursor = await store.changelogCursor();
-			assert.ok(latestCursor > earlyCursor);
+			for (let i = 0; i < 5; i += 1) svcA.groups.createGroup(idA, `g${i}`);
+			await storeA.flush();
 
-			// Mantiene solo l'ultima riga di changelog: la soglia finisce ben oltre earlyCursor.
-			const pruned = await store.pruneChangelog(1);
-			assert.ok(pruned.prunedRows > 0);
-
-			await assert.rejects(store.pullDelta(earlyCursor), (error: unknown) => error instanceof ChangelogPrunedError);
-
-			// Un cursore alla testa (o oltre la soglia) continua a funzionare.
-			const ok = await store.pullDelta(latestCursor - 1);
-			assert.equal(ok.cursor, latestCursor);
-		} finally {
-			await store.close();
-		}
-	},
-);
-
-test(
-	"Postgres: checkRateLimit condivide il conteggio tra istanze diverse (chiude B5, live)",
-	{ skip: !PG_URL },
-	async () => {
-		const url = PG_URL as string;
-		await resetPgSchema(url);
-		const a = new PostgresStateStore(url);
-		const b = new PostgresStateStore(url);
-		try {
-			// Soglia 5: le prime 5 richieste (su entrambe le istanze insieme) sono
-			// entro soglia, la sesta no — un limiter per-istanza lascerebbe passare
-			// 5 richieste *per ciascuna* istanza (10 in tutto), il bug che questo
-			// backend condiviso chiude.
-			const key = "enroll:203.0.113.9";
-			const results: boolean[] = [];
-			for (let i = 0; i < 5; i += 1) results.push(await a.checkRateLimit(key, 5));
-			for (let i = 0; i < 5; i += 1) results.push(await b.checkRateLimit(key, 5));
-			assert.equal(results.filter(Boolean).length, 5, "solo le prime 5 richieste, condivise tra le due istanze, passano");
-
-			// Chiavi diverse hanno bucket indipendenti.
-			assert.equal(await a.checkRateLimit("enroll:203.0.113.10", 5), true);
-		} finally {
-			await a.close();
-			await b.close();
-		}
-	},
-);
-
-test(
-	"Postgres: un'istanza rimasta indietro converge con un resync completo dopo il pruning del changelog (live)",
-	{ skip: !PG_URL },
-	async () => {
-		const url = PG_URL as string;
-		await resetPgSchema(url);
-		const dirA = mkdtempSync(join(tmpdir(), "harness-pg-prune-a-"));
-		const dirB = mkdtempSync(join(tmpdir(), "harness-pg-prune-b-"));
-		const storeA = await Store.openWithBackend(dirA, new PostgresStateStore(url), KEK);
-		try {
-			const svcA = new ControlPlaneService(storeA);
-			const admin = svcA.auth.bootstrapAdminToken("root");
-			const idA = svcA.auth.authenticateAdmin(admin);
-
-			// B si connette e cattura il cursore corrente, poi resta indietro.
-			const storeB = await Store.openWithBackend(dirB, new PostgresStateStore(url), KEK);
+			// Pota il changelog condiviso ben oltre il cursore fermo di B.
+			const pruner = new PostgresStateStore(url);
 			try {
-				for (let i = 0; i < 5; i += 1) svcA.groups.createGroup(idA, `g${i}`);
-				await storeA.flush();
-
-				// Pota il changelog condiviso ben oltre il cursore fermo di B.
-				const pruner = new PostgresStateStore(url);
-				try {
-					await pruner.pruneChangelog(1);
-				} finally {
-					await pruner.close();
-				}
-
-				// B converge comunque: niente eccezione visibile, resync interno.
-				await storeB.refreshNow();
-				for (let i = 0; i < 5; i += 1) {
-					assert.ok(
-						Object.values(storeB.state.groups).some((g) => g.name === `g${i}`),
-						`storeB deve avere convergito sul gruppo g${i}`,
-					);
-				}
+				await pruner.pruneChangelog(1);
 			} finally {
-				await storeB.close();
+				await pruner.close();
+			}
+
+			// B converge comunque: niente eccezione visibile, resync interno.
+			await storeB.refreshNow();
+			for (let i = 0; i < 5; i += 1) {
+				assert.ok(
+					Object.values(storeB.state.groups).some((g) => g.name === `g${i}`),
+					`storeB deve avere convergito sul gruppo g${i}`,
+				);
 			}
 		} finally {
-			await storeA.close();
-			rmSync(dirA, { recursive: true, force: true });
-			rmSync(dirB, { recursive: true, force: true });
+			await storeB.close();
 		}
-	},
-);
+	} finally {
+		await storeA.close();
+		rmSync(dirA, { recursive: true, force: true });
+		rmSync(dirB, { recursive: true, force: true });
+	}
+});

@@ -1,5 +1,5 @@
-import type { DeepPartial, PolicyDocument } from "./types.js";
 import { deepMerge } from "./merge.js";
+import type { DeepPartial, PolicyDocument } from "./types.js";
 
 /**
  * Policy di base: default-deny sui tool sconosciuti, bash in allowlist con i

@@ -32,9 +32,7 @@ export function signPayload(privateKeyPem: string, payload: unknown): string {
 	return `${header}.${body}.${signature.toString("base64url")}`;
 }
 
-export type VerifyResult<T> =
-	| { valid: true; payload: T }
-	| { valid: false; error: string };
+export type VerifyResult<T> = { valid: true; payload: T } | { valid: false; error: string };
 
 export function verifyToken<T = unknown>(publicKeyPem: string, token: string): VerifyResult<T> {
 	const parts = token.split(".");

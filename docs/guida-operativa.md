@@ -8,9 +8,12 @@ Come mettere in funzione la piattaforma e arruolare i client gestiti.
 npm ci --ignore-scripts
 npm run build
 npm test
+npm run lint
 ```
 
 Requisiti: Node.js ≥ 22. Nessuna dipendenza runtime esterna: i pacchetti usano solo i built-in di Node (superficie di supply chain minima).
+
+Lint e formattazione sono [Biome](https://biomejs.dev/) (`biome.json` in radice): `npm run lint` verifica (formattazione, import ordinati, regole di lint), `npm run lint:fix` applica i fix sicuri, `npm run format` riformatta soltanto. La CI esegue `npm run lint` a ogni push/PR.
 
 ### Avvio one-command (Docker)
 

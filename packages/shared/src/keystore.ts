@@ -71,6 +71,9 @@ export function openPrivateKey(kek: Kek, sealed: string): string {
 export function resealAll<T extends { privateKeyPem: string }>(oldKek: Kek, newKek: Kek, sealed: readonly T[]): T[] {
 	return sealed.map((record) => ({
 		...record,
-		privateKeyPem: sealPrivateKey(newKek, isSealed(record.privateKeyPem) ? openPrivateKey(oldKek, record.privateKeyPem) : record.privateKeyPem),
+		privateKeyPem: sealPrivateKey(
+			newKek,
+			isSealed(record.privateKeyPem) ? openPrivateKey(oldKek, record.privateKeyPem) : record.privateKeyPem,
+		),
 	}));
 }

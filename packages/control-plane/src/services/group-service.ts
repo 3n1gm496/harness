@@ -1,7 +1,7 @@
 import type { DeepPartial, PolicyDocument } from "@harness/shared";
 import { newId } from "@harness/shared";
 import type { GroupRecord } from "../store.js";
-import { type AdminIdentity, ServiceContext, ServiceError, requireRole } from "./context.js";
+import { type AdminIdentity, requireRole, type ServiceContext, ServiceError } from "./context.js";
 
 /** Gestione dei gruppi (tenant logici che raggruppano i device per policy). */
 export class GroupService {

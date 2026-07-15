@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { DeviceRecord } from "./store.js";
 import type { ControlPlaneService } from "./service.js";
 import type { AdminIdentity } from "./services/context.js";
+import type { DeviceRecord } from "./store.js";
 
 /** Modalità di autenticazione richiesta da una route, risolta dal dispatcher. */
 export type AuthMode = "none" | "admin" | "device" | "gateway";

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseBashCommand, stripLeadingAssignments } from "../bash-parse.js";
-import { dangerousInvocation, evaluateBashCommand } from "../policy.js";
 import { defaultPolicy } from "../defaults.js";
+import { dangerousInvocation, evaluateBashCommand } from "../policy.js";
 
 test("tokenizza rispettando le virgolette (non spezza dentro le stringhe)", () => {
 	const r = parseBashCommand('git commit -m "a && b; c"');
@@ -46,7 +46,7 @@ test("dangerousInvocation blocca gli eval inline e i wrapper", () => {
 	assert.ok(dangerousInvocation(["bash", "-c", "x"]));
 	assert.ok(dangerousInvocation(["sh", "-c", "x"]));
 	assert.ok(dangerousInvocation(["/usr/bin/node", "-e", "x"])); // path assoluto
-	assert.ok(dangerousInvocation(["awk", "BEGIN{system(\"id\")}"]));
+	assert.ok(dangerousInvocation(["awk", 'BEGIN{system("id")}']));
 	assert.ok(dangerousInvocation(["find", ".", "-exec", "sh", "-c", "x", ";"]));
 	assert.ok(dangerousInvocation(["find", ".", "-delete"]));
 	assert.ok(dangerousInvocation(["sed", "-i", "s/a/b/", "f"]));
@@ -106,7 +106,7 @@ test("l'esecuzione legittima resta consentita", () => {
 		"npm test",
 		"npm run build",
 		"node dist/index.js",
-		"git commit -m \"fix: gestisci a && b nel titolo\"",
+		'git commit -m "fix: gestisci a && b nel titolo"',
 		"git status 2>&1",
 		"ls -la | sort",
 		"grep -r foo src",

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { redactSecrets } from "../redaction.js";
-import { deepMerge } from "../merge.js";
 import { defaultPolicy, resolvePolicy } from "../defaults.js";
+import { deepMerge } from "../merge.js";
+import { redactSecrets } from "../redaction.js";
 
 test("chiavi AWS e GitHub vengono redatte", () => {
 	const input = "key AKIAIOSFODNN7EXAMPLE e token ghp_abcdefghijklmnopqrstuvwxyz1234";

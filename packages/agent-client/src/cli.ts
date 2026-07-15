@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { defaultAgentConfigPath, loadAgentConfig } from "@harness/enforcement-core";
 import { isSandboxSatisfied, verifyConfigBundleMulti } from "@harness/shared";
-import { readFileSync } from "node:fs";
 import { applyManagedPiSettings, buildPiArgs, enroll, maybeRotateToken, syncConfig } from "./client.js";
 
 /**

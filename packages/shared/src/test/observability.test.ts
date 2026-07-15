@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MetricsRegistry, createLogger } from "../index.js";
+import { createLogger, MetricsRegistry } from "../index.js";
 
 test("il logger emette JSON strutturato con livello, componente e campi", () => {
 	const lines: string[] = [];

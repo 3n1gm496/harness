@@ -3,8 +3,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { peerCertFingerprint } from "@harness/shared";
 import type { RouteContext, RouteDef } from "./http-router.js";
-import { ServiceError } from "./services/context.js";
 import { clientIp } from "./rate-limit.js";
+import { ServiceError } from "./services/context.js";
 
 function requireString(body: Record<string, unknown>, key: string): string {
 	const value = body[key];
@@ -117,9 +117,7 @@ export function buildRoutes(): RouteDef[] {
 			handler: (ctx) => {
 				const filterParam = ctx.url.searchParams.get("filter");
 				const filter =
-					filterParam === "active" || filterParam === "stale" || filterParam === "suspended"
-						? filterParam
-						: "all";
+					filterParam === "active" || filterParam === "stale" || filterParam === "suspended" ? filterParam : "all";
 				const q = ctx.url.searchParams.get("q");
 				return ctx.service.org.listDevices(ctx.identity!, {
 					offset: Number(ctx.url.searchParams.get("offset") ?? "0"),

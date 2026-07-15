@@ -1,6 +1,6 @@
 import type { AuditAnchor, AuditEvent, ChainVerification } from "@harness/shared";
 import { signPayload } from "@harness/shared";
-import { type AdminIdentity, ServiceContext, requireRole } from "./context.js";
+import { type AdminIdentity, requireRole, type ServiceContext } from "./context.js";
 
 /** Lettura, verifica e ancoraggio esterno delle catene di audit. */
 export class AuditService {

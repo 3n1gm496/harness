@@ -163,11 +163,7 @@ export class FleetState {
 		if (!existsSync(this.bundleCachePath)) return;
 		const token = readFileSync(this.bundleCachePath, "utf8").trim();
 		const verified = verifyConfigBundleMulti(this.pinnedKeys(), token);
-		if (
-			verified.valid &&
-			verified.payload.deviceId === this.config.deviceId &&
-			this.acceptVersion(verified.payload)
-		) {
+		if (verified.valid && verified.payload.deviceId === this.config.deviceId && this.acceptVersion(verified.payload)) {
 			this.bundle = verified.payload;
 			this.updateTrustedKeys(verified.payload);
 			this.setStatus("cached");

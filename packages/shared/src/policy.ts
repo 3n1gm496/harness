@@ -128,7 +128,7 @@ export function dangerousInvocation(argv: string[]): string | null {
 
 	// Shell: eseguono qualunque cosa.
 	if (["sh", "bash", "zsh", "dash", "ksh", "ash"].includes(cmd)) {
-		if (has("-c") || args.some((a) => a === "-" )) return `shell inline (${cmd} -c) non consentita`;
+		if (has("-c") || args.some((a) => a === "-")) return `shell inline (${cmd} -c) non consentita`;
 		// `bash script.sh` esegue uno script del repo: exec arbitrario → deny.
 		return `esecuzione di shell (${cmd}) non consentita: usa i tool dedicati`;
 	}

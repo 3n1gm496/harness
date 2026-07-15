@@ -70,9 +70,9 @@
 	<span id="orgName" class="muted"></span>
 	<div class="spacer"></div>
 	<span id="configVersion" class="muted"></span>
-	<button id="btnGlobalKill" class="danger" hidden>Kill switch globale</button>
-	<button id="btnRefresh" class="secondary" hidden>Aggiorna</button>
-	<button id="btnLogout" class="secondary" hidden>Cambia token</button>
+	<button type="button" id="btnGlobalKill" class="danger" hidden>Kill switch globale</button>
+	<button type="button" id="btnRefresh" class="secondary" hidden>Aggiorna</button>
+	<button type="button" id="btnLogout" class="secondary" hidden>Cambia token</button>
 </header>
 <main>
 	<section id="loginPanel">
@@ -80,7 +80,7 @@
 		<div class="err-banner" id="loginErr"></div>
 		<div class="row">
 			<input id="tokenInput" type="password" placeholder="Token amministrativo" size="50">
-			<button id="btnLogin">Accedi</button>
+			<button type="button" id="btnLogin">Accedi</button>
 		</div>
 		<p class="muted">Il token viene generato con <code>harness-cp init</code> o dalla sezione token di un admin.</p>
 	</section>
@@ -107,9 +107,9 @@
 			<tbody id="devicesBody"></tbody>
 		</table>
 		<div class="pager">
-			<button id="devPrev" class="secondary">‹ Prec</button>
+			<button type="button" id="devPrev" class="secondary">‹ Prec</button>
 			<span id="devPageInfo" class="muted"></span>
-			<button id="devNext" class="secondary">Succ ›</button>
+			<button type="button" id="devNext" class="secondary">Succ ›</button>
 			<span class="spacer" style="flex:1"></span>
 			<label class="muted">Per pagina
 				<select id="devPageSize"><option>10</option><option selected>25</option><option>50</option><option>100</option></select>
@@ -125,7 +125,7 @@
 		</table>
 		<div class="row admin-only" style="margin-top:10px">
 			<input id="newGroupName" placeholder="Nome nuovo gruppo">
-			<button id="btnCreateGroup">Crea gruppo</button>
+			<button type="button" id="btnCreateGroup">Crea gruppo</button>
 		</div>
 	</section>
 
@@ -134,7 +134,7 @@
 		<div class="row">
 			<select id="enrollGroup"></select>
 			<input id="enrollTtl" type="number" value="60" min="5" style="width:90px" title="TTL in minuti">
-			<button id="btnEnrollToken">Genera token di enrollment</button>
+			<button type="button" id="btnEnrollToken">Genera token di enrollment</button>
 		</div>
 		<p id="enrollResult" class="muted"></p>
 	</section>
@@ -143,9 +143,9 @@
 		<h2>Policy organizzazione</h2>
 		<div class="err-banner" id="policyErr"></div>
 		<div class="row" style="margin-bottom:12px">
-			<button class="tabbtn active" id="tabForm">Editor guidato</button>
-			<button class="tabbtn" id="tabJson">JSON avanzato</button>
-			<button class="tabbtn" id="tabDiff">Diff vs corrente</button>
+			<button type="button" class="tabbtn active" id="tabForm">Editor guidato</button>
+			<button type="button" class="tabbtn" id="tabJson">JSON avanzato</button>
+			<button type="button" class="tabbtn" id="tabDiff">Diff vs corrente</button>
 		</div>
 
 		<div id="policyForm">
@@ -168,7 +168,7 @@
 		<div id="policyJson" class="hidden">
 			<textarea id="orgPolicy" spellcheck="false"></textarea>
 			<div class="row" style="margin-top:8px">
-				<button id="btnSyncJson" class="secondary">Valida e sincronizza col form</button>
+				<button type="button" id="btnSyncJson" class="secondary">Valida e sincronizza col form</button>
 			</div>
 		</div>
 
@@ -178,7 +178,7 @@
 
 		<div class="validation" id="policyValidation"></div>
 		<div class="row" style="margin-top:8px">
-			<button id="btnSavePolicy">Salva policy org</button>
+			<button type="button" id="btnSavePolicy">Salva policy org</button>
 			<span class="muted">Ogni salvataggio incrementa la versione di configurazione e viene distribuito al prossimo sync.</span>
 		</div>
 	</section>
@@ -193,7 +193,7 @@
 			<input id="newTokenName" placeholder="Nome (es. mario.rossi)">
 			<select id="newTokenRole"><option value="viewer">viewer</option><option value="operator">operator</option><option value="admin">admin</option></select>
 			<input id="newTokenTtl" type="number" value="90" min="1" max="365" style="width:90px" title="Scadenza in giorni">
-			<button id="btnCreateToken">Crea token</button>
+			<button type="button" id="btnCreateToken">Crea token</button>
 		</div>
 		<p id="tokenResult" class="muted"></p>
 	</section>
@@ -205,7 +205,7 @@
 			<tbody id="signingBody"></tbody>
 		</table>
 		<div class="row" style="margin-top:10px">
-			<button id="btnAddKey">Aggiungi chiave (fase 1)</button>
+			<button type="button" id="btnAddKey">Aggiungi chiave (fase 1)</button>
 			<span class="muted">add → attendi un sync dei device → promote → retire. Saltare le attese manda fail-closed i device non sincronizzati.</span>
 		</div>
 	</section>
@@ -214,8 +214,8 @@
 		<h2>Audit</h2>
 		<div class="row">
 			<select id="auditDevice"><option value="">— audit amministrativo —</option></select>
-			<button id="btnLoadAudit" class="secondary">Carica</button>
-			<button id="btnVerifyAudit" class="secondary">Verifica integrità catena</button>
+			<button type="button" id="btnLoadAudit" class="secondary">Carica</button>
+			<button type="button" id="btnVerifyAudit" class="secondary">Verifica integrità catena</button>
 			<span id="auditVerdict"></span>
 		</div>
 		<pre id="auditOutput">…</pre>
@@ -253,18 +253,18 @@ function banner(id, text) {
 }
 function esc(text) { const div = document.createElement("div"); div.textContent = String(text); return div.innerHTML; }
 function fmtDate(iso) { return iso ? new Date(iso).toLocaleString("it-IT") : "mai"; }
-function killPill(on) { return '<span class="pill ' + (on ? "on\">ATTIVO" : "off\">spento") + '</span>'; }
+function killPill(on) { return `<span class="pill ${on ? "on\">ATTIVO" : "off\">spento"}</span>`; }
 
 async function api(method, path, body) {
 	setBusy(true);
 	try {
 		const res = await fetch(path, {
 			method,
-			headers: { "authorization": "Bearer " + token, "content-type": "application/json" },
+			headers: { "authorization": `Bearer ${token}`, "content-type": "application/json" },
 			body: body === undefined ? undefined : JSON.stringify(body),
 		});
 		const data = await res.json().catch(() => ({}));
-		if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+		if (!res.ok) throw new Error(data.error || (`HTTP ${res.status}`));
 		return data;
 	} finally { setBusy(false); }
 }
@@ -287,11 +287,11 @@ async function renderDashboard() {
 		{ n: summary.active, l: "Attivi", cls: "ok" },
 		{ n: summary.suspended, l: "Sospesi / revocati", cls: summary.suspended ? "alert" : "" },
 		{ n: summary.stale, l: "Stale (rischio fail-closed)", cls: summary.stale ? "warn" : "" },
-		{ n: "v" + summary.configVersion, l: "Versione config" },
+		{ n: `v${summary.configVersion}`, l: "Versione config" },
 		{ n: summary.killSwitch ? "ON" : "off", l: "Kill switch globale", cls: summary.killSwitch ? "alert" : "ok" },
 	];
 	$("dashboardCards").innerHTML = cards.map((c) =>
-		'<div class="card ' + (c.cls || "") + '"><div class="num">' + esc(c.n) + '</div><div class="lbl">' + esc(c.l) + "</div></div>"
+		`<div class="card ${c.cls || ""}"><div class="num">${esc(c.n)}</div><div class="lbl">${esc(c.l)}</div></div>`
 	).join("");
 }
 async function renderDevices() {
@@ -300,7 +300,7 @@ async function renderDevices() {
 	const filter = $("deviceFilter").value;
 	const params = new URLSearchParams({ offset: String(devPage * size), limit: String(size), filter });
 	if (q) params.set("q", q);
-	const { devices, total } = await api("GET", "/api/admin/devices?" + params.toString());
+	const { devices, total } = await api("GET", `/api/admin/devices?${params.toString()}`);
 	const pages = Math.max(1, Math.ceil(total / size));
 	if (devPage >= pages) { devPage = pages - 1; return renderDevices(); }
 
@@ -313,11 +313,11 @@ async function renderDevices() {
 		"<td>" + killPill(d.killSwitch) + "</td>" +
 		'<td class="row op-only">' +
 		'<button class="secondary" onclick="toggleDeviceKill(\'' + d.deviceId + "'," + d.killSwitch + ')">' + (d.killSwitch ? "riattiva" : "sospendi") + "</button>" +
-		(d.revoked ? "" : '<button class="danger" onclick="revokeDevice(\'' + d.deviceId + '\')">revoca</button>') +
+		(d.revoked ? "" : `<button class="danger" onclick="revokeDevice('${d.deviceId}')">revoca</button>`) +
 		' <button class="danger admin-only" onclick="deleteDevice(\'' + d.deviceId + "', '" + esc(d.name) + '\')">elimina</button>' +
 		"</td></tr>"
 	).join("") || '<tr><td colspan="7" class="muted">Nessun device corrisponde ai filtri</td></tr>';
-	$("devPageInfo").textContent = total ? ("Pagina " + (devPage + 1) + " di " + pages + " · " + total + " device") : "0 device";
+	$("devPageInfo").textContent = total ? (`Pagina ${devPage + 1} di ${pages} · ${total} device`) : "0 device";
 	$("devPrev").disabled = devPage <= 0;
 	$("devNext").disabled = devPage >= pages - 1;
 }
@@ -333,12 +333,12 @@ const POLICY_SCHEMA = {
 	sandbox: { type: "object", fields: { required: { type: "boolean" }, markerPath: { type: "string" }, markerValue: { type: "string" } } },
 };
 function checkType(spec, val, path, errors) {
-	if (spec.type === "boolean" && typeof val !== "boolean") errors.push(path + ": deve essere booleano");
-	else if (spec.type === "string" && typeof val !== "string") errors.push(path + ": deve essere stringa");
-	else if (spec.type === "const" && val !== spec.value) errors.push(path + ": deve valere " + spec.value);
-	else if (spec.type === "enum" && !spec.values.includes(val)) errors.push(path + ": deve essere uno di " + spec.values.join(", "));
+	if (spec.type === "boolean" && typeof val !== "boolean") errors.push(`${path}: deve essere booleano`);
+	else if (spec.type === "string" && typeof val !== "string") errors.push(`${path}: deve essere stringa`);
+	else if (spec.type === "const" && val !== spec.value) errors.push(`${path}: deve valere ${spec.value}`);
+	else if (spec.type === "enum" && !spec.values.includes(val)) errors.push(`${path}: deve essere uno di ${spec.values.join(", ")}`);
 	else if (spec.type === "string[]") {
-		if (!Array.isArray(val) || val.some((x) => typeof x !== "string")) errors.push(path + ": deve essere un array di stringhe");
+		if (!Array.isArray(val) || val.some((x) => typeof x !== "string")) errors.push(`${path}: deve essere un array di stringhe`);
 	}
 }
 function validatePolicy(obj) {
@@ -346,14 +346,14 @@ function validatePolicy(obj) {
 	if (typeof obj !== "object" || obj === null || Array.isArray(obj)) { errors.push("La policy deve essere un oggetto JSON"); return { errors, warnings }; }
 	for (const key of Object.keys(obj)) {
 		const spec = POLICY_SCHEMA[key];
-		if (!spec) { warnings.push('Chiave sconosciuta "' + key + '" (possibile refuso: sarà ignorata dal client)'); continue; }
+		if (!spec) { warnings.push(`Chiave sconosciuta "${key}" (possibile refuso: sarà ignorata dal client)`); continue; }
 		if (spec.type === "object") {
 			const sub = obj[key];
-			if (typeof sub !== "object" || sub === null || Array.isArray(sub)) { errors.push(key + ": deve essere un oggetto"); continue; }
+			if (typeof sub !== "object" || sub === null || Array.isArray(sub)) { errors.push(`${key}: deve essere un oggetto`); continue; }
 			for (const sk of Object.keys(sub)) {
 				const sspec = spec.fields[sk];
-				if (!sspec) { warnings.push('Chiave sconosciuta "' + key + "." + sk + '"'); continue; }
-				checkType(sspec, sub[sk], key + "." + sk, errors);
+				if (!sspec) { warnings.push(`Chiave sconosciuta "${key}.${sk}"`); continue; }
+				checkType(sspec, sub[sk], `${key}.${sk}`, errors);
 			}
 		} else checkType(spec, obj[key], key, errors);
 	}
@@ -362,8 +362,8 @@ function validatePolicy(obj) {
 function renderValidation(v) {
 	const parts = [];
 	if (v.errors.length === 0 && v.warnings.length === 0) parts.push('<span class="v-ok">✓ policy valida</span>');
-	for (const e of v.errors) parts.push('<div class="v-err">✗ ' + esc(e) + "</div>");
-	for (const w of v.warnings) parts.push('<div class="v-warn">⚠ ' + esc(w) + "</div>");
+	for (const e of v.errors) parts.push(`<div class="v-err">✗ ${esc(e)}</div>`);
+	for (const w of v.warnings) parts.push(`<div class="v-warn">⚠ ${esc(w)}</div>`);
 	$("policyValidation").innerHTML = parts.join("");
 	$("btnSavePolicy").disabled = v.errors.length > 0;
 }
@@ -419,7 +419,7 @@ function renderDiff() {
 	if (before === after) { $("diffOut").innerHTML = '<span class="same">nessuna modifica rispetto alla policy salvata</span>'; return; }
 	$("diffOut").innerHTML = lineDiff(before, after).map(([t, v]) => {
 		const cls = t === "+" ? "add" : t === "-" ? "del" : "same";
-		return '<span class="' + cls + '">' + esc(t + " " + v) + "</span>";
+		return `<span class="${cls}">${esc(`${t} ${v}`)}</span>`;
 	}).join("\n");
 }
 function showPolicyTab(which) {
@@ -436,7 +436,7 @@ function showPolicyTab(which) {
 async function refresh() {
 	overview = await api("GET", "/api/admin/overview");
 	$("orgName").textContent = overview.org.name;
-	$("configVersion").textContent = "config v" + overview.org.configVersion + " · " + overview.role;
+	$("configVersion").textContent = `config v${overview.org.configVersion} · ${overview.role}`;
 
 	const canOperate = overview.role === "admin" || overview.role === "operator";
 	const canAdmin = overview.role === "admin";
@@ -458,12 +458,12 @@ async function refresh() {
 			'<td class="op-only"><button class="secondary" onclick="toggleGroupKill(\'' + g.groupId + "'," + g.killSwitch + ')">' + (g.killSwitch ? "riattiva" : "sospendi") + "</button></td></tr>"
 	).join("");
 
-	$("enrollGroup").innerHTML = overview.groups.map((g) => '<option value="' + g.groupId + '">' + esc(g.name) + "</option>").join("");
+	$("enrollGroup").innerHTML = overview.groups.map((g) => `<option value="${g.groupId}">${esc(g.name)}</option>`).join("");
 	// Elenco per la select di audit: capped lato server (200) — su flotte
 	// molto grandi va sostituito con una ricerca, non un'unica select.
 	const auditDevices = (await api("GET", "/api/admin/devices?limit=200")).devices;
 	$("auditDevice").innerHTML = '<option value="">— audit amministrativo —</option>' +
-		auditDevices.map((d) => '<option value="' + d.deviceId + '">' + esc(d.name) + "</option>").join("");
+		auditDevices.map((d) => `<option value="${d.deviceId}">${esc(d.name)}</option>`).join("");
 
 	for (const id of ["dashboardPanel", "devicesPanel", "groupsPanel", "enrollPanel", "auditPanel"]) $(id).hidden = false;
 	$("loginPanel").hidden = true;
@@ -488,7 +488,7 @@ async function refreshSigningKeys() {
 		$("signingBody").innerHTML = data.keys.map((k) =>
 			"<tr><td><code>" + esc(k.keyId) + "</code></td><td>" + fmtDate(k.createdAt) + "</td>" +
 			"<td>" + (k.active ? '<span class="pill off">attiva (firma)</span>' : '<span class="muted">fidata</span>') + "</td>" +
-			"<td>" + (k.active ? "" : '<button class="secondary" onclick="promoteKey(\'' + k.keyId + '\')">promuovi</button> <button class="danger" onclick="retireKey(\'' + k.keyId + '\')">ritira</button>') +
+			"<td>" + (k.active ? "" : `<button class="secondary" onclick="promoteKey('${k.keyId}')">promuovi</button> <button class="danger" onclick="retireKey('${k.keyId}')">ritira</button>`) +
 			"</td></tr>"
 		).join("");
 		$("signingPanel").hidden = false;
@@ -505,18 +505,18 @@ async function refreshTokens() {
 }
 
 // ---- Azioni ----------------------------------------------------------------
-window.promoteKey = async (id) => { if (!confirm("Promuovere questa chiave ad attiva? I device non sincronizzati andranno fail-closed.")) return; try { await api("POST", "/api/admin/signing-keys/" + id + "/promote"); await refreshSigningKeys(); msg("Chiave promossa"); } catch (e) { msg(e.message, true); } };
-window.retireKey = async (id) => { if (!confirm("Ritirare questa chiave? I bundle firmati con essa non saranno più verificabili.")) return; try { await api("DELETE", "/api/admin/signing-keys/" + id); await refreshSigningKeys(); msg("Chiave ritirata"); } catch (e) { msg(e.message, true); } };
-window.toggleDeviceKill = async (id, current) => { try { await api("PUT", "/api/admin/devices/" + id, { killSwitch: !current }); await refresh(); msg("Device aggiornato"); } catch (e) { msg(e.message, true); } };
-window.revokeDevice = async (id) => { if (!confirm("Revocare definitivamente il device? Il suo token smetterà di funzionare.")) return; try { await api("PUT", "/api/admin/devices/" + id, { revoked: true }); await refresh(); msg("Device revocato"); } catch (e) { msg(e.message, true); } };
-window.deleteDevice = async (id, name) => { if (!confirm("Eliminare definitivamente il device \"" + name + "\"? L'operazione non è reversibile (il suo log di audit resta consultabile separatamente).")) return; try { await api("DELETE", "/api/admin/devices/" + id); await refresh(); msg("Device eliminato"); } catch (e) { msg(e.message, true); } };
-window.toggleGroupKill = async (id, current) => { try { await api("PUT", "/api/admin/groups/" + id, { killSwitch: !current }); await refresh(); msg("Gruppo aggiornato"); } catch (e) { msg(e.message, true); } };
-window.revokeToken = async (id) => { if (!confirm("Revocare il token amministrativo? Chi lo usa perderà subito l'accesso.")) return; try { await api("DELETE", "/api/admin/admin-tokens/" + id); await refreshTokens(); msg("Token revocato"); } catch (e) { msg(e.message, true); } };
+window.promoteKey = async (id) => { if (!confirm("Promuovere questa chiave ad attiva? I device non sincronizzati andranno fail-closed.")) return; try { await api("POST", `/api/admin/signing-keys/${id}/promote`); await refreshSigningKeys(); msg("Chiave promossa"); } catch (e) { msg(e.message, true); } };
+window.retireKey = async (id) => { if (!confirm("Ritirare questa chiave? I bundle firmati con essa non saranno più verificabili.")) return; try { await api("DELETE", `/api/admin/signing-keys/${id}`); await refreshSigningKeys(); msg("Chiave ritirata"); } catch (e) { msg(e.message, true); } };
+window.toggleDeviceKill = async (id, current) => { try { await api("PUT", `/api/admin/devices/${id}`, { killSwitch: !current }); await refresh(); msg("Device aggiornato"); } catch (e) { msg(e.message, true); } };
+window.revokeDevice = async (id) => { if (!confirm("Revocare definitivamente il device? Il suo token smetterà di funzionare.")) return; try { await api("PUT", `/api/admin/devices/${id}`, { revoked: true }); await refresh(); msg("Device revocato"); } catch (e) { msg(e.message, true); } };
+window.deleteDevice = async (id, name) => { if (!confirm(`Eliminare definitivamente il device "${name}"? L'operazione non è reversibile (il suo log di audit resta consultabile separatamente).`)) return; try { await api("DELETE", `/api/admin/devices/${id}`); await refresh(); msg("Device eliminato"); } catch (e) { msg(e.message, true); } };
+window.toggleGroupKill = async (id, current) => { try { await api("PUT", `/api/admin/groups/${id}`, { killSwitch: !current }); await refresh(); msg("Gruppo aggiornato"); } catch (e) { msg(e.message, true); } };
+window.revokeToken = async (id) => { if (!confirm("Revocare il token amministrativo? Chi lo usa perderà subito l'accesso.")) return; try { await api("DELETE", `/api/admin/admin-tokens/${id}`); await refreshTokens(); msg("Token revocato"); } catch (e) { msg(e.message, true); } };
 
 $("btnGlobalKill").onclick = async () => { const target = !overview.org.killSwitch; if (target && !confirm("Attivare il kill switch GLOBALE? Tutti gli agenti verranno sospesi.")) return; try { await api("PUT", "/api/admin/org", { killSwitch: target }); await refresh(); msg("Organizzazione aggiornata"); } catch (e) { msg(e.message, true); } };
 $("btnRefresh").onclick = () => refresh().catch((e) => msg(e.message, true));
 $("btnCreateGroup").onclick = async () => { try { await api("POST", "/api/admin/groups", { name: $("newGroupName").value }); $("newGroupName").value = ""; await refresh(); msg("Gruppo creato"); } catch (e) { msg(e.message, true); } };
-$("btnEnrollToken").onclick = async () => { try { const data = await api("POST", "/api/admin/enroll-tokens", { groupId: $("enrollGroup").value, ttlMinutes: Number($("enrollTtl").value) }); $("enrollResult").innerHTML = "Token (monouso, mostralo solo al device): <code>" + esc(data.enrollToken) + "</code>"; } catch (e) { msg(e.message, true); } };
+$("btnEnrollToken").onclick = async () => { try { const data = await api("POST", "/api/admin/enroll-tokens", { groupId: $("enrollGroup").value, ttlMinutes: Number($("enrollTtl").value) }); $("enrollResult").innerHTML = `Token (monouso, mostralo solo al device): <code>${esc(data.enrollToken)}</code>`; } catch (e) { msg(e.message, true); } };
 
 $("btnSavePolicy").onclick = async () => {
 	const v = validatePolicy(policyModel);
@@ -528,18 +528,18 @@ $("btnSavePolicy").onclick = async () => {
 };
 $("btnSyncJson").onclick = () => {
 	try { policyModel = JSON.parse($("orgPolicy").value || "{}"); banner("policyErr", ""); formFromModel(); afterModelChange(); msg("JSON sincronizzato"); }
-	catch (e) { banner("policyErr", "JSON non valido: " + e.message); }
+	catch (e) { banner("policyErr", `JSON non valido: ${e.message}`); }
 };
 for (const pf of ["pf_kill", "pf_sandbox", "pf_redaction", "pf_workspaceOnly", "pf_bashMode", "pf_bashAllow"]) $(pf).addEventListener("input", syncFromForm);
 $("tabForm").onclick = () => showPolicyTab("form");
 $("tabJson").onclick = () => showPolicyTab("json");
 $("tabDiff").onclick = () => showPolicyTab("diff");
 
-$("btnLoadAudit").onclick = async () => { try { const deviceId = $("auditDevice").value; const data = await api("GET", "/api/admin/audit?limit=100" + (deviceId ? "&deviceId=" + deviceId : "")); $("auditOutput").textContent = data.events.map((e) => JSON.stringify(e)).join("\n") || "nessun evento"; } catch (e) { msg(e.message, true); } };
-$("btnVerifyAudit").onclick = async () => { try { const deviceId = $("auditDevice").value; const data = await api("GET", "/api/admin/audit/verify" + (deviceId ? "?deviceId=" + deviceId : "")); $("auditVerdict").innerHTML = data.valid ? '<span class="pill off">catena integra · ' + data.entries + ' righe</span>' : '<span class="pill on">COMPROMESSA alla riga ' + data.brokenAtLine + "</span>"; } catch (e) { msg(e.message, true); } };
-$("btnCreateToken").onclick = async () => { try { const data = await api("POST", "/api/admin/admin-tokens", { name: $("newTokenName").value, role: $("newTokenRole").value, ttlDays: Number($("newTokenTtl").value) }); $("newTokenName").value = ""; $("tokenResult").innerHTML = "Token (mostrato solo ora): <code>" + esc(data.token) + "</code>"; await refreshTokens(); } catch (e) { msg(e.message, true); } };
-$("btnAddKey").onclick = async () => { try { const r = await api("POST", "/api/admin/signing-keys"); await refreshSigningKeys(); msg("Chiave aggiunta: " + r.keyId); } catch (e) { msg(e.message, true); } };
-$("btnLogin").onclick = async () => { token = $("tokenInput").value.trim(); banner("loginErr", ""); try { await refresh(); localStorage.setItem("harnessAdminToken", token); } catch (e) { banner("loginErr", "Accesso fallito: " + e.message); } };
+$("btnLoadAudit").onclick = async () => { try { const deviceId = $("auditDevice").value; const data = await api("GET", `/api/admin/audit?limit=100${deviceId ? `&deviceId=${deviceId}` : ""}`); $("auditOutput").textContent = data.events.map((e) => JSON.stringify(e)).join("\n") || "nessun evento"; } catch (e) { msg(e.message, true); } };
+$("btnVerifyAudit").onclick = async () => { try { const deviceId = $("auditDevice").value; const data = await api("GET", `/api/admin/audit/verify${deviceId ? `?deviceId=${deviceId}` : ""}`); $("auditVerdict").innerHTML = data.valid ? `<span class="pill off">catena integra · ${data.entries} righe</span>` : `<span class="pill on">COMPROMESSA alla riga ${data.brokenAtLine}</span>`; } catch (e) { msg(e.message, true); } };
+$("btnCreateToken").onclick = async () => { try { const data = await api("POST", "/api/admin/admin-tokens", { name: $("newTokenName").value, role: $("newTokenRole").value, ttlDays: Number($("newTokenTtl").value) }); $("newTokenName").value = ""; $("tokenResult").innerHTML = `Token (mostrato solo ora): <code>${esc(data.token)}</code>`; await refreshTokens(); } catch (e) { msg(e.message, true); } };
+$("btnAddKey").onclick = async () => { try { const r = await api("POST", "/api/admin/signing-keys"); await refreshSigningKeys(); msg(`Chiave aggiunta: ${r.keyId}`); } catch (e) { msg(e.message, true); } };
+$("btnLogin").onclick = async () => { token = $("tokenInput").value.trim(); banner("loginErr", ""); try { await refresh(); localStorage.setItem("harnessAdminToken", token); } catch (e) { banner("loginErr", `Accesso fallito: ${e.message}`); } };
 $("btnLogout").onclick = () => { localStorage.removeItem("harnessAdminToken"); location.reload(); };
 
 // Device pagination/filter listeners. La ricerca è server-side ora (ogni
@@ -554,7 +554,7 @@ $("devPageSize").addEventListener("change", () => { devPage = 0; renderDevices()
 $("devPrev").onclick = () => { devPage--; renderDevices(); };
 $("devNext").onclick = () => { devPage++; renderDevices(); };
 
-if (token) refresh().catch((e) => { $("loginPanel").hidden = false; banner("loginErr", "Sessione non valida: " + e.message); });
+if (token) refresh().catch((e) => { $("loginPanel").hidden = false; banner("loginErr", `Sessione non valida: ${e.message}`); });
 </script>
 </body>
 </html>

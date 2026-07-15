@@ -2,10 +2,10 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { type Logger, MetricsRegistry, peerCertFingerprint } from "@harness/shared";
+import { type CompiledRoute, compileRoutes, matchRoute, type RouteContext } from "./http-router.js";
+import { buildRoutes } from "./routes.js";
 import type { ControlPlaneService } from "./service.js";
 import { ServiceError } from "./services/context.js";
-import { type CompiledRoute, type RouteContext, compileRoutes, matchRoute } from "./http-router.js";
-import { buildRoutes } from "./routes.js";
 
 /** Esito di una sonda di readiness (backend raggiungibile, stato coerente). */
 export type ReadinessProbe = () => Promise<{ ready: boolean; detail?: Record<string, unknown> }>;
@@ -109,7 +109,10 @@ async function dispatch(
 	}
 	if (method === "GET" && path === "/readyz") {
 		const result = await infra.readiness();
-		sendJson(res, result.ready ? 200 : 503, { ready: result.ready, ...(result.detail ? { detail: result.detail } : {}) });
+		sendJson(res, result.ready ? 200 : 503, {
+			ready: result.ready,
+			...(result.detail ? { detail: result.detail } : {}),
+		});
 		return;
 	}
 

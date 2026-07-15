@@ -36,10 +36,7 @@ function ossl(args: string[], cwd: string): void {
 export function makeCa(): Ca {
 	const dir = mkdtempSync(join(tmpdir(), "harness-ca-"));
 	ossl(["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", "ca.key"], dir);
-	ossl(
-		["req", "-x509", "-new", "-key", "ca.key", "-days", "1", "-subj", "/CN=Harness Test CA", "-out", "ca.crt"],
-		dir,
-	);
+	ossl(["req", "-x509", "-new", "-key", "ca.key", "-days", "1", "-subj", "/CN=Harness Test CA", "-out", "ca.crt"], dir);
 	return {
 		certPem: readFileSync(join(dir, "ca.crt"), "utf8"),
 		keyPem: readFileSync(join(dir, "ca.key"), "utf8"),

@@ -5,8 +5,8 @@ import { join } from "node:path";
 import type {
 	AdminRole,
 	AuditEvent,
-	ChainVerification,
 	ChainedEntry,
+	ChainVerification,
 	DeepPartial,
 	Kek,
 	PolicyDocument,
@@ -21,9 +21,9 @@ import {
 	sealPrivateKey,
 	verifyChain,
 } from "@harness/shared";
-import { ChangelogPrunedError, isIncremental, isNormalized } from "./state-store.js";
-import type { StateDiff } from "./state-store.js";
 import { InMemoryRateLimiter } from "./rate-limiter.js";
+import type { StateDiff } from "./state-store.js";
+import { ChangelogPrunedError, isIncremental, isNormalized } from "./state-store.js";
 
 /** Confronta due mappe per chiave e invoca upsert sui cambiati, del sui rimossi. */
 function diffMaps<T>(
@@ -334,7 +334,10 @@ export class Store {
 			});
 	}
 
-	private snapshotStrings(state: ControlPlaneState, signingKeys: SigningKeyRecord[]): { state: string; signingKeys: string } {
+	private snapshotStrings(
+		state: ControlPlaneState,
+		signingKeys: SigningKeyRecord[],
+	): { state: string; signingKeys: string } {
 		return { state: JSON.stringify(state), signingKeys: JSON.stringify(signingKeys) };
 	}
 
@@ -357,15 +360,30 @@ export class Store {
 			enrollTokensDelete: [],
 		};
 		if (JSON.stringify(before.org) !== JSON.stringify(curr.org)) diff.org = curr.org;
-		diffMaps(before.groups, curr.groups, (v) => diff.groupsUpsert.push(v), (k) => diff.groupsDelete.push(k));
-		diffMaps(before.devices, curr.devices, (v) => diff.devicesUpsert.push(v), (k) => diff.devicesDelete.push(k));
+		diffMaps(
+			before.groups,
+			curr.groups,
+			(v) => diff.groupsUpsert.push(v),
+			(k) => diff.groupsDelete.push(k),
+		);
+		diffMaps(
+			before.devices,
+			curr.devices,
+			(v) => diff.devicesUpsert.push(v),
+			(k) => diff.devicesDelete.push(k),
+		);
 		diffMaps(
 			before.adminTokens,
 			curr.adminTokens,
 			(v, k) => diff.adminTokensUpsert.push([k, v]),
 			(k) => diff.adminTokensDelete.push(k),
 		);
-		diffMaps(before.gatewayTokens, curr.gatewayTokens, (v, k) => diff.gatewayTokensUpsert.push([k, v]), () => {});
+		diffMaps(
+			before.gatewayTokens,
+			curr.gatewayTokens,
+			(v, k) => diff.gatewayTokensUpsert.push([k, v]),
+			() => {},
+		);
 		diffMaps(
 			before.enrollTokens,
 			curr.enrollTokens,
@@ -540,9 +558,7 @@ export class Store {
 	 */
 	async rekey(newKek: Kek): Promise<void> {
 		if (!this.kek) {
-			throw new Error(
-				"nessuna KEK corrente da ruotare: per la prima cifratura imposta HARNESS_SIGNING_KEK e riavvia",
-			);
+			throw new Error("nessuna KEK corrente da ruotare: per la prima cifratura imposta HARNESS_SIGNING_KEK e riavvia");
 		}
 		this.kek = newKek;
 		this.persistSigningKeys(this.signingKeys);
@@ -691,9 +707,11 @@ export class Store {
 		if (events.length === 0) return;
 		const backend = this.normalizedBackend();
 		if (backend) {
-			this.pending = this.pending.then(() => backend.appendAudit(deviceId, events)).catch((error: unknown) => {
-				this.lastMirrorError = error instanceof Error ? error.message : String(error);
-			});
+			this.pending = this.pending
+				.then(() => backend.appendAudit(deviceId, events))
+				.catch((error: unknown) => {
+					this.lastMirrorError = error instanceof Error ? error.message : String(error);
+				});
 			return;
 		}
 		this.appendChained(this.deviceAuditPath(deviceId), events);
@@ -708,9 +726,11 @@ export class Store {
 	appendAdminAudit(entry: AdminAuditEntry): void {
 		const backend = this.normalizedBackend();
 		if (backend) {
-			this.pending = this.pending.then(() => backend.appendAudit("admin", [entry])).catch((error: unknown) => {
-				this.lastMirrorError = error instanceof Error ? error.message : String(error);
-			});
+			this.pending = this.pending
+				.then(() => backend.appendAudit("admin", [entry]))
+				.catch((error: unknown) => {
+					this.lastMirrorError = error instanceof Error ? error.message : String(error);
+				});
 			return;
 		}
 		this.appendChained(this.adminAuditPath, [entry]);

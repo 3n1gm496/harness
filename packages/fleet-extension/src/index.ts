@@ -1,11 +1,11 @@
 import { bootstrapEnforcement } from "@harness/enforcement-core";
-import type { ExtensionAPI } from "./pi-types.js";
 import { PiAdapter } from "./pi-adapter.js";
+import type { ExtensionAPI } from "./pi-types.js";
 
+export type { AgentConfig, FleetStatus } from "@harness/enforcement-core";
 // Riesporta lo stato di flotta e le utility di config dal core, così i
 // consumatori (agent-client, test) mantengono l'import da questo pacchetto.
-export { FleetState, loadAgentConfig, defaultAgentConfigPath } from "@harness/enforcement-core";
-export type { AgentConfig, FleetStatus } from "@harness/enforcement-core";
+export { defaultAgentConfigPath, FleetState, loadAgentConfig } from "@harness/enforcement-core";
 export { PiAdapter } from "./pi-adapter.js";
 
 /**

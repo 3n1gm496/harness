@@ -16,7 +16,9 @@ export class PiAdapter implements AgentAdapter {
 		this.pi.on("session_start", (_event, ctx) => handler(toSession(ctx)));
 	}
 
-	onToolCall(handler: (call: import("@harness/enforcement-core").ToolCall, session: HostSession) => Gate | Promise<Gate>): void {
+	onToolCall(
+		handler: (call: import("@harness/enforcement-core").ToolCall, session: HostSession) => Gate | Promise<Gate>,
+	): void {
 		this.pi.on("tool_call", async (event, ctx) => {
 			const gate = await handler(
 				{ toolName: event.toolName, callId: event.toolCallId, input: event.input },
@@ -48,10 +50,7 @@ export class PiAdapter implements AgentAdapter {
 	}
 
 	onShellCommand(
-		handler: (
-			command: import("@harness/enforcement-core").ShellCommand,
-			session: HostSession,
-		) => Gate | Promise<Gate>,
+		handler: (command: import("@harness/enforcement-core").ShellCommand, session: HostSession) => Gate | Promise<Gate>,
 	): void {
 		this.pi.on("user_bash", async (event, ctx) => {
 			const gate = await handler({ command: event.command, cwd: event.cwd }, toSession(ctx));

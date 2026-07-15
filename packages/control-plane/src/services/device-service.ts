@@ -1,9 +1,17 @@
 import type { AuditEvent, ConfigBundle, DeepPartial, PolicyDocument } from "@harness/shared";
-import { deepMerge, lockedPiSettings, newId, newSecretToken, resolvePolicy, signPayload, verifyToken } from "@harness/shared";
+import {
+	deepMerge,
+	lockedPiSettings,
+	newId,
+	newSecretToken,
+	resolvePolicy,
+	signPayload,
+	verifyToken,
+} from "@harness/shared";
 import type { DeviceRecord } from "../store.js";
 import { hashToken } from "../store.js";
-import { type AdminIdentity, ServiceContext, ServiceError, normalizeFingerprint, requireRole } from "./context.js";
 import { sanitizeAuditEvent } from "./audit-event.js";
+import { type AdminIdentity, normalizeFingerprint, requireRole, type ServiceContext, ServiceError } from "./context.js";
 
 /**
  * Ciclo di vita dei device: emissione dei token di enrollment, arruolamento,

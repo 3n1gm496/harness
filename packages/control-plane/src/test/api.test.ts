@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
+import { sign as cryptoSign, generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
-import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
 import {
 	generateSigningKeyPair,
 	signPayload,
@@ -12,8 +12,8 @@ import {
 	verifyConfigBundleMulti,
 	verifyToken,
 } from "@harness/shared";
-import { ControlPlaneService } from "../service.js";
 import { createControlPlaneServer } from "../server.js";
+import { ControlPlaneService } from "../service.js";
 import { Store } from "../store.js";
 
 let dataDir: string;
@@ -276,7 +276,13 @@ test("provenance dell'audit: batch firmato accettato e marcato, batch manomesso 
 
 	// Batch manomesso dopo la firma (eventi diversi da quelli firmati): rifiutato.
 	const tamperedEvents = [
-		{ eventId: "sig_evil", deviceId: signedDeviceId, timestamp: new Date().toISOString(), type: "agent_start", data: {} },
+		{
+			eventId: "sig_evil",
+			deviceId: signedDeviceId,
+			timestamp: new Date().toISOString(),
+			type: "agent_start",
+			data: {},
+		},
 	];
 	const tampered = await call("POST", "/api/device/audit", {
 		token: signedDeviceToken,
@@ -303,9 +309,7 @@ test("provenance dell'audit: batch firmato accettato e marcato, batch manomesso 
 	const legacyIngest = await call("POST", "/api/device/audit", {
 		token: deviceToken,
 		body: {
-			events: [
-				{ eventId: "legacy_1", deviceId, timestamp: new Date().toISOString(), type: "agent_start", data: {} },
-			],
+			events: [{ eventId: "legacy_1", deviceId, timestamp: new Date().toISOString(), type: "agent_start", data: {} }],
 		},
 	});
 	assert.equal(legacyIngest.status, 200);
@@ -328,10 +332,7 @@ test("RBAC: viewer non può mutare, operator non può cambiare policy", async ()
 
 	// Il viewer legge ma non muta.
 	assert.equal((await call("GET", "/api/admin/overview", { token: viewerToken })).status, 200);
-	assert.equal(
-		(await call("PUT", "/api/admin/org", { token: viewerToken, body: { killSwitch: true } })).status,
-		403,
-	);
+	assert.equal((await call("PUT", "/api/admin/org", { token: viewerToken, body: { killSwitch: true } })).status, 403);
 
 	// L'overview espone il ruolo del chiamante (usato dalla UI per RBAC lato client).
 	const viewerOverview = await call("GET", "/api/admin/overview", { token: viewerToken });
@@ -341,8 +342,7 @@ test("RBAC: viewer non può mutare, operator non può cambiare policy", async ()
 
 	// L'operator può usare il kill switch ma non cambiare le policy.
 	assert.equal(
-		(await call("PUT", `/api/admin/devices/${deviceId}`, { token: operatorToken, body: { killSwitch: false } }))
-			.status,
+		(await call("PUT", `/api/admin/devices/${deviceId}`, { token: operatorToken, body: { killSwitch: false } })).status,
 		200,
 	);
 	assert.equal(
@@ -463,7 +463,10 @@ test("rotazione della chiave di firma in tre fasi, senza re-enrollment", async (
 	}
 
 	// Stato iniziale: bundle firmato con A, verificabile.
-	assert.equal(clientSync((await call("GET", "/api/device/config", { token: deviceToken })).data.token as string), true);
+	assert.equal(
+		clientSync((await call("GET", "/api/device/config", { token: deviceToken })).data.token as string),
+		true,
+	);
 	assert.deepEqual(pinned, [keyA]);
 
 	// Fase 1 — add: nuova chiave B, NON ancora firmante. Il bundle resta
@@ -471,12 +474,18 @@ test("rotazione della chiave di firma in tre fasi, senza re-enrollment", async (
 	const add = await call("POST", "/api/admin/signing-keys", { token: adminToken });
 	assert.equal(add.status, 200);
 	const keyBId = add.data.keyId as string;
-	assert.equal(clientSync((await call("GET", "/api/device/config", { token: deviceToken })).data.token as string), true);
+	assert.equal(
+		clientSync((await call("GET", "/api/device/config", { token: deviceToken })).data.token as string),
+		true,
+	);
 	assert.equal(pinned.length, 2); // il client ha appreso B
 
 	// Fase 2 — promote: B diventa firmante. Il client fida già B ⇒ verifica ok.
 	assert.equal((await call("POST", `/api/admin/signing-keys/${keyBId}/promote`, { token: adminToken })).status, 200);
-	assert.equal(clientSync((await call("GET", "/api/device/config", { token: deviceToken })).data.token as string), true);
+	assert.equal(
+		clientSync((await call("GET", "/api/device/config", { token: deviceToken })).data.token as string),
+		true,
+	);
 
 	// Fase 3 — retire A: il client ora fida [A,B] ma i bundle sono firmati con B,
 	// quindi resta valido anche dopo il ritiro di A.
@@ -486,12 +495,20 @@ test("rotazione della chiave di firma in tre fasi, senza re-enrollment", async (
 	}[];
 	const keyAId = keys.find((k) => !k.active)?.keyId as string;
 	assert.equal((await call("DELETE", `/api/admin/signing-keys/${keyAId}`, { token: adminToken })).status, 200);
-	assert.equal(clientSync((await call("GET", "/api/device/config", { token: deviceToken })).data.token as string), true);
+	assert.equal(
+		clientSync((await call("GET", "/api/device/config", { token: deviceToken })).data.token as string),
+		true,
+	);
 	assert.equal(pinned.length, 1); // solo B resta fidata
 
 	// Non si può ritirare l'unica chiave rimasta.
-	const soloKey = (await call("GET", "/api/admin/signing-keys", { token: adminToken })).data.keys as { keyId: string }[];
-	assert.equal((await call("DELETE", `/api/admin/signing-keys/${soloKey[0]?.keyId}`, { token: adminToken })).status, 400);
+	const soloKey = (await call("GET", "/api/admin/signing-keys", { token: adminToken })).data.keys as {
+		keyId: string;
+	}[];
+	assert.equal(
+		(await call("DELETE", `/api/admin/signing-keys/${soloKey[0]?.keyId}`, { token: adminToken })).status,
+		400,
+	);
 });
 
 test("binding mTLS: la logica richiede il certificato legato", () => {
@@ -607,7 +624,12 @@ test("autenticazione admin via OIDC/JWT con mappatura del ruolo dal claim", asyn
 		assert.equal(await callOidc(noRole), 403);
 
 		// JWT scaduto oltre la tolleranza di clock skew (60s) → 401.
-		const expired = jwt({ iss: issuer, aud: audience, exp: Math.floor(Date.now() / 1000) - 120, harness_role: "admin" });
+		const expired = jwt({
+			iss: issuer,
+			aud: audience,
+			exp: Math.floor(Date.now() / 1000) - 120,
+			harness_role: "admin",
+		});
 		assert.equal(await callOidc(expired), 401);
 	} finally {
 		await new Promise((resolve) => oidcServer.close(resolve));
@@ -775,7 +797,10 @@ test("rate limit sull'enrollment: oltre la soglia risponde 429 (in-memory, file-
 		// richiesta conta, valida o meno. Soglia di default: 20/minuto.
 		const statuses: number[] = [];
 		for (let i = 0; i < 21; i += 1) statuses.push((await attempt()).status);
-		assert.ok(statuses.slice(0, 20).every((s) => s === 401), "le prime 20 falliscono per token non valido, non per rate limit");
+		assert.ok(
+			statuses.slice(0, 20).every((s) => s === 401),
+			"le prime 20 falliscono per token non valido, non per rate limit",
+		);
 		assert.equal(statuses[20], 429, "la ventunesima richiesta nella stessa finestra deve essere respinta");
 	} finally {
 		await new Promise((resolve) => isolatedServer.close(resolve));

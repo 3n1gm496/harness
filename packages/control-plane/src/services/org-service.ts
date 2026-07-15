@@ -1,5 +1,5 @@
 import type { AdminRole, DeepPartial, DeviceInfo, GroupInfo, PolicyDocument } from "@harness/shared";
-import { type AdminIdentity, ServiceContext, ServiceError, requireRole, toDeviceInfo } from "./context.js";
+import { type AdminIdentity, requireRole, type ServiceContext, ServiceError, toDeviceInfo } from "./context.js";
 import { type DeviceState, deviceState } from "./fleet-view.js";
 
 /** Organizzazione: panoramica della flotta e configurazione a livello org. */
@@ -98,7 +98,14 @@ export class OrgService {
 			else if (state === "stale") stale += 1;
 			else suspended += 1;
 		}
-		return { total: deviceList.length, active, stale, suspended, configVersion: org.configVersion, killSwitch: org.killSwitch };
+		return {
+			total: deviceList.length,
+			active,
+			stale,
+			suspended,
+			configVersion: org.configVersion,
+			killSwitch: org.killSwitch,
+		};
 	}
 
 	getOrgConfig(identity: AdminIdentity): {

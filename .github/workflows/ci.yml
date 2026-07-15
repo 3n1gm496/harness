@@ -35,6 +35,8 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Build
         run: npm run build
+      - name: Lint (Biome)
+        run: npm run lint
       - name: Test (incluso adapter Postgres e mTLS)
         run: npm test
       - name: Audit dipendenze di produzione

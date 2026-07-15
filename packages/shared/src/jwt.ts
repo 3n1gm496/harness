@@ -33,9 +33,7 @@ export type JwtClaims = Record<string, unknown> & {
 	sub?: string;
 };
 
-export type JwtResult =
-	| { valid: true; claims: JwtClaims }
-	| { valid: false; error: string };
+export type JwtResult = { valid: true; claims: JwtClaims } | { valid: false; error: string };
 
 const NODE_ALG: Record<JwtAlg, string> = { RS256: "RSA-SHA256", ES256: "sha256" };
 

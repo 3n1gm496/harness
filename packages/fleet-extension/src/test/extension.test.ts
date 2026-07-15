@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
-import { ControlPlaneService, Store, createControlPlaneServer } from "@harness/control-plane";
+import { ControlPlaneService, createControlPlaneServer, Store } from "@harness/control-plane";
 import fleetExtension from "../index.js";
 import type {
 	ExtensionAPI,
@@ -312,8 +312,7 @@ test("anti-rollback: un bundle con configVersion inferiore viene rifiutato", asy
 
 	// Attacco rollback: il server (o la cache) ripropone il vecchio bundle vN,
 	// ancora firmato e non scaduto. Deve essere RIFIUTATO, restando su vNew.
-	const rollbackFetch: typeof fetch = async () =>
-		new Response(JSON.stringify({ token: oldToken }), { status: 200 });
+	const rollbackFetch: typeof fetch = async () => new Response(JSON.stringify({ token: oldToken }), { status: 200 });
 	await state.refresh(rollbackFetch);
 	assert.equal(state.configVersion, vNew);
 	assert.match(state.lastError, /rollback/);

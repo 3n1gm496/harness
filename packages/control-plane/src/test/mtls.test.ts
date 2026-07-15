@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { X509Certificate, createHash } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
+import { Agent, request as httpsRequest } from "node:https";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AddressInfo } from "node:net";
-import { Agent, request as httpsRequest } from "node:https";
 import { after, before, test } from "node:test";
-import { ControlPlaneService } from "../service.js";
 import { createControlPlaneServer } from "../server.js";
+import { ControlPlaneService } from "../service.js";
 import { Store } from "../store.js";
 import { cleanupCa, makeCa, makeCert, openSslAvailable } from "./tls-fixtures.js";
 
@@ -54,7 +54,10 @@ interface Resp {
 	body: string;
 }
 
-function req(path: string, opts: { method?: string; token?: string; clientCert?: boolean; body?: string }): Promise<Resp> {
+function req(
+	path: string,
+	opts: { method?: string; token?: string; clientCert?: boolean; body?: string },
+): Promise<Resp> {
 	return new Promise((resolve, reject) => {
 		const agentOpts: ConstructorParameters<typeof Agent>[0] = { ca: ca.certPem };
 		if (opts.clientCert) {

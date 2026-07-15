@@ -10,15 +10,15 @@
 
 export type {
 	AgentAdapter,
-	HostUi,
+	Gate,
 	HostSession,
+	HostUi,
+	OutputBlock,
+	ResultRewrite,
+	ShellCommand,
 	ToolCall,
 	ToolResult,
-	OutputBlock,
-	ShellCommand,
-	Gate,
-	ResultRewrite,
 } from "./adapter.js";
 export { attachEnforcement, bootstrapEnforcement } from "./engine.js";
-export { FleetState, loadAgentConfig, defaultAgentConfigPath } from "./fleet-state.js";
 export type { AgentConfig, FleetStatus } from "./fleet-state.js";
+export { defaultAgentConfigPath, FleetState, loadAgentConfig } from "./fleet-state.js";

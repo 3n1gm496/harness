@@ -25,7 +25,11 @@ test("una catena vuota è valida", () => {
 });
 
 test("la prima riga deve agganciarsi al genesis", () => {
-	const forged = JSON.stringify({ entry: { a: 1 }, prev: "ff".repeat(32), hash: computeChainHash("ff".repeat(32), { a: 1 }) });
+	const forged = JSON.stringify({
+		entry: { a: 1 },
+		prev: "ff".repeat(32),
+		hash: computeChainHash("ff".repeat(32), { a: 1 }),
+	});
 	const result = verifyChain([forged]);
 	assert.equal(result.valid, false);
 	if (!result.valid) assert.equal(result.brokenAtLine, 1);

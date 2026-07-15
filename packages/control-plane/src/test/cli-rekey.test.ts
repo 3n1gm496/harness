@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { randomBytes } from "node:crypto";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 const cliPath = join(dirname(fileURLToPath(import.meta.url)), "..", "cli.js");
 
-function run(args: string[], env: Record<string, string> = {}): { status: number | null; stdout: string; stderr: string } {
+function run(
+	args: string[],
+	env: Record<string, string> = {},
+): { status: number | null; stdout: string; stderr: string } {
 	const result = spawnSync("node", [cliPath, ...args], { encoding: "utf8", env: { ...process.env, ...env } });
 	return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }

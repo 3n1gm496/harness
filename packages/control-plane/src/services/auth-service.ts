@@ -4,11 +4,11 @@ import type { AdminTokenRecord, DeviceRecord } from "../store.js";
 import { hashToken } from "../store.js";
 import {
 	type AdminIdentity,
-	type OidcConfig,
-	ServiceContext,
-	ServiceError,
 	normalizeFingerprint,
+	type OidcConfig,
 	requireRole,
+	type ServiceContext,
+	ServiceError,
 } from "./context.js";
 
 /**
@@ -173,9 +173,7 @@ export class AuthService {
 		const target = this.store.state.adminTokens[match] as AdminTokenRecord;
 		const remainingAdmins = Object.entries(this.store.state.adminTokens).filter(
 			([hash, record]) =>
-				hash !== match &&
-				record.role === "admin" &&
-				(!record.expiresAt || Date.parse(record.expiresAt) > Date.now()),
+				hash !== match && record.role === "admin" && (!record.expiresAt || Date.parse(record.expiresAt) > Date.now()),
 		);
 		if (target.role === "admin" && remainingAdmins.length === 0) {
 			throw new ServiceError(409, "impossibile revocare l'ultimo token admin attivo");

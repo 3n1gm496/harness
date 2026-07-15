@@ -14,9 +14,13 @@
 		"test": "npm run test --workspaces --if-present",
 		"test:pg": "node scripts/test-with-postgres.mjs",
 		"typecheck": "tsc --build",
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"format": "biome format --write .",
 		"example:mock-agent": "npm run build && node examples/mock-agent/run.mjs"
 	},
 	"devDependencies": {
+		"@biomejs/biome": "2.5.3",
 		"@types/node": "22.10.2",
 		"typescript": "5.7.2"
 	}

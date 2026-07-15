@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { defaultPolicy } from "../defaults.js";
 import {
 	generateSigningKeyPair,
 	signPayload,
@@ -8,7 +9,6 @@ import {
 	verifyToken,
 } from "../signing.js";
 import type { ConfigBundle } from "../types.js";
-import { defaultPolicy } from "../defaults.js";
 
 function makeBundle(overrides: Partial<ConfigBundle> = {}): ConfigBundle {
 	const now = Date.now();

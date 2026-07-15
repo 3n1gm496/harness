@@ -1,17 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaultPolicy } from "@harness/shared";
-import type {
-	AgentAdapter,
-	Gate,
-	HostSession,
-	ResultRewrite,
-	ShellCommand,
-	ToolCall,
-	ToolResult,
-} from "../adapter.js";
+import type { AgentAdapter, Gate, HostSession, ResultRewrite, ShellCommand, ToolCall, ToolResult } from "../adapter.js";
 import { attachEnforcement } from "../engine.js";
-import { FleetState, type AgentConfig } from "../fleet-state.js";
+import { type AgentConfig, FleetState } from "../fleet-state.js";
 
 /**
  * Adapter mock che NON è PI: un host immaginario che espone gli stessi eventi
@@ -54,6 +46,9 @@ class MockAdapter implements AgentAdapter {
 	emitShell(command: ShellCommand, session: HostSession): Promise<Gate> {
 		return Promise.resolve(this.shell?.(command, session) ?? { allow: true });
 	}
+	emitSessionEnd(): Promise<void> | void {
+		return this.sessionEnd?.();
+	}
 }
 
 const session: HostSession = { cwd: "/workspace/progetto", hasUI: false };
@@ -78,20 +73,14 @@ function stateWithPolicy(policyPatch: Partial<ReturnType<typeof defaultPolicy>> 
 test("il motore funziona su un adapter non-PI: tool consentito passa", async () => {
 	const adapter = new MockAdapter();
 	attachEnforcement(adapter, stateWithPolicy());
-	const gate = await adapter.emitToolCall(
-		{ toolName: "read", callId: "t1", input: { path: "src/app.ts" } },
-		session,
-	);
+	const gate = await adapter.emitToolCall({ toolName: "read", callId: "t1", input: { path: "src/app.ts" } }, session);
 	assert.deepEqual(gate, { allow: true });
 });
 
 test("il motore nega un comando pericoloso attraverso il contratto neutro", async () => {
 	const adapter = new MockAdapter();
 	attachEnforcement(adapter, stateWithPolicy());
-	const gate = await adapter.emitToolCall(
-		{ toolName: "bash", callId: "t2", input: { command: "rm -rf /" } },
-		session,
-	);
+	const gate = await adapter.emitToolCall({ toolName: "bash", callId: "t2", input: { command: "rm -rf /" } }, session);
 	assert.equal(gate.allow, false);
 	assert.match(gate.allow === false ? gate.reason : "", /policy aziendale/);
 });
@@ -99,10 +88,7 @@ test("il motore nega un comando pericoloso attraverso il contratto neutro", asyn
 test("path fuori workspace negato", async () => {
 	const adapter = new MockAdapter();
 	attachEnforcement(adapter, stateWithPolicy());
-	const gate = await adapter.emitToolCall(
-		{ toolName: "read", callId: "t3", input: { path: "/etc/passwd" } },
-		session,
-	);
+	const gate = await adapter.emitToolCall({ toolName: "read", callId: "t3", input: { path: "/etc/passwd" } }, session);
 	assert.equal(gate.allow, false);
 });
 
@@ -148,10 +134,7 @@ test("sandbox obbligatoria assente ⇒ ogni tool call bloccata", async () => {
 		sandbox: { required: true, markerPath: "/non/esiste/marker", markerValue: "x" },
 	});
 	attachEnforcement(adapter, state);
-	const gate = await adapter.emitToolCall(
-		{ toolName: "read", callId: "t5", input: { path: "src/a.ts" } },
-		session,
-	);
+	const gate = await adapter.emitToolCall({ toolName: "read", callId: "t5", input: { path: "src/a.ts" } }, session);
 	assert.equal(gate.allow, false);
 	assert.match(gate.allow === false ? gate.reason : "", /sandbox/);
 });
@@ -171,4 +154,15 @@ test("session start aggancia la UI di stato dell'host", async () => {
 		},
 	});
 	assert.ok(statuses.some((s) => s.key === "harness-fleet"));
+});
+
+test("session end aggancia lo shutdown dello stato di flotta (flush audit, timer puliti)", async () => {
+	const adapter = new MockAdapter();
+	const state = stateWithPolicy();
+	attachEnforcement(adapter, state);
+	state.pushAudit("tool_result", { ok: true });
+	// Nessun control plane reale dietro deviceId "dev-test": il flush fallisce
+	// e viene ignorato silenziosamente (l'evento resta in coda per il prossimo
+	// tentativo), ma emitSessionEnd non deve lanciare.
+	await adapter.emitSessionEnd();
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
+import { sign as cryptoSign, generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
-import { verifyJwt, type JwtAlg } from "../jwt.js";
+import { type JwtAlg, verifyJwt } from "../jwt.js";
 
 function makeJwt(privateKeyPem: string, alg: JwtAlg, claims: Record<string, unknown>, kid?: string): string {
 	const header = { alg, typ: "JWT", ...(kid ? { kid } : {}) };
@@ -43,7 +43,11 @@ test("JWT RS256 valido viene accettato con i claim corretti", () => {
 		harness_role: "admin",
 		email: "mario@azienda.it",
 	});
-	const result = verifyJwt(token, { keys: [{ alg: "RS256", publicKeyPem: keys.publicKeyPem }], issuer: ISSUER, audience: AUD });
+	const result = verifyJwt(token, {
+		keys: [{ alg: "RS256", publicKeyPem: keys.publicKeyPem }],
+		issuer: ISSUER,
+		audience: AUD,
+	});
 	assert.equal(result.valid, true);
 	if (result.valid) {
 		assert.equal(result.claims.harness_role, "admin");
@@ -55,7 +59,11 @@ test("JWT ES256 valido viene accettato", () => {
 	const keys = ecKeys();
 	const now = Math.floor(Date.now() / 1000);
 	const token = makeJwt(keys.privateKeyPem, "ES256", { iss: ISSUER, aud: AUD, exp: now + 3600 });
-	const result = verifyJwt(token, { keys: [{ alg: "ES256", publicKeyPem: keys.publicKeyPem }], issuer: ISSUER, audience: AUD });
+	const result = verifyJwt(token, {
+		keys: [{ alg: "ES256", publicKeyPem: keys.publicKeyPem }],
+		issuer: ISSUER,
+		audience: AUD,
+	});
 	assert.equal(result.valid, true);
 });
 
@@ -63,7 +71,11 @@ test("firma con chiave diversa viene rifiutata", () => {
 	const signer = rsaKeys();
 	const other = rsaKeys();
 	const token = makeJwt(signer.privateKeyPem, "RS256", { iss: ISSUER, aud: AUD, exp: 9999999999 });
-	const result = verifyJwt(token, { keys: [{ alg: "RS256", publicKeyPem: other.publicKeyPem }], issuer: ISSUER, audience: AUD });
+	const result = verifyJwt(token, {
+		keys: [{ alg: "RS256", publicKeyPem: other.publicKeyPem }],
+		issuer: ISSUER,
+		audience: AUD,
+	});
 	assert.equal(result.valid, false);
 });
 
@@ -79,8 +91,16 @@ test("issuer o audience errati vengono rifiutati", () => {
 
 test("token scaduto viene rifiutato", () => {
 	const keys = rsaKeys();
-	const token = makeJwt(keys.privateKeyPem, "RS256", { iss: ISSUER, aud: AUD, exp: Math.floor(Date.now() / 1000) - 3600 });
-	const result = verifyJwt(token, { keys: [{ alg: "RS256", publicKeyPem: keys.publicKeyPem }], issuer: ISSUER, audience: AUD });
+	const token = makeJwt(keys.privateKeyPem, "RS256", {
+		iss: ISSUER,
+		aud: AUD,
+		exp: Math.floor(Date.now() / 1000) - 3600,
+	});
+	const result = verifyJwt(token, {
+		keys: [{ alg: "RS256", publicKeyPem: keys.publicKeyPem }],
+		issuer: ISSUER,
+		audience: AUD,
+	});
 	assert.equal(result.valid, false);
 	if (!result.valid) assert.match(result.error, /scaduto/);
 });
@@ -89,7 +109,11 @@ test("alg 'none' e algoritmi non supportati vengono rifiutati", () => {
 	const keys = rsaKeys();
 	const h = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
 	const p = Buffer.from(JSON.stringify({ iss: ISSUER, aud: AUD })).toString("base64url");
-	const result = verifyJwt(`${h}.${p}.`, { keys: [{ alg: "RS256", publicKeyPem: keys.publicKeyPem }], issuer: ISSUER, audience: AUD });
+	const result = verifyJwt(`${h}.${p}.`, {
+		keys: [{ alg: "RS256", publicKeyPem: keys.publicKeyPem }],
+		issuer: ISSUER,
+		audience: AUD,
+	});
 	assert.equal(result.valid, false);
 });
 

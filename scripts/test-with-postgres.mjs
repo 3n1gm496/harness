@@ -39,9 +39,19 @@ async function main() {
 	console.log("[test:pg] avvio Postgres effimero…");
 	docker(["rm", "-f", CONTAINER], { stdio: "ignore" });
 	const up = docker([
-		"run", "-d", "--name", CONTAINER,
-		"-e", "POSTGRES_USER=harness", "-e", "POSTGRES_PASSWORD=harness", "-e", "POSTGRES_DB=harness",
-		"-p", "55433:5432", "postgres:16",
+		"run",
+		"-d",
+		"--name",
+		CONTAINER,
+		"-e",
+		"POSTGRES_USER=harness",
+		"-e",
+		"POSTGRES_PASSWORD=harness",
+		"-e",
+		"POSTGRES_DB=harness",
+		"-p",
+		"55433:5432",
+		"postgres:16",
 	]);
 	if (up.status !== 0) {
 		console.error("[test:pg] impossibile avviare il container:", up.stderr);
@@ -52,7 +62,10 @@ async function main() {
 		let ready = false;
 		for (let i = 0; i < 60; i++) {
 			const r = docker(["exec", CONTAINER, "pg_isready", "-U", "harness"], { stdio: "ignore" });
-			if (r.status === 0) { ready = true; break; }
+			if (r.status === 0) {
+				ready = true;
+				break;
+			}
 			await new Promise((res) => setTimeout(res, 1000));
 		}
 		if (!ready) throw new Error("Postgres non è diventato pronto in tempo");

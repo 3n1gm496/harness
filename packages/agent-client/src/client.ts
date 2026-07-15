@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AgentConfig } from "@harness/enforcement-core";
-import { FleetState, defaultAgentConfigPath } from "@harness/enforcement-core";
+import { defaultAgentConfigPath, FleetState } from "@harness/enforcement-core";
 import type { ConfigBundle } from "@harness/shared";
 import { deepMerge, generateSigningKeyPair } from "@harness/shared";
 

@@ -3,8 +3,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { Kek } from "@harness/shared";
 import { createLogger, loadKekFromEnv } from "@harness/shared";
-import { ControlPlaneService } from "./service.js";
 import { createControlPlaneServer } from "./server.js";
+import { ControlPlaneService } from "./service.js";
 import { Store } from "./store.js";
 
 /**
@@ -198,7 +198,8 @@ async function main(): Promise<void> {
 			if (r.prunedRows > 0) console.log(`  audit[${r.streamId}]: ${r.prunedRows} righe potate (oltre ${auditDays}gg)`);
 			if (r.rotated) console.log(`  audit[${r.streamId}]: file ruotato su archivio (dimensione)`);
 		}
-		if (changelogResult) console.log(`Changelog: ${changelogResult.prunedRows} righe potate (oltre le ultime ${changelogKeep})`);
+		if (changelogResult)
+			console.log(`Changelog: ${changelogResult.prunedRows} righe potate (oltre le ultime ${changelogKeep})`);
 		return;
 	}
 

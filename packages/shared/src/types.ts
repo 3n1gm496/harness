@@ -178,6 +178,4 @@ export interface ToolCallRequest {
 	home?: string;
 }
 
-export type PolicyDecision =
-	| { action: "allow" }
-	| { action: "deny"; reason: string };
+export type PolicyDecision = { action: "allow" } | { action: "deny"; reason: string };

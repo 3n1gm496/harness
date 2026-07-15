@@ -47,7 +47,12 @@ export class MetricsRegistry {
 	}
 	histogram(name: string, help: string, buckets: number[] = DEFAULT_DURATION_BUCKETS): void {
 		if (!this.metrics.has(name)) {
-			this.metrics.set(name, { kind: "histogram", help, buckets: [...buckets].sort((a, b) => a - b), series: new Map() });
+			this.metrics.set(name, {
+				kind: "histogram",
+				help,
+				buckets: [...buckets].sort((a, b) => a - b),
+				series: new Map(),
+			});
 		}
 	}
 
@@ -79,7 +84,12 @@ export class MetricsRegistry {
 		const metric = this.metrics.get(name);
 		if (metric?.kind !== "histogram") return;
 		const key = serializeLabels(labels);
-		const entry = metric.series.get(key) ?? { labels, counts: new Array(metric.buckets.length).fill(0), sum: 0, count: 0 };
+		const entry = metric.series.get(key) ?? {
+			labels,
+			counts: new Array(metric.buckets.length).fill(0),
+			sum: 0,
+			count: 0,
+		};
 		metric.buckets.forEach((bound, i) => {
 			if (value <= bound) entry.counts[i] = (entry.counts[i] as number) + 1;
 		});

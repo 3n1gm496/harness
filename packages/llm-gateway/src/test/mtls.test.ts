@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { X509Certificate, createHash } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { Agent, request as httpsRequest } from "node:https";
@@ -7,7 +7,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { ControlPlaneService, Store, createControlPlaneServer } from "@harness/control-plane";
+import { ControlPlaneService, createControlPlaneServer, Store } from "@harness/control-plane";
 import { createGatewayServer } from "../gateway.js";
 import { cleanupCa, makeCa, makeCert, openSslAvailable } from "./tls-fixtures.js";
 

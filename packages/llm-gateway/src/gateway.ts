@@ -64,7 +64,8 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 	const rateLimit = options.rateLimitPerMinute ?? 60;
 	const ttl = options.introspectionTtlMs ?? 60_000;
 	const upstreamTimeoutMs = options.upstreamTimeoutMs ?? 120_000;
-	const log = options.log ?? ((entry) => options.logger?.info("gateway_request", entry) ?? console.log(JSON.stringify(entry)));
+	const log =
+		options.log ?? ((entry) => options.logger?.info("gateway_request", entry) ?? console.log(JSON.stringify(entry)));
 	const metrics = new MetricsRegistry();
 	metrics.counter("harness_gateway_requests_total", "Richieste al gateway per provider ed esito");
 	metrics.histogram("harness_gateway_upstream_duration_seconds", "Durata delle chiamate upstream in secondi");

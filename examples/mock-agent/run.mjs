@@ -14,8 +14,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ControlPlaneService, Store, createControlPlaneServer } from "@harness/control-plane";
-import { FleetState, attachEnforcement } from "@harness/enforcement-core";
+import { ControlPlaneService, createControlPlaneServer, Store } from "@harness/control-plane";
+import { attachEnforcement, FleetState } from "@harness/enforcement-core";
 
 // --- Adapter neutro per un agente finto (non PI) ---------------------------
 // Implementa il contratto AgentAdapter: il motore registra i propri handler
@@ -26,17 +26,37 @@ class MockAgentAdapter {
 	#shell;
 	#sessionStart;
 	#sessionEnd;
-	onSessionStart(h) { this.#sessionStart = h; }
-	onToolCall(h) { this.#toolCall = h; }
-	onToolResult(h) { this.#toolResult = h; }
-	onShellCommand(h) { this.#shell = h; }
-	onSessionEnd(h) { this.#sessionEnd = h; }
+	onSessionStart(h) {
+		this.#sessionStart = h;
+	}
+	onToolCall(h) {
+		this.#toolCall = h;
+	}
+	onToolResult(h) {
+		this.#toolResult = h;
+	}
+	onShellCommand(h) {
+		this.#shell = h;
+	}
+	onSessionEnd(h) {
+		this.#sessionEnd = h;
+	}
 	// Emettitori usati dall'agente finto.
-	startSession(session) { return this.#sessionStart?.(session); }
-	toolCall(call, session) { return this.#toolCall(call, session); }
-	toolResult(result, session) { return this.#toolResult(result, session); }
-	shell(command, session) { return this.#shell(command, session); }
-	endSession() { return this.#sessionEnd?.(); }
+	startSession(session) {
+		return this.#sessionStart?.(session);
+	}
+	toolCall(call, session) {
+		return this.#toolCall(call, session);
+	}
+	toolResult(result, session) {
+		return this.#toolResult(result, session);
+	}
+	shell(command, session) {
+		return this.#shell(command, session);
+	}
+	endSession() {
+		return this.#sessionEnd?.();
+	}
 }
 
 const line = (s) => process.stdout.write(`${s}\n`);
@@ -101,10 +121,18 @@ async function main() {
 
 	const actions = [
 		["toolCall", { toolName: "read", callId: "1", input: { path: "src/app.ts" } }, "read src/app.ts"],
-		["toolCall", { toolName: "read", callId: "2", input: { path: "/etc/passwd" } }, "read /etc/passwd (fuori workspace)"],
+		[
+			"toolCall",
+			{ toolName: "read", callId: "2", input: { path: "/etc/passwd" } },
+			"read /etc/passwd (fuori workspace)",
+		],
 		["toolCall", { toolName: "bash", callId: "3", input: { command: "rm -rf /" } }, "bash: rm -rf /"],
 		["shell", { command: "ls -la | sort", cwd: session.cwd }, "shell utente: ls -la | sort"],
-		["shell", { command: "node -e 'require(\"child_process\").exec(\"id\")'", cwd: session.cwd }, "shell utente: node -e (eval inline)"],
+		[
+			"shell",
+			{ command: 'node -e \'require("child_process").exec("id")\'', cwd: session.cwd },
+			"shell utente: node -e (eval inline)",
+		],
 	];
 	for (const [kind, payload, label] of actions) {
 		const gate = kind === "toolCall" ? await adapter.toolCall(payload, session) : await adapter.shell(payload, session);

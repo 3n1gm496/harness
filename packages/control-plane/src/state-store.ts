@@ -57,9 +57,10 @@ export interface NormalizedStateStore extends DurableStateStore {
 	appendAudit(streamId: string, entries: unknown[]): Promise<void>;
 	readAudit(streamId: string, limit: number): Promise<unknown[]>;
 	verifyAudit(streamId: string): Promise<ChainVerification>;
-	auditHeads(
-		deviceStreamIds: string[],
-	): Promise<{ admin: { head: string; entries: number }; devices: { deviceId: string; head: string; entries: number }[] }>;
+	auditHeads(deviceStreamIds: string[]): Promise<{
+		admin: { head: string; entries: number };
+		devices: { deviceId: string; head: string; entries: number }[];
+	}>;
 	/**
 	 * Elimina le righe di uno stream di audit più vecchie di `olderThanDays`,
 	 * registrando il confine (seq, hash) in `cp_audit_prune_state` così
@@ -113,9 +114,7 @@ export class ChangelogPrunedError extends Error {
 		readonly sinceId: number,
 		readonly floor: number,
 	) {
-		super(
-			`changelog troncato dal pruning: il cursore ${sinceId} precede la soglia ${floor}; serve un resync completo`,
-		);
+		super(`changelog troncato dal pruning: il cursore ${sinceId} precede la soglia ${floor}; serve un resync completo`);
 		this.name = "ChangelogPrunedError";
 	}
 }
@@ -510,10 +509,7 @@ export class PostgresStateStore implements IncrementalStateStore {
 			enrollTokensDelete: [],
 		};
 		const rows = (
-			await this.query(
-				"SELECT id, entity, entity_key, op FROM cp_changelog WHERE id > $1 ORDER BY id ASC",
-				[sinceId],
-			)
+			await this.query("SELECT id, entity, entity_key, op FROM cp_changelog WHERE id > $1 ORDER BY id ASC", [sinceId])
 		).rows;
 		if (rows.length === 0) return { cursor: sinceId, diff };
 
@@ -525,7 +521,13 @@ export class PostgresStateStore implements IncrementalStateStore {
 			latest.set(`${r.entity} ${r.entity_key}`, { entity: r.entity, key: r.entity_key, op: r.op });
 		}
 
-		const upsertKeys: Record<string, string[]> = { group: [], device: [], admin_token: [], gateway_token: [], enroll_token: [] };
+		const upsertKeys: Record<string, string[]> = {
+			group: [],
+			device: [],
+			admin_token: [],
+			gateway_token: [],
+			enroll_token: [],
+		};
 		let orgChanged = false;
 		let signingChanged = false;
 		for (const { entity, key, op } of latest.values()) {
@@ -562,11 +564,15 @@ export class PostgresStateStore implements IncrementalStateStore {
 			diff.adminTokensUpsert = r.rows.map((row) => [row.token_hash as string, rowToAdmin(row)]);
 		}
 		if (upsertKeys.gateway_token!.length > 0) {
-			const r = await this.query("SELECT * FROM cp_gateway_tokens WHERE token_hash = ANY($1)", [upsertKeys.gateway_token]);
+			const r = await this.query("SELECT * FROM cp_gateway_tokens WHERE token_hash = ANY($1)", [
+				upsertKeys.gateway_token,
+			]);
 			diff.gatewayTokensUpsert = r.rows.map((row) => [row.token_hash as string, rowToGateway(row)]);
 		}
 		if (upsertKeys.enroll_token!.length > 0) {
-			const r = await this.query("SELECT * FROM cp_enroll_tokens WHERE token_hash = ANY($1)", [upsertKeys.enroll_token]);
+			const r = await this.query("SELECT * FROM cp_enroll_tokens WHERE token_hash = ANY($1)", [
+				upsertKeys.enroll_token,
+			]);
 			diff.enrollTokensUpsert = r.rows.map((row) => [row.token_hash as string, rowToEnroll(row)]);
 		}
 		return { cursor, diff };
@@ -649,10 +655,9 @@ export class PostgresStateStore implements IncrementalStateStore {
 
 	async verifyAudit(streamId: string): Promise<ChainVerification> {
 		await this.ensureReady();
-		const pruneState = await this.query(
-			"SELECT pruned_up_to_hash FROM cp_audit_prune_state WHERE stream_id = $1",
-			[streamId],
-		);
+		const pruneState = await this.query("SELECT pruned_up_to_hash FROM cp_audit_prune_state WHERE stream_id = $1", [
+			streamId,
+		]);
 		const genesis = pruneState.rows.length > 0 ? (pruneState.rows[0]!.pruned_up_to_hash as string) : CHAIN_GENESIS;
 		const result = await this.query(
 			"SELECT prev_hash, hash, entry FROM cp_audit_events WHERE stream_id = $1 ORDER BY seq ASC",
@@ -750,9 +755,10 @@ export class PostgresStateStore implements IncrementalStateStore {
 		}
 	}
 
-	async auditHeads(
-		deviceStreamIds: string[],
-	): Promise<{ admin: { head: string; entries: number }; devices: { deviceId: string; head: string; entries: number }[] }> {
+	async auditHeads(deviceStreamIds: string[]): Promise<{
+		admin: { head: string; entries: number };
+		devices: { deviceId: string; head: string; entries: number }[];
+	}> {
 		await this.ensureReady();
 		const headOf = async (streamId: string): Promise<{ head: string; entries: number }> => {
 			const h = await this.query("SELECT seq, head FROM cp_audit_heads WHERE stream_id = $1", [streamId]);
