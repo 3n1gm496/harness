@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { peerCertFingerprint } from "@harness/shared";
 import type { RouteContext, RouteDef } from "./http-router.js";
+import { generateOpenApiDocument } from "./openapi.js";
 import { clientIp } from "./rate-limit.js";
 import { ServiceError } from "./services/context.js";
 
@@ -296,6 +297,7 @@ export function buildRoutes(): RouteDef[] {
 
 		// ---- Salute e UI statica --------------------------------------------
 		{ method: "GET", path: "/healthz", auth: "none", handler: () => ({ ok: true }) },
+		{ method: "GET", path: "/api/openapi.json", auth: "none", handler: () => generateOpenApiDocument() },
 		{ method: "GET", path: "/", auth: "none", raw: true, handler: serveIndexHtml },
 		{ method: "GET", path: "/index.html", auth: "none", raw: true, handler: serveIndexHtml },
 	];
