@@ -8,6 +8,15 @@ export type Labels = Record<string, string>;
 /** Bucket di default per le durate delle richieste HTTP, in secondi. */
 export const DEFAULT_DURATION_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
 
+/**
+ * Tetto di combinazioni di label distinte per metrica: un valore di label non
+ * controllato (es. un metodo HTTP arbitrario spedito da un client) farebbe
+ * crescere la mappa senza limite (cardinality explosion / memoria illimitata).
+ * Oltre il tetto, le NUOVE serie vengono ignorate (quelle esistenti continuano
+ * ad aggiornarsi).
+ */
+const MAX_SERIES_PER_METRIC = 500;
+
 function serializeLabels(labels: Labels): string {
 	const keys = Object.keys(labels).sort();
 	if (keys.length === 0) return "";
@@ -60,6 +69,7 @@ export class MetricsRegistry {
 		const metric = this.metrics.get(name);
 		if (metric?.kind !== "counter") return;
 		const key = serializeLabels(labels);
+		if (!metric.values.has(key) && metric.values.size >= MAX_SERIES_PER_METRIC) return;
 		const entry = metric.values.get(key) ?? { labels, value: 0 };
 		entry.value += by;
 		metric.values.set(key, entry);
@@ -68,13 +78,16 @@ export class MetricsRegistry {
 	setGauge(name: string, value: number, labels: Labels = {}): void {
 		const metric = this.metrics.get(name);
 		if (metric?.kind !== "gauge") return;
-		metric.values.set(serializeLabels(labels), { labels, value });
+		const key = serializeLabels(labels);
+		if (!metric.values.has(key) && metric.values.size >= MAX_SERIES_PER_METRIC) return;
+		metric.values.set(key, { labels, value });
 	}
 
 	addGauge(name: string, delta: number, labels: Labels = {}): void {
 		const metric = this.metrics.get(name);
 		if (metric?.kind !== "gauge") return;
 		const key = serializeLabels(labels);
+		if (!metric.values.has(key) && metric.values.size >= MAX_SERIES_PER_METRIC) return;
 		const entry = metric.values.get(key) ?? { labels, value: 0 };
 		entry.value += delta;
 		metric.values.set(key, entry);
@@ -84,6 +97,7 @@ export class MetricsRegistry {
 		const metric = this.metrics.get(name);
 		if (metric?.kind !== "histogram") return;
 		const key = serializeLabels(labels);
+		if (!metric.series.has(key) && metric.series.size >= MAX_SERIES_PER_METRIC) return;
 		const entry = metric.series.get(key) ?? {
 			labels,
 			counts: new Array(metric.buckets.length).fill(0),

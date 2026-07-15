@@ -77,6 +77,15 @@ jobs:
         run: docker build -f deploy/Dockerfile.backend -t harness-backend:ci .
       - name: Build immagine Docker del client gestito
         run: docker build -f deploy/Dockerfile.agent -t harness-agent:ci .
+      - name: Coerenza pin PI ↔ shim dei tipi
+        # Il pin di @earendil-works/pi-coding-agent (Dockerfile.agent) e lo shim
+        # dei tipi (pi-types.ts) devono restare allineati sulla stessa minor: un
+        # bump manuale della versione senza aggiornare lo shim passerebbe altrimenti
+        # inosservato fino a una rottura a runtime.
+        run: |
+          ver=$(grep -oP 'PI_CODING_AGENT_VERSION=\K[0-9]+\.[0-9]+' deploy/Dockerfile.agent)
+          grep -q "v${ver}\.x" packages/fleet-extension/src/pi-types.ts || {
+            echo "Drift: Dockerfile.agent pinna PI ${ver}.x ma pi-types.ts non lo riferisce"; exit 1; }
       - name: Audit dipendenze di produzione (gate reale su severità alta/critica)
         # Gate vero, non informativo: una CVE alta/critica in una dipendenza di
         # produzione rompe la build (le dipendenze runtime sono minime — solo pg).

@@ -78,3 +78,19 @@ test("addGauge accumula e può decrementare (in-flight)", () => {
 	m.addGauge("g", -1);
 	assert.match(m.render(), /g 1/);
 });
+
+test("MetricsRegistry: cap di cardinalità delle label (no crescita illimitata)", () => {
+	const m = new MetricsRegistry();
+	m.counter("test_total", "test");
+	// Genera molte combinazioni di label distinte (come un metodo HTTP arbitrario).
+	for (let i = 0; i < 1000; i += 1) m.incCounter("test_total", { k: `v${i}` });
+	const series = m
+		.render()
+		.split("\n")
+		.filter((l) => l.startsWith("test_total{")).length;
+	assert.ok(series <= 500, `atteso <= 500 serie per il cap di cardinalità, trovate ${series}`);
+	// Le serie già esistenti continuano ad aggiornarsi anche a cap raggiunto.
+	m.incCounter("test_total", { k: "v0" });
+	m.incCounter("test_total", { k: "v0" });
+	assert.match(m.render(), /test_total\{k="v0"\} 3/);
+});

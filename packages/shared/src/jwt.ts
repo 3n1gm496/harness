@@ -87,7 +87,10 @@ export function verifyJwt(token: string, options: JwtVerifyOptions): JwtResult {
 	if (claims.iss !== options.issuer) return { valid: false, error: "issuer non atteso" };
 	const audiences = Array.isArray(claims.aud) ? claims.aud : claims.aud ? [claims.aud] : [];
 	if (!audiences.includes(options.audience)) return { valid: false, error: "audience non atteso" };
-	if (typeof claims.exp === "number" && claims.exp * 1000 + skewMs < nowMs) {
+	// `exp` è obbligatorio: un token OIDC senza scadenza non deve essere accettato
+	// come credenziale amministrativa (varrebbe per sempre).
+	if (typeof claims.exp !== "number") return { valid: false, error: "claim exp mancante" };
+	if (claims.exp * 1000 + skewMs < nowMs) {
 		return { valid: false, error: "token scaduto" };
 	}
 	if (typeof claims.nbf === "number" && claims.nbf * 1000 - skewMs > nowMs) {

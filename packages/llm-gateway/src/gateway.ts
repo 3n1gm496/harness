@@ -86,10 +86,20 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 		// non deve riusare un esito positivo precedente.
 		const cacheKey = `${deviceToken}|${presentedFingerprint ?? ""}`;
 		const cached = introspectionCache.get(cacheKey);
-		if (cached && cached.expiresAt > Date.now()) return cached;
-		// Cap difensivo: token invalidi spammati non devono far crescere la
-		// cache senza limite.
-		if (introspectionCache.size > 5_000) introspectionCache.clear();
+		if (cached && cached.expiresAt > Date.now()) {
+			// LRU: rinfresca la posizione (riposiziona in coda).
+			introspectionCache.delete(cacheKey);
+			introspectionCache.set(cacheKey, cached);
+			return cached;
+		}
+		// Cap difensivo con eviction LRU: token invalidi spammati non fanno
+		// crescere la cache senza limite, ma un clear() totale azzererebbe anche
+		// le voci dei device legittimi provocando un thundering herd di
+		// re-introspezioni verso il control plane — si elimina solo la più vecchia.
+		if (introspectionCache.size >= 5_000) {
+			const oldest = introspectionCache.keys().next().value;
+			if (oldest !== undefined) introspectionCache.delete(oldest);
+		}
 		const response = await fetch(`${options.controlPlaneUrl}/api/introspect`, {
 			method: "POST",
 			headers: {

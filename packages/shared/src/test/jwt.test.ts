@@ -105,6 +105,18 @@ test("token scaduto viene rifiutato", () => {
 	if (!result.valid) assert.match(result.error, /scaduto/);
 });
 
+test("un JWT senza claim exp viene rifiutato (niente credenziali eterne)", () => {
+	const keys = rsaKeys();
+	const token = makeJwt(keys.privateKeyPem, "RS256", { iss: ISSUER, aud: AUD, harness_role: "admin" });
+	const result = verifyJwt(token, {
+		keys: [{ alg: "RS256", publicKeyPem: keys.publicKeyPem }],
+		issuer: ISSUER,
+		audience: AUD,
+	});
+	assert.equal(result.valid, false);
+	if (!result.valid) assert.match(result.error, /exp/);
+});
+
 test("alg 'none' e algoritmi non supportati vengono rifiutati", () => {
 	const keys = rsaKeys();
 	const h = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");

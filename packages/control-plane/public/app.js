@@ -396,14 +396,14 @@ async function refresh() {
 		.join("");
 
 	$("enrollGroup").innerHTML = overview.groups
-		.map((g) => `<option value="${g.groupId}">${esc(g.name)}</option>`)
+		.map((g) => `<option value="${escAttr(g.groupId)}">${esc(g.name)}</option>`)
 		.join("");
 	// Elenco per la select di audit: capped lato server (200) — su flotte
 	// molto grandi va sostituito con una ricerca, non un'unica select.
 	const auditDevices = (await api("GET", "/api/admin/devices?limit=200")).devices;
 	$("auditDevice").innerHTML =
 		'<option value="">— audit amministrativo —</option>' +
-		auditDevices.map((d) => `<option value="${d.deviceId}">${esc(d.name)}</option>`).join("");
+		auditDevices.map((d) => `<option value="${escAttr(d.deviceId)}">${esc(d.name)}</option>`).join("");
 
 	for (const id of ["dashboardPanel", "devicesPanel", "groupsPanel", "enrollPanel", "auditPanel"]) $(id).hidden = false;
 	$("loginPanel").hidden = true;

@@ -80,8 +80,13 @@ considerati coperti:
 
 ### Gateway LLM
 - **Garantisce**: le API key dei provider restano server-side; autenticazione
-  del device con introspezione **e** binding mTLS; rate limit; allowlist degli
-  endpoint di inferenza.
+  del device con introspezione **e** binding mTLS; rate limit per device (a
+  finestra scorrevole); allowlist degli endpoint di inferenza.
+- **Nota sul rate limit multi-istanza**: il conteggio è condiviso tra le istanze
+  del gateway solo se è configurato `DATABASE_URL` (stessa `cp_rate_buckets` del
+  control plane). Senza, il limite è **per-istanza**: con N istanze la soglia
+  effettiva è N× quella dichiarata. Un deploy scalato orizzontalmente deve
+  impostare `DATABASE_URL` (o accettare esplicitamente il limite per-istanza).
 - **Non garantisce**: protezione se il device token **e** la chiave privata del
   certificato sono entrambi compromessi.
 

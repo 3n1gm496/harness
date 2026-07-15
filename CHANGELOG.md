@@ -7,6 +7,37 @@ Versioning pubblico — la versione `0.1.0` copre l'intero sviluppo fino a oggi.
 
 ## [Unreleased]
 
+### Security
+
+- **Chiusi due bypass del motore di policy bash** (config di default):
+  riconoscimento dei flag "attaccati" (`node --eval=…`, `python3 -c'…'`, cluster
+  di short flag) che sfuggivano a un match esatto — un percorso di esecuzione
+  arbitraria; decodifica ANSI-C (`$'\x62…'`) nel tokenizer; wrapper mancanti
+  (`command`/`time`/`sudo`/…). Corpus di test avversariale dedicato.
+- **Redazione dei segreti `KEY=VALUE` non quotati** (`cat .env`/`printenv`), che
+  nessun pattern catturava prima.
+- **Sessioni UI revocabili**: revocare l'admin token che ha aperto una sessione
+  la invalida subito (prima restava valida fino a 12h). Sessioni ora persistite
+  (Postgres), durevoli e condivise multi-istanza; CSRF sul logout; CSP con
+  `frame-ancestors 'none'` + `X-Frame-Options: DENY`; `X-Forwarded-Proto` fidato
+  solo dietro `HARNESS_TRUST_PROXY`; confronto CSRF a tempo costante.
+- **Fail-closed** garantito nel motore di enforcement anche su eccezione
+  inattesa; validazione della chiave di firma del device all'enrollment;
+  `verifyJwt` richiede `exp`; nessun leak del messaggio d'eccezione interno
+  nelle risposte HTTP; guard ReDoS (input limitato) sulle regex admin;
+  enforcement dei path esteso a chiavi annidate/array.
+
+### Added
+
+- Rete di sicurezza a livello processo (`uncaughtException`/`unhandledRejection`)
+  nei CLI di control plane e gateway.
+- Rate limit a **finestra scorrevole** (niente burst 2× al confine) ovunque, con
+  eviction LRU sull'overflow in memoria; rate limit del gateway condivisibile
+  multi-istanza via `DATABASE_URL`.
+- CI resa un gate reale: audit supply-chain bloccanti, `mock-agent` con `assert`,
+  load-test eseguito, coverage per-pacchetto, coerenza pin PI ↔ shim dei tipi.
+- Deploy: healthcheck e limiti di risorse per tutti i servizi del compose.
+
 ### Added
 
 - Motore di enforcement **agent-agnostic** (`@harness/enforcement-core`) con

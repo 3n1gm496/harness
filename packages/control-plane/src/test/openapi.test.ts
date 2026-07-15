@@ -21,6 +21,12 @@ test("l'OpenAPI generato è JSON valido ed elenca ogni route non-raw della tabel
 		assert.equal(typeof operation.summary, "string");
 		assert.ok(operation.summary.length > 0);
 		assert.ok(operation.responses["200"], `manca la risposta 200 per ${route.method} ${openApiPath}`);
+		// Le route autenticate documentano anche gli esiti di errore, così il
+		// contratto pubblicato non promette solo il caso felice.
+		if (route.auth !== "none") {
+			assert.ok(operation.responses["401"], `manca la risposta 401 per ${route.method} ${openApiPath}`);
+			assert.ok(operation.responses["403"], `manca la risposta 403 per ${route.method} ${openApiPath}`);
+		}
 
 		// Ogni parametro `:id` del path dichiarativo deve comparire come parametro path richiesto.
 		const paramNames = [...route.path.matchAll(/:([A-Za-z_]+)/g)].map((m) => m[1]);
