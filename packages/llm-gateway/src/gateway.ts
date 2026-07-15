@@ -25,6 +25,12 @@ export interface GatewayOptions {
 	rateLimitPerMinute?: number;
 	/** TTL della cache di introspezione in millisecondi (default 60s). */
 	introspectionTtlMs?: number;
+	/**
+	 * Timeout della chiamata upstream in millisecondi (default 120s): senza,
+	 * una connessione upstream appesa (provider irraggiungibile, rete che non
+	 * chiude) resta appesa per sempre, tenendo occupata la richiesta client.
+	 */
+	upstreamTimeoutMs?: number;
 	log?: (entry: Record<string, unknown>) => void;
 	/** Logger strutturato (in aggiunta o al posto di `log`). */
 	logger?: Logger;
@@ -48,11 +54,16 @@ const ALLOWED_UPSTREAM_PATHS: Record<"anthropic" | "openai", RegExp[]> = {
 	openai: [/^\/v1\/chat\/completions$/, /^\/v1\/completions$/, /^\/v1\/embeddings$/, /^\/v1\/responses$/],
 };
 
+const MAX_BODY_BYTES = 32 * 1_048_576;
+/** Tetto di byte accumulati (dal solo inizio del body) per il best-effort di estrazione del "model" nel log. */
+const MODEL_PEEK_BYTES = 65_536;
+
 export function createGatewayServer(options: GatewayOptions): Server | HttpsServer {
 	const introspectionCache = new Map<string, IntrospectionEntry>();
 	const rateBuckets = new Map<string, { windowStart: number; count: number }>();
 	const rateLimit = options.rateLimitPerMinute ?? 60;
 	const ttl = options.introspectionTtlMs ?? 60_000;
+	const upstreamTimeoutMs = options.upstreamTimeoutMs ?? 120_000;
 	const log = options.log ?? ((entry) => options.logger?.info("gateway_request", entry) ?? console.log(JSON.stringify(entry)));
 	const metrics = new MetricsRegistry();
 	metrics.counter("harness_gateway_requests_total", "Richieste al gateway per provider ed esito");
@@ -176,7 +187,6 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 			return;
 		}
 
-		const body = await readBody(req);
 		const started = Date.now();
 		const headers: Record<string, string> = {
 			"content-type": headerValue(req, "content-type") ?? "application/json",
@@ -192,11 +202,45 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 			headers.authorization = `Bearer ${provider.apiKey}`;
 		}
 
-		const upstream = await fetch(`${provider.baseUrl}${upstreamPath}${url.search}`, {
-			method: req.method ?? "POST",
-			headers,
-			body: body.length > 0 ? body : null,
-		});
+		// Il body viene inoltrato in streaming (mai bufferizzato per intero in
+		// memoria): il cap di dimensione resta applicato via un contatore sullo
+		// stream, e i primi byte vengono anche accumulati (fino a un tetto
+		// ridotto) solo per estrarre il nome del modello nel log — un
+		// best-effort che non richiede di attendere l'intero body.
+		const peek: Buffer[] = [];
+		let peekBytes = 0;
+		let totalBytes = 0;
+		async function* relayBody(): AsyncGenerator<Buffer> {
+			for await (const chunk of req) {
+				const buffer = chunk as Buffer;
+				totalBytes += buffer.length;
+				if (totalBytes > MAX_BODY_BYTES) throw new Error("body troppo grande");
+				if (peekBytes < MODEL_PEEK_BYTES) {
+					peek.push(buffer);
+					peekBytes += buffer.length;
+				}
+				yield buffer;
+			}
+		}
+
+		let upstream: Response;
+		try {
+			upstream = await fetch(`${provider.baseUrl}${upstreamPath}${url.search}`, {
+				method: req.method ?? "POST",
+				headers,
+				body: hasRequestBody(req) ? relayBody() : null,
+				// Node (undici) richiede duplex:"half" quando il body è uno stream.
+				duplex: "half",
+				signal: AbortSignal.timeout(upstreamTimeoutMs),
+			} as RequestInit & { duplex: "half" });
+		} catch (error) {
+			if (error instanceof Error && error.name === "TimeoutError") {
+				metrics.incCounter("harness_gateway_requests_total", { provider: providerName, status: "504" });
+				sendJson(res, 504, { error: `upstream non ha risposto entro ${upstreamTimeoutMs}ms` });
+				return;
+			}
+			throw error;
+		}
 
 		const durationMs = Date.now() - started;
 		metrics.incCounter("harness_gateway_requests_total", { provider: providerName, status: String(upstream.status) });
@@ -206,7 +250,7 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 			deviceId: introspection.deviceId,
 			provider: providerName,
 			path: upstreamPath,
-			model: extractModel(body),
+			model: extractModel(Buffer.concat(peek)),
 			status: upstream.status,
 			durationMs,
 		});
@@ -234,25 +278,23 @@ function headerValue(req: IncomingMessage, name: string): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
-async function readBody(req: IncomingMessage): Promise<Buffer> {
-	const chunks: Buffer[] = [];
-	let total = 0;
-	for await (const chunk of req) {
-		const buffer = chunk as Buffer;
-		total += buffer.length;
-		if (total > 32 * 1_048_576) throw new Error("body troppo grande");
-		chunks.push(buffer);
-	}
-	return Buffer.concat(chunks);
+/** true se la richiesta dichiara (o può portare) un body da inoltrare. */
+function hasRequestBody(req: IncomingMessage): boolean {
+	const method = req.method ?? "GET";
+	if (method === "GET" || method === "HEAD") return false;
+	const contentLength = req.headers["content-length"];
+	if (contentLength !== undefined) return Number(contentLength) > 0;
+	return req.headers["transfer-encoding"] !== undefined;
 }
 
-function extractModel(body: Buffer): string | undefined {
-	try {
-		const parsed = JSON.parse(body.toString("utf8")) as { model?: unknown };
-		return typeof parsed.model === "string" ? parsed.model : undefined;
-	} catch {
-		return undefined;
-	}
+// Regex invece di JSON.parse: il prefisso accumulato per il peek può essere un
+// JSON troncato (il body intero supera MODEL_PEEK_BYTES), quindi non è detto
+// che sia parsabile — ma il campo "model" compare quasi sempre nei primi byte.
+const MODEL_FIELD_PATTERN = /"model"\s*:\s*"([^"\\]{1,200})"/;
+
+function extractModel(peekedPrefix: Buffer): string | undefined {
+	const text = peekedPrefix.toString("utf8", 0, Math.min(peekedPrefix.length, MODEL_PEEK_BYTES));
+	return MODEL_FIELD_PATTERN.exec(text)?.[1];
 }
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {

@@ -165,6 +165,8 @@ node packages/llm-gateway/dist/cli.js
 
 I client chiamano `http://gateway:8788/anthropic/v1/messages` autenticandosi con il **device token**; il gateway lo verifica via introspezione sul control plane (revoca e kill switch si propagano entro il TTL di cache, 60 s), applica il rate limit per device e inoltra la richiesta con la chiave provider iniettata.
 
+Il body della richiesta viene inoltrato **in streaming** (mai bufferizzato per intero in memoria): il cap di dimensione (32 MiB) resta applicato via un contatore sullo stream, non su un buffer completo. La chiamata upstream ha un timeout configurabile (`UPSTREAM_TIMEOUT_MS`, default 120s): senza, una connessione upstream appesa (provider irraggiungibile, rete che non chiude) resterebbe appesa per sempre — il gateway risponde invece con `504` entro la soglia.
+
 Per instradare PI attraverso il gateway, configura nei `piSettings` del gruppo un provider custom con `baseUrl` puntata al gateway (vedi `docs/custom-provider.md` di PI).
 
 ## 4. Client gestito

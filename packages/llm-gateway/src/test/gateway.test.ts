@@ -197,6 +197,91 @@ test("le risposte in streaming (SSE) vengono inoltrate chunk per chunk", async (
 	}
 });
 
+test("il body viene inoltrato in streaming: un payload grande arriva integro e il model resta nel log", async () => {
+	let receivedLength = 0;
+	const original = upstream.listeners("request");
+	upstream.removeAllListeners("request");
+	upstream.on("request", (req, res) => {
+		const chunks: Buffer[] = [];
+		req.on("data", (c: Buffer) => chunks.push(c));
+		req.on("end", () => {
+			receivedLength = Buffer.concat(chunks).length;
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end("{}");
+		});
+	});
+
+	const logged: Record<string, unknown>[] = [];
+	const identity = service.authenticateAdmin(adminToken);
+	const gwToken = service.createGatewayToken(identity, "gw-stream-body");
+	const streamBodyGateway = createGatewayServer({
+		controlPlaneUrl: `http://127.0.0.1:${(controlPlane.address() as AddressInfo).port}`,
+		gatewayToken: gwToken,
+		providers: { anthropic: { baseUrl: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, apiKey: "k" } },
+		log: (entry) => logged.push(entry),
+	});
+	await new Promise<void>((resolve) => streamBodyGateway.listen(0, resolve));
+	const gwUrl = `http://127.0.0.1:${(streamBodyGateway.address() as AddressInfo).port}`;
+	try {
+		// Filler ben oltre il tetto di peek (64 KiB) per il model: il body
+		// intero non viene mai bufferizzato in memoria dal gateway, solo
+		// inoltrato in streaming, ma il campo "model" (nei primi byte) resta
+		// comunque nel log.
+		const filler = "x".repeat(200_000);
+		const payload = JSON.stringify({ model: "claude-big", messages: [], filler });
+		const response = await fetch(`${gwUrl}/anthropic/v1/messages`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${deviceToken}`, "content-type": "application/json" },
+			body: payload,
+		});
+		assert.equal(response.status, 200);
+		assert.equal(receivedLength, Buffer.byteLength(payload), "l'upstream deve ricevere il body per intero");
+		assert.equal(logged.at(-1)?.model, "claude-big");
+	} finally {
+		await new Promise((resolve) => streamBodyGateway.close(resolve));
+		upstream.removeAllListeners("request");
+		for (const listener of original) upstream.on("request", listener as () => void);
+	}
+});
+
+test("timeout upstream: una connessione appesa risponde 504 entro la soglia configurata", async () => {
+	// Upstream che accetta la connessione ma non risponde mai (rete/provider
+	// appeso): senza timeout la richiesta resterebbe appesa per sempre.
+	const hangingSockets: import("node:net").Socket[] = [];
+	const hanging = createServer((_req, _res) => {
+		/* non risponde mai */
+	});
+	hanging.on("connection", (socket) => hangingSockets.push(socket));
+	await new Promise<void>((resolve) => hanging.listen(0, resolve));
+	const hangingUrl = `http://127.0.0.1:${(hanging.address() as AddressInfo).port}`;
+
+	const identity = service.authenticateAdmin(adminToken);
+	const gwToken = service.createGatewayToken(identity, "gw-timeout");
+	const timeoutGateway = createGatewayServer({
+		controlPlaneUrl: `http://127.0.0.1:${(controlPlane.address() as AddressInfo).port}`,
+		gatewayToken: gwToken,
+		providers: { anthropic: { baseUrl: hangingUrl, apiKey: "k" } },
+		upstreamTimeoutMs: 150,
+		log: () => {},
+	});
+	await new Promise<void>((resolve) => timeoutGateway.listen(0, resolve));
+	const gwUrl = `http://127.0.0.1:${(timeoutGateway.address() as AddressInfo).port}`;
+	try {
+		const started = Date.now();
+		const response = await fetch(`${gwUrl}/anthropic/v1/messages`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${deviceToken}`, "content-type": "application/json" },
+			body: "{}",
+		});
+		assert.equal(response.status, 504);
+		assert.ok(Date.now() - started < 5_000, "il timeout deve scattare in fretta, non attendere un default lungo");
+	} finally {
+		await new Promise((resolve) => timeoutGateway.close(resolve));
+		for (const socket of hangingSockets) socket.destroy();
+		await new Promise((resolve) => hanging.close(resolve));
+	}
+});
+
 test("rate limit per device → 429", async () => {
 	let got429 = false;
 	for (let i = 0; i < 10; i += 1) {

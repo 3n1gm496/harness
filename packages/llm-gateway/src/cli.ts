@@ -14,6 +14,7 @@ import { createGatewayServer, type GatewayOptions } from "./gateway.js";
  *   OPENAI_API_KEY           chiave provider OpenAI (opzionale)
  *   OPENAI_BASE_URL          default https://api.openai.com
  *   RATE_LIMIT_PER_MINUTE    richieste/minuto per device (default 60)
+ *   UPSTREAM_TIMEOUT_MS      timeout della chiamata upstream in ms (default 120000)
  */
 function main(): void {
 	const controlPlaneUrl = process.env.CONTROL_PLANE_URL;
@@ -45,6 +46,9 @@ function main(): void {
 	const options: GatewayOptions = { controlPlaneUrl, gatewayToken, providers, logger };
 	if (process.env.RATE_LIMIT_PER_MINUTE) {
 		options.rateLimitPerMinute = Number(process.env.RATE_LIMIT_PER_MINUTE);
+	}
+	if (process.env.UPSTREAM_TIMEOUT_MS) {
+		options.upstreamTimeoutMs = Number(process.env.UPSTREAM_TIMEOUT_MS);
 	}
 	if (process.env.HARNESS_TLS_CERT_FILE && process.env.HARNESS_TLS_KEY_FILE) {
 		options.tls = {
