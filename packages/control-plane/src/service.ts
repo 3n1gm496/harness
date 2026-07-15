@@ -115,6 +115,9 @@ export class ControlPlaneService {
 	effectivePolicy(identity: AdminIdentity, deviceId: string): PolicyDocument {
 		return this.devices.effectivePolicy(identity, deviceId);
 	}
+	deleteDevice(identity: AdminIdentity, deviceId: string): void {
+		this.devices.deleteDevice(identity, deviceId);
+	}
 
 	// ---- Gruppi (GroupService) ----------------------------------------------
 

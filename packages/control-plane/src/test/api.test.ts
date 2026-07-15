@@ -657,6 +657,101 @@ test("P2: scadenza server-side del device token, requireDeviceCert e rate-limit 
 	}
 });
 
+test("eliminazione device: richiede il ruolo admin, rimuove lo stato ma l'audit resta consultabile", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-delete-device-"));
+	try {
+		const store = new Store(dir);
+		const svc = new ControlPlaneService(store);
+		const admin = svc.bootstrapAdminToken("root");
+		const id = svc.authenticateAdmin(admin);
+		const groupId = svc.overview(id).groups[0]?.groupId as string;
+
+		const enr = svc.createEnrollToken(id, groupId, 10);
+		const dev = svc.enrollDevice(enr, "da-eliminare");
+		const device = store.state.devices[dev.deviceId];
+		if (!device) throw new Error("device non trovato nello store");
+		svc.ingestAudit(device, [
+			{ eventId: "e1", deviceId: dev.deviceId, timestamp: new Date().toISOString(), type: "agent_start", data: {} },
+		]);
+
+		// operator non può eliminare device: serve il ruolo admin.
+		const operatorToken = svc.createAdminToken(id, "op", "operator", 1);
+		const operatorId = svc.authenticateAdmin(operatorToken);
+		assert.throws(() => svc.deleteDevice(operatorId, dev.deviceId), /riservata al ruolo/);
+
+		svc.deleteDevice(id, dev.deviceId);
+		assert.equal(store.state.devices[dev.deviceId], undefined);
+		assert.throws(() => svc.deleteDevice(id, dev.deviceId), /non trovato/);
+		assert.throws(() => svc.effectivePolicy(id, dev.deviceId), /non trovato/);
+
+		// L'audit del device resta consultabile per stream id, indipendentemente
+		// dal ciclo di vita del device (retention separata, vedi Store.pruneAudit).
+		const events = await svc.readDeviceAudit(id, dev.deviceId, 10);
+		assert.equal(events.length, 1);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("retention: i token amministrativi scaduti vengono potati, quelli validi restano", () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-prune-admin-tokens-"));
+	try {
+		const store = new Store(dir);
+		const svc = new ControlPlaneService(store);
+		const admin = svc.bootstrapAdminToken("root");
+		const id = svc.authenticateAdmin(admin);
+
+		const validToken = svc.createAdminToken(id, "valido", "viewer", 30);
+		const expiringToken = svc.createAdminToken(id, "scaduto", "viewer", 30);
+		// Retrodata la scadenza direttamente nello stato, come farebbe il tempo.
+		for (const record of Object.values(store.state.adminTokens)) {
+			if (record.name === "scaduto") record.expiresAt = new Date(Date.now() - 1000).toISOString();
+		}
+
+		const pruned = svc.auth.pruneExpiredAdminTokens();
+		assert.equal(pruned, 1);
+		assert.equal(svc.authenticateAdmin(validToken).name, "valido");
+		assert.throws(() => svc.authenticateAdmin(expiringToken), /non valido/);
+		// Il token di bootstrap (senza scadenza) non viene mai toccato dal pruning.
+		assert.equal(svc.authenticateAdmin(admin).role, "admin");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("retention: pruneAudit in file-mode non cancella righe (ruota su archivio per dimensione)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-prune-file-audit-"));
+	try {
+		const store = new Store(dir);
+		const svc = new ControlPlaneService(store);
+		const admin = svc.bootstrapAdminToken("root");
+		const id = svc.authenticateAdmin(admin);
+		const groupId = svc.overview(id).groups[0]?.groupId as string;
+		const enr = svc.createEnrollToken(id, groupId, 10);
+		const dev = svc.enrollDevice(enr, "d");
+		const device = store.state.devices[dev.deviceId];
+		if (!device) throw new Error("device non trovato nello store");
+		svc.ingestAudit(device, [
+			{ eventId: "e1", deviceId: dev.deviceId, timestamp: new Date().toISOString(), type: "agent_start", data: {} },
+		]);
+
+		// Soglia di rotazione altissima: nessuna riga viene toccata né archiviata.
+		const untouched = await store.pruneAudit(365, 10 * 1024 * 1024);
+		assert.ok(untouched.every((r) => r.prunedRows === 0 && r.rotated === false));
+		const events = await store.readDeviceAudit(dev.deviceId, 10);
+		assert.equal(events.length, 1);
+
+		// Soglia di rotazione minima: il file viene ruotato su un archivio, ma
+		// nessuna riga viene eliminata (tamper-evidence intatta).
+		const rotated = await store.pruneAudit(365, 1);
+		const deviceResult = rotated.find((r) => r.streamId === dev.deviceId);
+		assert.equal(deviceResult?.prunedRows, 0);
+		assert.equal(deviceResult?.rotated, true);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("la UI statica viene servita con la dashboard, la paginazione e l'editor policy", async () => {
 	const response = await fetch(`${baseUrl}/`);
 	assert.equal(response.status, 200);

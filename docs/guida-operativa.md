@@ -133,6 +133,22 @@ Il default è il file store locale (zero dipendenze, singola istanza). Per alta 
 DATABASE_URL=postgresql://user:pass@db:5432/harness node packages/control-plane/dist/cli.js serve
 ```
 
+### Retention e ciclo di vita dei dati
+
+Senza retention lo storage cresce indefinitamente: audit e changelog non hanno mai avuto un limite, i token amministrativi scaduti restavano per sempre, e non c'era alcun modo di eliminare un device dismesso. Tre meccanismi distinti coprono questi casi:
+
+- **Eliminazione device**: `DELETE /api/admin/devices/:id` (UI: bottone "elimina", richiede ruolo admin) rimuove il device dallo stato. Il suo log di audit **non** viene toccato: resta consultabile per `deviceId` e segue la retention generale dell'audit, indipendentemente dal ciclo di vita del device.
+- **Token amministrativi scaduti**: `harness-cp serve` li pota automaticamente all'avvio e ogni 6 ore (`AuthService.pruneExpiredAdminTokens`); non serve alcuna azione manuale.
+- **Audit e changelog**: `harness-cp prune --audit-days N --changelog-keep M` è un'azione esplicita, pensata per essere schedulata via cron esterno (non gira automaticamente al boot, a differenza dei token admin):
+  - con backend **Postgres**, elimina davvero le righe di audit più vecchie di `N` giorni per ciascuno stream (device + admin) e registra il confine come nuovo genesis del segmento residuo: `verify-audit`/`GET /api/admin/audit/verify` continuano a verificare la catena rimasta, senza riscrivere né ricalcolare nulla — la tamper-evidence resta intatta sul segmento conservato. Il changelog di sincronizzazione incrementale viene potato mantenendo solo le ultime `M` righe; un'istanza rimasta disconnessa più a lungo del previsto lo rileva (cursore precedente alla soglia di pruning) e fa un resync completo dello snapshot invece di convergere silenziosamente su un delta incompleto;
+  - in **file-mode** (nessun `DATABASE_URL`) non cancella mai righe (romperebbe la tamper-evidence senza un anchor esterno): quando un file JSONL di audit supera la soglia di dimensione lo ruota su un file `.archive` a fianco, così lo storage non cresce indefinitamente ma nessuna riga sparisce silenziosamente. `--changelog-keep` non si applica (il changelog è un concetto solo-Postgres).
+
+```bash
+# Esempio: crontab dell'host o del control plane, una volta al giorno.
+0 3 * * * DATABASE_URL=postgresql://user:pass@db:5432/harness \
+  node packages/control-plane/dist/cli.js prune --audit-days 365 --changelog-keep 100000
+```
+
 ## 3. Gateway LLM
 
 Le API key dei provider stanno **solo** sul gateway, mai sui client.
@@ -199,6 +215,7 @@ I container girano come utente non-root: l'immagine backend crea `/data` di prop
 | Device revocato | Al primo sync dopo la revoca (risposta 401/403) il client scarta subito bundle e cache e degrada a fail-closed, senza attendere la scadenza |
 | Incidente diffuso | Kill switch **globale** dalla testata della UI |
 | Device compromesso/dismesso | UI → device → **revoca**: il token smette di funzionare su config, audit e gateway |
+| Device dismesso definitivamente | UI → device → **elimina** (o `DELETE /api/admin/devices/:id`): rimuove il device dallo stato; il suo audit resta consultabile e segue la retention generale (`harness-cp prune`) |
 | Rotazione chiave di firma | Procedura a tre fasi senza re-enrollment: `POST /signing-keys` (add) → attendi un sync → `POST /signing-keys/:id/promote` → `DELETE /signing-keys/:oldId` (retire) |
 | Custodia della KEK | `HARNESS_SIGNING_KEK` va conservata in un secret manager/KMS: senza non si aprono le chiavi di firma. Rotazione: `HARNESS_SIGNING_KEK_NEW=<nuova> harness-cp rekey --data-dir ...` (o `--new-kek-file <path>`), poi promuovi la nuova KEK a `HARNESS_SIGNING_KEK` e riavvia — nessun re-seal manuale |
 | Sicurezza elevata per un team | Gruppo con `policyOverride` restrittiva + `requireDeviceCert=true` (mTLS all'enroll, no TOFU) |

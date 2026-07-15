@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
@@ -21,7 +21,7 @@ import {
 	sealPrivateKey,
 	verifyChain,
 } from "@harness/shared";
-import { isIncremental, isNormalized } from "./state-store.js";
+import { ChangelogPrunedError, isIncremental, isNormalized } from "./state-store.js";
 import type { StateDiff } from "./state-store.js";
 
 /** Confronta due mappe per chiave e invoca upsert sui cambiati, del sui rimossi. */
@@ -389,12 +389,27 @@ export class Store {
 				// locali prima di calcolarne il delta, altrimenti un pull le
 				// riapplicherebbe con valori stantii.
 				await this.pending;
-				const { cursor, diff } = await backend.pullDelta(this.changeCursor);
-				if (cursor !== this.changeCursor) {
-					this.applyDiffToState(diff);
-					this.changeCursor = cursor;
-					this.lastPersisted = this.snapshotStrings(this.state, this.sealKeys(this.signingKeys));
-					this.rebuildTokenIndex();
+				try {
+					const { cursor, diff } = await backend.pullDelta(this.changeCursor);
+					if (cursor !== this.changeCursor) {
+						this.applyDiffToState(diff);
+						this.changeCursor = cursor;
+						this.lastPersisted = this.snapshotStrings(this.state, this.sealKeys(this.signingKeys));
+						this.rebuildTokenIndex();
+					}
+				} catch (error) {
+					if (!(error instanceof ChangelogPrunedError)) throw error;
+					// Il changelog è stato potato oltre il nostro cursore: un delta
+					// sarebbe incompleto. Ricarica l'intero snapshot come se fosse un
+					// backend non incrementale, poi riparti dalla nuova testa.
+					const snapshot = await backend.load();
+					if (snapshot) {
+						this.state = snapshot.state;
+						this.signingKeys = this.openKeys(snapshot.signingKeys);
+						this.lastPersisted = this.snapshotStrings(this.state, this.sealKeys(this.signingKeys));
+						this.rebuildTokenIndex();
+					}
+					this.changeCursor = await backend.changelogCursor();
 				}
 			} else {
 				const snapshot = await backend.load();
@@ -723,6 +738,55 @@ export class Store {
 			devices.push({ deviceId, ...info });
 		}
 		return { admin, devices };
+	}
+
+	/**
+	 * Retention dei log di audit (device + admin). Con backend Postgres
+	 * normalizzato, elimina davvero le righe più vecchie di `olderThanDays` per
+	 * stream e registra il confine come nuovo genesis del segmento residuo
+	 * (`pruneAudit` sul backend): la catena resta verificabile senza
+	 * riscrivere o ricalcolare nulla. In file-mode non cancella nulla
+	 * (romperebbe la tamper-evidence senza un anchor esterno): ruota il file su
+	 * un file `.archive` quando supera `rotateBytes`, cosicché lo storage non
+	 * cresce indefinitamente ma nessuna riga sparisce silenziosamente.
+	 */
+	async pruneAudit(
+		olderThanDays: number,
+		rotateBytes = 10 * 1024 * 1024,
+	): Promise<{ streamId: string; prunedRows: number; rotated: boolean }[]> {
+		const backend = this.normalizedBackend();
+		const streamIds = ["admin", ...Object.keys(this.state.devices)];
+		const results: { streamId: string; prunedRows: number; rotated: boolean }[] = [];
+		for (const streamId of streamIds) {
+			if (backend) {
+				const r = await backend.pruneAudit(streamId, olderThanDays);
+				results.push({ streamId, prunedRows: r.prunedRows, rotated: false });
+			} else {
+				const path = streamId === "admin" ? this.adminAuditPath : this.deviceAuditPath(streamId);
+				results.push({ streamId, prunedRows: 0, rotated: this.rotateAuditFileIfLarge(path, rotateBytes) });
+			}
+		}
+		return results;
+	}
+
+	/**
+	 * Retention del changelog di sincronizzazione incrementale (solo backend
+	 * Postgres: il changelog non esiste in file-mode). Registra una soglia di
+	 * pruning così un'istanza rimasta disconnessa a lungo viene rilevata da
+	 * `pullDelta` invece di convergere silenziosamente su uno stato incompleto.
+	 */
+	async pruneChangelog(keepLastN: number): Promise<{ prunedRows: number } | undefined> {
+		if (this.mirror && isIncremental(this.mirror)) return this.mirror.pruneChangelog(keepLastN);
+		return undefined;
+	}
+
+	/** Ruota un file di audit su un archivio quando supera `maxBytes`; nessuna riga viene eliminata. */
+	private rotateAuditFileIfLarge(path: string, maxBytes: number): boolean {
+		if (!existsSync(path)) return false;
+		if (statSync(path).size <= maxBytes) return false;
+		renameSync(path, `${path}.${Date.now()}.archive`);
+		this.chainTips.delete(path);
+		return true;
 	}
 
 	private async chainHeadAndCount(path: string): Promise<{ head: string; entries: number }> {

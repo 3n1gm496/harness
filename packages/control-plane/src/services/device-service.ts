@@ -192,6 +192,22 @@ export class DeviceService {
 		this.ctx.audit(identity.name, "device_updated", { deviceId, update });
 	}
 
+	/**
+	 * Elimina definitivamente un device (retention). Non tocca il suo log di
+	 * audit: resta consultabile per stream id e soggetto alla stessa retention
+	 * generale (`Store.pruneAudit`), indipendentemente dal ciclo di vita del
+	 * device stesso.
+	 */
+	deleteDevice(identity: AdminIdentity, deviceId: string): void {
+		requireRole(identity, "admin");
+		const device = this.store.state.devices[deviceId];
+		if (!device) throw new ServiceError(404, "device non trovato");
+		delete this.store.state.devices[deviceId];
+		this.lastSeenPersist.delete(deviceId);
+		this.store.save();
+		this.ctx.audit(identity.name, "device_deleted", { deviceId, name: device.name });
+	}
+
 	/** Anteprima della policy effettiva di un device, come la vedrebbe il client. */
 	effectivePolicy(identity: AdminIdentity, deviceId: string): PolicyDocument {
 		requireRole(identity, "viewer");

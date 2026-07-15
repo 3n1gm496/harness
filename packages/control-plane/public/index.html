@@ -314,6 +314,7 @@ async function renderDevices() {
 		'<td class="row op-only">' +
 		'<button class="secondary" onclick="toggleDeviceKill(\'' + d.deviceId + "'," + d.killSwitch + ')">' + (d.killSwitch ? "riattiva" : "sospendi") + "</button>" +
 		(d.revoked ? "" : '<button class="danger" onclick="revokeDevice(\'' + d.deviceId + '\')">revoca</button>') +
+		' <button class="danger admin-only" onclick="deleteDevice(\'' + d.deviceId + "', '" + esc(d.name) + '\')">elimina</button>' +
 		"</td></tr>"
 	).join("") || '<tr><td colspan="7" class="muted">Nessun device corrisponde ai filtri</td></tr>';
 	$("devPageInfo").textContent = total ? ("Pagina " + (devPage + 1) + " di " + pages + " · " + total + " device") : "0 device";
@@ -508,6 +509,7 @@ window.promoteKey = async (id) => { if (!confirm("Promuovere questa chiave ad at
 window.retireKey = async (id) => { if (!confirm("Ritirare questa chiave? I bundle firmati con essa non saranno più verificabili.")) return; try { await api("DELETE", "/api/admin/signing-keys/" + id); await refreshSigningKeys(); msg("Chiave ritirata"); } catch (e) { msg(e.message, true); } };
 window.toggleDeviceKill = async (id, current) => { try { await api("PUT", "/api/admin/devices/" + id, { killSwitch: !current }); await refresh(); msg("Device aggiornato"); } catch (e) { msg(e.message, true); } };
 window.revokeDevice = async (id) => { if (!confirm("Revocare definitivamente il device? Il suo token smetterà di funzionare.")) return; try { await api("PUT", "/api/admin/devices/" + id, { revoked: true }); await refresh(); msg("Device revocato"); } catch (e) { msg(e.message, true); } };
+window.deleteDevice = async (id, name) => { if (!confirm("Eliminare definitivamente il device \"" + name + "\"? L'operazione non è reversibile (il suo log di audit resta consultabile separatamente).")) return; try { await api("DELETE", "/api/admin/devices/" + id); await refresh(); msg("Device eliminato"); } catch (e) { msg(e.message, true); } };
 window.toggleGroupKill = async (id, current) => { try { await api("PUT", "/api/admin/groups/" + id, { killSwitch: !current }); await refresh(); msg("Gruppo aggiornato"); } catch (e) { msg(e.message, true); } };
 window.revokeToken = async (id) => { if (!confirm("Revocare il token amministrativo? Chi lo usa perderà subito l'accesso.")) return; try { await api("DELETE", "/api/admin/admin-tokens/" + id); await refreshTokens(); msg("Token revocato"); } catch (e) { msg(e.message, true); } };
 

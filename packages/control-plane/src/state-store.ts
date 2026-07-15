@@ -60,6 +60,13 @@ export interface NormalizedStateStore extends DurableStateStore {
 	auditHeads(
 		deviceStreamIds: string[],
 	): Promise<{ admin: { head: string; entries: number }; devices: { deviceId: string; head: string; entries: number }[] }>;
+	/**
+	 * Elimina le righe di uno stream di audit più vecchie di `olderThanDays`,
+	 * registrando il confine (seq, hash) in `cp_audit_prune_state` così
+	 * `verifyAudit` continua a verificare il segmento residuo senza riscrivere
+	 * né ricalcolare nulla.
+	 */
+	pruneAudit(streamId: string, olderThanDays: number): Promise<{ prunedRows: number }>;
 }
 
 /**
@@ -71,10 +78,40 @@ export interface IncrementalStateStore extends NormalizedStateStore {
 	readonly incremental: true;
 	/** Ultimo id del changelog (cursore iniziale, per non riapplicare la storia). */
 	changelogCursor(): Promise<number>;
-	/** Delta accumulato dopo `sinceId`, come StateDiff pronto da fondere in memoria. */
+	/**
+	 * Delta accumulato dopo `sinceId`, come StateDiff pronto da fondere in
+	 * memoria. Lancia `ChangelogPrunedError` se `sinceId` precede la soglia di
+	 * pruning del changelog: il chiamante deve ricaricare l'intero snapshot
+	 * invece di fidarsi di un delta parziale.
+	 */
 	pullDelta(sinceId: number): Promise<{ cursor: number; diff: StateDiff }>;
 	/** Registra un handler svegliato dagli eventi NOTIFY; ritorna l'unsubscribe. */
 	onChange(handler: () => void): Promise<() => Promise<void>>;
+	/**
+	 * Elimina le righe di changelog più vecchie mantenendo solo le ultime
+	 * `keepLastN`, registrando la soglia (`cp_changelog_prune_floor`) così un
+	 * replica troppo indietro viene rilevata da `pullDelta` invece di
+	 * convergere silenziosamente su un delta incompleto.
+	 */
+	pruneChangelog(keepLastN: number): Promise<{ prunedRows: number }>;
+}
+
+/**
+ * Lanciato da `pullDelta` quando il cursore richiesto precede la soglia di
+ * pruning del changelog: il delta sarebbe incompleto (mancherebbero le
+ * modifiche cancellate), quindi il chiamante deve ricaricare l'intero
+ * snapshot invece di convergere su uno stato silenziosamente sbagliato.
+ */
+export class ChangelogPrunedError extends Error {
+	constructor(
+		readonly sinceId: number,
+		readonly floor: number,
+	) {
+		super(
+			`changelog troncato dal pruning: il cursore ${sinceId} precede la soglia ${floor}; serve un resync completo`,
+		);
+		this.name = "ChangelogPrunedError";
+	}
 }
 
 export function isNormalized(store: DurableStateStore): store is NormalizedStateStore {
@@ -452,6 +489,9 @@ export class PostgresStateStore implements IncrementalStateStore {
 
 	async pullDelta(sinceId: number): Promise<{ cursor: number; diff: StateDiff }> {
 		await this.ensureReady();
+		const floorRow = await this.query("SELECT floor_id FROM cp_changelog_prune_floor WHERE id = 1");
+		const floor = floorRow.rows.length > 0 ? Number(floorRow.rows[0]!.floor_id) : 0;
+		if (floor > 0 && sinceId < floor) throw new ChangelogPrunedError(sinceId, floor);
 		const diff: StateDiff = {
 			groupsUpsert: [],
 			groupsDelete: [],
@@ -603,6 +643,11 @@ export class PostgresStateStore implements IncrementalStateStore {
 
 	async verifyAudit(streamId: string): Promise<ChainVerification> {
 		await this.ensureReady();
+		const pruneState = await this.query(
+			"SELECT pruned_up_to_hash FROM cp_audit_prune_state WHERE stream_id = $1",
+			[streamId],
+		);
+		const genesis = pruneState.rows.length > 0 ? (pruneState.rows[0]!.pruned_up_to_hash as string) : CHAIN_GENESIS;
 		const result = await this.query(
 			"SELECT prev_hash, hash, entry FROM cp_audit_events WHERE stream_id = $1 ORDER BY seq ASC",
 			[streamId],
@@ -610,7 +655,93 @@ export class PostgresStateStore implements IncrementalStateStore {
 		const lines = result.rows.map((r) =>
 			JSON.stringify({ entry: JSON.parse(r.entry as string), prev: r.prev_hash, hash: r.hash }),
 		);
-		return verifyChain(lines);
+		return verifyChain(lines, genesis);
+	}
+
+	/**
+	 * Elimina dallo stream le righe più vecchie di `olderThanDays`, registrando
+	 * in `cp_audit_prune_state` il confine (seq, hash) della riga più recente
+	 * eliminata: `verifyAudit` verifica poi il segmento residuo a partire da
+	 * quell'hash come genesis, invece che dal genesis assoluto, senza toccare
+	 * né ricalcolare le righe conservate.
+	 */
+	async pruneAudit(streamId: string, olderThanDays: number): Promise<{ prunedRows: number }> {
+		await this.ensureReady();
+		const client = await this.connect();
+		try {
+			await client.query("BEGIN");
+			// Stesso advisory lock usato da appendAudit: evita di potare mentre un
+			// append concorrente sta ancora scrivendo la testa della catena.
+			await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [streamId]);
+			// La riga più recente tra quelle più vecchie della soglia: ts cresce
+			// monotonamente con seq (append sequenziale), quindi tutte e sole le
+			// righe con seq <= questa sono più vecchie della soglia.
+			const boundary = await client.query(
+				`SELECT seq, hash FROM cp_audit_events
+				 WHERE stream_id = $1 AND ts < now() - ($2 || ' days')::interval
+				 ORDER BY seq DESC LIMIT 1`,
+				[streamId, olderThanDays],
+			);
+			if (boundary.rows.length === 0) {
+				// Nessuna riga più vecchia della soglia: nulla da potare.
+				await client.query("COMMIT");
+				return { prunedRows: 0 };
+			}
+			const boundarySeq = Number(boundary.rows[0]!.seq);
+			const boundaryHash = boundary.rows[0]!.hash as string;
+			const deleted = await client.query(
+				"DELETE FROM cp_audit_events WHERE stream_id = $1 AND seq <= $2 RETURNING seq",
+				[streamId, boundarySeq],
+			);
+			await client.query(
+				`INSERT INTO cp_audit_prune_state (stream_id, pruned_up_to_seq, pruned_up_to_hash)
+				 VALUES ($1,$2,$3)
+				 ON CONFLICT (stream_id) DO UPDATE SET pruned_up_to_seq = $2, pruned_up_to_hash = $3`,
+				[streamId, boundarySeq, boundaryHash],
+			);
+			await client.query("COMMIT");
+			return { prunedRows: deleted.rows.length };
+		} catch (error) {
+			await client.query("ROLLBACK");
+			throw error;
+		} finally {
+			client.release();
+		}
+	}
+
+	/**
+	 * Elimina le righe di changelog più vecchie mantenendo solo le ultime
+	 * `keepLastN`, registrando la soglia in `cp_changelog_prune_floor` così
+	 * `pullDelta` può rilevare un cursore troppo indietro invece di convergere
+	 * silenziosamente su un delta incompleto.
+	 */
+	async pruneChangelog(keepLastN: number): Promise<{ prunedRows: number }> {
+		await this.ensureReady();
+		const client = await this.connect();
+		try {
+			await client.query("BEGIN");
+			const boundary = await client.query("SELECT id FROM cp_changelog ORDER BY id DESC OFFSET $1 LIMIT 1", [
+				keepLastN,
+			]);
+			if (boundary.rows.length === 0) {
+				await client.query("COMMIT");
+				return { prunedRows: 0 };
+			}
+			const boundaryId = Number(boundary.rows[0]!.id);
+			const deleted = await client.query("DELETE FROM cp_changelog WHERE id <= $1 RETURNING id", [boundaryId]);
+			await client.query(
+				`INSERT INTO cp_changelog_prune_floor (id, floor_id) VALUES (1, $1)
+				 ON CONFLICT (id) DO UPDATE SET floor_id = GREATEST(cp_changelog_prune_floor.floor_id, $1)`,
+				[boundaryId],
+			);
+			await client.query("COMMIT");
+			return { prunedRows: deleted.rows.length };
+		} catch (error) {
+			await client.query("ROLLBACK");
+			throw error;
+		} finally {
+			client.release();
+		}
 	}
 
 	async auditHeads(

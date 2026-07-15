@@ -185,6 +185,25 @@ export class AuthService {
 		this.ctx.audit(identity.name, "admin_token_revoked", { id, name: target.name, role: target.role });
 	}
 
+	/**
+	 * Rimuove i token amministrativi scaduti da tempo (retention: senza questo,
+	 * ogni token con TTL scaduto resta per sempre nello stato, anche se
+	 * `authenticateAdmin` lo rifiuta già). Va chiamato all'avvio e
+	 * periodicamente (vedi `harness-cp prune` e il timer in `cli.ts serve`).
+	 */
+	pruneExpiredAdminTokens(): number {
+		const now = Date.now();
+		let pruned = 0;
+		for (const [hash, record] of Object.entries(this.store.state.adminTokens)) {
+			if (record.expiresAt && Date.parse(record.expiresAt) < now) {
+				delete this.store.state.adminTokens[hash];
+				pruned += 1;
+			}
+		}
+		if (pruned > 0) this.store.save();
+		return pruned;
+	}
+
 	createGatewayToken(identity: AdminIdentity, name: string): string {
 		requireRole(identity, "admin");
 		const token = newSecretToken("gwt");

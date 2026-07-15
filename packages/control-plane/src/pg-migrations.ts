@@ -108,6 +108,19 @@ export const MIGRATIONS: Migration[] = [
 				count int NOT NULL);
 		`,
 	},
+	{
+		version: 5,
+		description: "retention: stato di pruning per audit (genesis del segmento residuo) e changelog",
+		sql: `
+			CREATE TABLE IF NOT EXISTS cp_audit_prune_state (
+				stream_id text PRIMARY KEY,
+				pruned_up_to_seq bigint NOT NULL,
+				pruned_up_to_hash text NOT NULL);
+			CREATE TABLE IF NOT EXISTS cp_changelog_prune_floor (
+				id int PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+				floor_id bigint NOT NULL);
+		`,
+	},
 ];
 
 /** Query minimale richiesta dal migration runner (sottoinsieme del client pg). */

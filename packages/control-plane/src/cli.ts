@@ -48,6 +48,14 @@ async function main(): Promise<void> {
 		if (oidc) await startJwksRefresh(oidc);
 		const service = new ControlPlaneService(store, oidc ? { oidc } : {});
 		if (oidc) console.log(`[control-plane] OIDC admin abilitato (issuer ${oidc.issuer})`);
+		// Retention: i token amministrativi scaduti non si ripuliscono da soli
+		// (nessuna route li elimina, solo `authenticateAdmin` li rifiuta): senza
+		// questo timer resterebbero per sempre nello stato. Il pruning più
+		// pesante (audit/changelog) resta un'azione esplicita (`harness-cp
+		// prune`, schedulata via cron esterno), non automatica al boot.
+		service.auth.pruneExpiredAdminTokens();
+		const adminTokenPruneTimer = setInterval(() => service.auth.pruneExpiredAdminTokens(), 6 * 3_600_000);
+		adminTokenPruneTimer.unref();
 		const tls = loadTlsFromEnv();
 		const logger = createLogger("control-plane");
 		const options: Parameters<typeof createControlPlaneServer>[1] = {
@@ -66,6 +74,7 @@ async function main(): Promise<void> {
 			}
 		});
 		const shutdown = () => {
+			clearInterval(adminTokenPruneTimer);
 			server.close(() => {
 				void store.close().finally(() => process.exit(0));
 			});
@@ -172,8 +181,29 @@ async function main(): Promise<void> {
 		return;
 	}
 
+	if (command === "prune") {
+		// Retention: token admin scaduti, log di audit più vecchi della soglia
+		// (giorni), changelog di sincronizzazione oltre le ultime N righe. Va
+		// schedulato (cron esterno); `serve` la esegue anche all'avvio e ogni 6h.
+		const store = await openStore(dataDir);
+		const service = new ControlPlaneService(store);
+		const auditDays = Number(flagValue(args, "--audit-days") ?? "365");
+		const changelogKeep = Number(flagValue(args, "--changelog-keep") ?? "100000");
+		const prunedAdminTokens = service.auth.pruneExpiredAdminTokens();
+		const auditResults = await store.pruneAudit(auditDays);
+		const changelogResult = await store.pruneChangelog(changelogKeep);
+		await store.close();
+		console.log(`Token amministrativi scaduti rimossi: ${prunedAdminTokens}`);
+		for (const r of auditResults) {
+			if (r.prunedRows > 0) console.log(`  audit[${r.streamId}]: ${r.prunedRows} righe potate (oltre ${auditDays}gg)`);
+			if (r.rotated) console.log(`  audit[${r.streamId}]: file ruotato su archivio (dimensione)`);
+		}
+		if (changelogResult) console.log(`Changelog: ${changelogResult.prunedRows} righe potate (oltre le ultime ${changelogKeep})`);
+		return;
+	}
+
 	console.error(
-		"Uso: harness-cp <init|seed|serve|verify-audit|export-audit-anchor|rekey> [--data-dir <dir>] [--port <porta>] [--name <nome>] [--ttl <min>] [--device <id>] [--out <file>] [--new-kek-file <path>]",
+		"Uso: harness-cp <init|seed|serve|verify-audit|export-audit-anchor|rekey|prune> [--data-dir <dir>] [--port <porta>] [--name <nome>] [--ttl <min>] [--device <id>] [--out <file>] [--new-kek-file <path>] [--audit-days <n>] [--changelog-keep <n>]",
 	);
 	process.exit(2);
 }

@@ -27,9 +27,16 @@ export type ChainVerification =
 	| { valid: true; entries: number }
 	| { valid: false; entries: number; brokenAtLine: number; reason: string };
 
-/** Verifica una sequenza di righe JSONL incatenate. */
-export function verifyChain(lines: string[]): ChainVerification {
-	let prev = CHAIN_GENESIS;
+/**
+ * Verifica una sequenza di righe JSONL incatenate. `genesis` permette di
+ * verificare un segmento residuo dopo un pruning: se un prefisso della catena
+ * è stato rimosso (già esportato su anchor esterno WORM prima della
+ * rimozione), il segmento restante si verifica a partire dall'hash della
+ * testa del prefisso rimosso invece che dal genesis assoluto — senza
+ * riscrivere né ricalcolare nulla delle righe residue.
+ */
+export function verifyChain(lines: string[], genesis: string = CHAIN_GENESIS): ChainVerification {
+	let prev = genesis;
 	for (let i = 0; i < lines.length; i += 1) {
 		let parsed: ChainedEntry<unknown>;
 		try {

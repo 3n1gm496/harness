@@ -189,6 +189,15 @@ export function buildRoutes(): RouteDef[] {
 			},
 		},
 		{
+			method: "DELETE",
+			path: "/api/admin/devices/:id",
+			auth: "admin",
+			handler: (ctx) => {
+				ctx.service.deleteDevice(ctx.identity!, ctx.params.id!);
+				return { ok: true };
+			},
+		},
+		{
 			method: "GET",
 			path: "/api/admin/devices/:id/effective-policy",
 			auth: "admin",
