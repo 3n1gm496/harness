@@ -13,6 +13,7 @@
 		"clean": "npm run clean --workspaces --if-present",
 		"test": "npm run test --workspaces --if-present",
 		"test:pg": "node scripts/test-with-postgres.mjs",
+		"load-test": "npm run build && node scripts/load-test.mjs",
 		"typecheck": "tsc --build",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",

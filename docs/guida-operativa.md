@@ -15,6 +15,17 @@ Requisiti: Node.js ≥ 22. Nessuna dipendenza runtime esterna: i pacchetti usano
 
 Lint e formattazione sono [Biome](https://biomejs.dev/) (`biome.json` in radice): `npm run lint` verifica (formattazione, import ordinati, regole di lint), `npm run lint:fix` applica i fix sicuri, `npm run format` riformatta soltanto. La CI esegue `npm run lint` a ogni push/PR.
 
+### Load-test
+
+`scripts/load-test.mjs` arruola N device su un control plane in-process reale e simula il loro poll di configurazione + flush di audit concorrenti (HTTP vero, non chiamate dirette al service), misurando p50/p95/throughput — la prova prestazionale dell'indice O(1) token→device (senza, il tempo per richiesta scalerebbe linearmente col numero di device):
+
+```bash
+npm run load-test -- --devices 500                       # file-mode (default)
+HARNESS_TEST_PG_URL=postgresql://... npm run load-test -- --devices 500   # backend Postgres
+```
+
+Flag: `--devices` (default 200), `--requests-per-device` (default 5), `--concurrency` (default 50), `--p95-threshold-ms` (default 750, soglia di regressione — generosa apposta per ambienti CI condivisi: l'obiettivo è cogliere una regressione O(n), non misurare uno SLA di produzione). Con `HARNESS_TEST_PG_URL` impostata azzera lo schema del database indicato prima di partire: puntarla solo a un'istanza Postgres dedicata/effimera, mai a dati che contano.
+
 ### Avvio one-command (Docker)
 
 L'intero backend (Postgres + control plane con auto-seeding) parte con un solo comando. La KEK è obbligatoria e non ha un default committato:
