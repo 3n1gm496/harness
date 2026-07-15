@@ -15,6 +15,10 @@ Requisiti: Node.js ≥ 22. Nessuna dipendenza runtime esterna: i pacchetti usano
 
 Lint e formattazione sono [Biome](https://biomejs.dev/) (`biome.json` in radice): `npm run lint` verifica (formattazione, import ordinati, regole di lint), `npm run lint:fix` applica i fix sicuri, `npm run format` riformatta soltanto. La CI esegue `npm run lint` a ogni push/PR.
 
+### Test UI in un browser reale
+
+`packages/control-plane/src/test/ui.test.ts` guida un Chromium reale (via `playwright-core`, non `@playwright/test`: un solo test runner, `node:test`) attraverso login, dashboard, filtro stale, ricerca, editor policy con diff, validazione JSON ed eliminazione device — asserendo **zero errori console**. Si salta automaticamente se non trova un Chromium eseguibile (stesso spirito dei test Postgres live con `HARNESS_TEST_PG_URL`): cerca `HARNESS_TEST_CHROMIUM_PATH`, poi `$PLAYWRIGHT_BROWSERS_PATH/chromium`, poi `/opt/pw-browsers/chromium`. In CI (dove Chromium è installato in uno step dedicato) gira come parte della normale suite (`npm test`).
+
 ### Load-test
 
 `scripts/load-test.mjs` arruola N device su un control plane in-process reale e simula il loro poll di configurazione + flush di audit concorrenti (HTTP vero, non chiamate dirette al service), misurando p50/p95/throughput — la prova prestazionale dell'indice O(1) token→device (senza, il tempo per richiesta scalerebbe linearmente col numero di device):
