@@ -1,6 +1,7 @@
 import type { AuditEvent, ConfigBundle, DeepPartial, PolicyDocument } from "@harness/shared";
 import {
 	deepMerge,
+	isValidEd25519PublicKeyPem,
 	lockedPiSettings,
 	newId,
 	newSecretToken,
@@ -66,6 +67,12 @@ export class DeviceService {
 
 		if (this.store.state.org.requireDeviceCert && !normalizeFingerprint(certFingerprint)) {
 			throw new ServiceError(400, "questa organizzazione richiede un certificato client all'enrollment (mTLS)");
+		}
+		// Valida subito la chiave di firma del device: un PEM malformato accettato
+		// romperebbe permanentemente la verifica dell'audit di questo device (la
+		// firma dei suoi batch non verificherebbe mai), senza recupero.
+		if (deviceSigningPublicKeyPem !== undefined && !isValidEd25519PublicKeyPem(deviceSigningPublicKeyPem)) {
+			throw new ServiceError(400, "deviceSigningPublicKeyPem non è una chiave pubblica Ed25519 PEM valida");
 		}
 		const deviceId = newId("dev");
 		const deviceToken = newSecretToken("dvt");

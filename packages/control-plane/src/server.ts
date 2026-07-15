@@ -74,13 +74,20 @@ export function createControlPlaneServer(
 			options.log?.({ ts: new Date().toISOString(), ...entry });
 		});
 		void dispatch(routes, service, req, res, infra).catch((error) => {
-			const status = error instanceof ServiceError ? error.status : 500;
-			const message = error instanceof Error ? error.message : "errore interno";
-			if (!(error instanceof ServiceError)) {
-				options.logger?.error("unhandled_error", { error: String(error) });
-				if (!options.logger) console.error("[control-plane] errore:", error);
+			if (res.headersSent) return; // una risposta (anche raw) è già partita: niente da fare
+			// Gli errori applicativi (ServiceError) portano un messaggio sicuro e
+			// pensato per il client. Qualunque altro errore è inatteso: si logga il
+			// dettaglio server-side ma al client va solo un messaggio generico, per
+			// non trapelare stack/interni di implementazione.
+			if (error instanceof ServiceError) {
+				sendJson(res, error.status, { error: error.message });
+				return;
 			}
-			sendJson(res, status, { error: message });
+			options.logger?.error("unhandled_error", {
+				error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+			});
+			if (!options.logger) console.error("[control-plane] errore:", error);
+			sendJson(res, 500, { error: "errore interno" });
 		});
 	};
 	if (options.tls) {

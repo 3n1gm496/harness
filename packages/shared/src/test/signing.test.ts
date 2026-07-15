@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { defaultPolicy } from "../defaults.js";
 import {
 	generateSigningKeyPair,
+	isValidEd25519PublicKeyPem,
 	signPayload,
 	verifyConfigBundle,
 	verifyConfigBundleMulti,
@@ -101,4 +102,20 @@ test("verifica multi-chiave: set vuoto viene rifiutato", () => {
 	const signer = generateSigningKeyPair();
 	const token = signPayload(signer.privateKeyPem, makeBundle());
 	assert.equal(verifyConfigBundleMulti([], token).valid, false);
+});
+
+test("verifyToken con una chiave pubblica malformata ritorna invalid, non lancia", () => {
+	const signer = generateSigningKeyPair();
+	const token = signPayload(signer.privateKeyPem, makeBundle());
+	// Prima del fix, createPublicKey su un PEM malformato propagava un errore.
+	const result = verifyToken("-----BEGIN PUBLIC KEY-----\nnon-una-chiave\n-----END PUBLIC KEY-----", token);
+	assert.equal(result.valid, false);
+});
+
+test("isValidEd25519PublicKeyPem: accetta Ed25519, rifiuta malformate e altri tipi di chiave", () => {
+	const ed = generateSigningKeyPair();
+	assert.equal(isValidEd25519PublicKeyPem(ed.publicKeyPem), true);
+	assert.equal(isValidEd25519PublicKeyPem("non un pem"), false);
+	assert.equal(isValidEd25519PublicKeyPem(""), false);
+	assert.equal(isValidEd25519PublicKeyPem("-----BEGIN PUBLIC KEY-----\nrotto\n-----END PUBLIC KEY-----"), false);
 });

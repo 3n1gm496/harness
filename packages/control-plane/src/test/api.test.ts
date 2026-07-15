@@ -318,6 +318,27 @@ test("provenance dell'audit: batch firmato accettato e marcato, batch manomesso 
 	assert.equal(legacyEvents.at(-1)?.provenance, "token-only");
 });
 
+test("enrollment con una chiave di firma del device malformata viene rifiutato (400)", async () => {
+	const overview = await call("GET", "/api/admin/overview", { token: adminToken });
+	const groupId = (overview.data.groups as { groupId: string }[])[0]?.groupId as string;
+	const enrollResult = await call("POST", "/api/admin/enroll-tokens", {
+		token: adminToken,
+		body: { groupId, ttlMinutes: 10 },
+	});
+	const enrollToken = enrollResult.data.enrollToken as string;
+	// Un PEM malformato accettato romperebbe per sempre la verifica dell'audit di
+	// questo device: va rifiutato subito all'enrollment.
+	const bad = await call("POST", "/api/enroll", {
+		body: {
+			enrollToken,
+			deviceName: "bad-key",
+			deviceSigningPublicKeyPem: "-----BEGIN PUBLIC KEY-----\nrotto\n-----END PUBLIC KEY-----",
+		},
+	});
+	assert.equal(bad.status, 400);
+	assert.match(bad.data.error as string, /Ed25519/);
+});
+
 test("RBAC: viewer non può mutare, operator non può cambiare policy", async () => {
 	const viewerResult = await call("POST", "/api/admin/admin-tokens", {
 		token: adminToken,
@@ -874,6 +895,33 @@ test("la UI statica viene servita con la dashboard, la paginazione e l'editor po
 	assert.match(html, /id="devPageSize"/);
 	assert.match(html, /id="policyValidation"/);
 	assert.match(html, /id="diffOut"/);
+});
+
+test("un errore interno inatteso non trapela il messaggio al client (500 generico)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-err-"));
+	const store = new Store(dir);
+	const service = new ControlPlaneService(store);
+	const token = service.auth.bootstrapAdminToken("root");
+	// Forza un errore NON-ServiceError (Error grezzo con un messaggio "segreto")
+	// nel percorso di un handler admin autenticato.
+	service.org.overview = () => {
+		throw new Error("dettaglio interno con segreto db://user:password@host");
+	};
+	const isolatedServer = createControlPlaneServer(service, { readiness: () => store.checkReady() });
+	try {
+		await new Promise<void>((resolve) => isolatedServer.listen(0, resolve));
+		const port = (isolatedServer.address() as AddressInfo).port;
+		const response = await fetch(`http://127.0.0.1:${port}/api/admin/overview`, {
+			headers: { authorization: `Bearer ${token}` },
+		});
+		assert.equal(response.status, 500);
+		const body = (await response.json()) as { error: string };
+		assert.equal(body.error, "errore interno");
+		assert.doesNotMatch(body.error, /segreto|password|db:/, "il messaggio interno non deve trapelare");
+	} finally {
+		await new Promise((resolve) => isolatedServer.close(resolve));
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("sessione UI: login→cookie+csrf, CSRF su mutazioni, revoca del token la invalida, logout (file-mode)", async () => {

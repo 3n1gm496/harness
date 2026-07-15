@@ -23,6 +23,21 @@ export function generateSigningKeyPair(): SigningKeyPair {
 	};
 }
 
+/**
+ * Verifica che una stringa sia una chiave pubblica Ed25519 PEM valida. Usato
+ * per validare all'ingresso la chiave di firma propria del device (fornita
+ * all'enrollment): un PEM malformato accettato romperebbe permanentemente la
+ * verifica dell'audit di quel device, senza un percorso di recupero.
+ */
+export function isValidEd25519PublicKeyPem(pem: string): boolean {
+	try {
+		const key = createPublicKey(pem);
+		return key.asymmetricKeyType === "ed25519";
+	} catch {
+		return false;
+	}
+}
+
 export function signPayload(privateKeyPem: string, payload: unknown): string {
 	const header = base64url(JSON.stringify(TOKEN_HEADER));
 	const body = base64url(JSON.stringify(payload));
@@ -54,10 +69,13 @@ export function verifyToken<T = unknown>(publicKeyPem: string, token: string): V
 		return { valid: false, error: "header non riconosciuto" };
 	}
 
-	const key = createPublicKey(publicKeyPem);
-	const signingInput = Buffer.from(`${header}.${body}`, "utf8");
+	// createPublicKey lancia su un PEM malformato: va racchiuso (come in jwt.ts),
+	// altrimenti una chiave non valida propagherebbe un errore interno invece di
+	// un fallimento di verifica pulito.
 	let signatureOk = false;
 	try {
+		const key = createPublicKey(publicKeyPem);
+		const signingInput = Buffer.from(`${header}.${body}`, "utf8");
 		signatureOk = verify(null, signingInput, key, Buffer.from(signature, "base64url"));
 	} catch {
 		signatureOk = false;
