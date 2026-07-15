@@ -21,13 +21,13 @@ before(async () => {
 	clientDir = mkdtempSync(join(tmpdir(), "harness-ac-cli-"));
 	const store = new Store(dataDir);
 	service = new ControlPlaneService(store);
-	adminToken = service.bootstrapAdminToken("test");
+	adminToken = service.auth.bootstrapAdminToken("test");
 	server = createControlPlaneServer(service);
 	await new Promise<void>((resolve) => server.listen(0, resolve));
 	baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-	const identity = service.authenticateAdmin(adminToken);
-	const groupId = service.overview(identity).groups[0]?.groupId as string;
-	enrollToken = service.createEnrollToken(identity, groupId, 10);
+	const identity = service.auth.authenticateAdmin(adminToken);
+	const groupId = service.org.overview(identity).groups[0]?.groupId as string;
+	enrollToken = service.devices.createEnrollToken(identity, groupId, 10);
 });
 
 after(async () => {
@@ -55,16 +55,16 @@ test("enroll scrive l'identità del device con permessi 0600", async () => {
 	// Provenance: enroll genera una coppia di firma propria del device e la
 	// privata (mai trasmessa) resta solo nel file locale.
 	assert.ok(config.deviceSigningPrivateKeyPem?.includes("PRIVATE KEY"));
-	const identity = service.authenticateAdmin(adminToken);
-	const { devices } = service.listDevices(identity, {});
+	const identity = service.auth.authenticateAdmin(adminToken);
+	const { devices } = service.org.listDevices(identity, {});
 	const registeredDevice = devices.find((d) => d.deviceId === config.deviceId);
 	assert.ok(registeredDevice, "il device deve comparire nell'elenco");
 });
 
 test("flusso completo enroll → audit: il batch viene firmato e riconosciuto come provenance verificata", async () => {
-	const identity = service.authenticateAdmin(adminToken);
-	const groupId = service.overview(identity).groups[0]?.groupId as string;
-	const freshEnrollToken = service.createEnrollToken(identity, groupId, 10);
+	const identity = service.auth.authenticateAdmin(adminToken);
+	const groupId = service.org.overview(identity).groups[0]?.groupId as string;
+	const freshEnrollToken = service.devices.createEnrollToken(identity, groupId, 10);
 	const configPath = join(clientDir, "agent-signed.json");
 
 	const config = await enroll({
@@ -85,7 +85,7 @@ test("flusso completo enroll → audit: il batch viene firmato e riconosciuto co
 	state.pushAudit("agent_start", { cwd: "/workspace" });
 	await state.flushAudit();
 
-	const events = await service.readDeviceAudit(identity, config.deviceId, 10);
+	const events = await service.auditLog.readDeviceAudit(identity, config.deviceId, 10);
 	assert.ok(events.length > 0);
 	assert.ok(events.every((e) => e.provenance === "signed"), "tutti gli eventi devono essere provenance=signed");
 });

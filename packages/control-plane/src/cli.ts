@@ -23,7 +23,7 @@ async function main(): Promise<void> {
 		const service = new ControlPlaneService(store);
 		let token: string;
 		try {
-			token = service.bootstrapAdminToken(flagValue(args, "--name") ?? "founder");
+			token = service.auth.bootstrapAdminToken(flagValue(args, "--name") ?? "founder");
 		} catch {
 			console.error(`Data dir già inizializzata (${dataDir}): esiste già un token amministrativo.`);
 			console.error("Per crearne altri usa POST /api/admin/admin-tokens con un token admin esistente.");
@@ -91,15 +91,15 @@ async function main(): Promise<void> {
 		const service = new ControlPlaneService(store);
 		let adminToken: string | undefined;
 		try {
-			adminToken = service.bootstrapAdminToken(flagValue(args, "--name") ?? "seed-admin");
+			adminToken = service.auth.bootstrapAdminToken(flagValue(args, "--name") ?? "seed-admin");
 		} catch {
 			// admin già presente: si procede con identità di sistema privilegiata.
 		}
 		const identity = { name: "seed-cli", role: "admin" as const };
-		const groupId = service.overview(identity).groups[0]?.groupId as string;
+		const groupId = service.org.overview(identity).groups[0]?.groupId as string;
 		const ttlMinutes = Number(flagValue(args, "--ttl") ?? "60");
-		const enrollToken = service.createEnrollToken(identity, groupId, ttlMinutes);
-		const gatewayToken = service.createGatewayToken(identity, flagValue(args, "--gateway-name") ?? "seed-gateway");
+		const enrollToken = service.devices.createEnrollToken(identity, groupId, ttlMinutes);
+		const gatewayToken = service.auth.createGatewayToken(identity, flagValue(args, "--gateway-name") ?? "seed-gateway");
 		await store.flush();
 		const credentials = {
 			...(adminToken ? { adminToken } : { adminToken: "(già esistente: usa quello salvato)" }),
@@ -151,7 +151,7 @@ async function main(): Promise<void> {
 		const service = new ControlPlaneService(store);
 		// Identità di sistema locale: l'esecuzione della CLI è già un'operazione
 		// privilegiata sul data dir.
-		const anchor = await service.exportAuditAnchor({ name: "cli", role: "admin" });
+		const anchor = await service.auditLog.exportAuditAnchor({ name: "cli", role: "admin" });
 		process.stdout.write(`${anchor.anchor}\n`);
 		return;
 	}

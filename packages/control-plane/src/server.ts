@@ -139,13 +139,13 @@ async function dispatch(
 	// Autenticazione dichiarata dalla route, risolta prima dell'handler.
 	switch (matched.route.def.auth) {
 		case "admin":
-			ctx.identity = service.authenticateAdmin(bearer);
+			ctx.identity = service.auth.authenticateAdmin(bearer);
 			break;
 		case "device":
-			ctx.device = service.authenticateDevice(bearer, fp);
+			ctx.device = service.auth.authenticateDevice(bearer, fp);
 			break;
 		case "gateway":
-			service.authenticateGateway(bearer);
+			service.auth.authenticateGateway(bearer);
 			break;
 		case "none":
 			break;

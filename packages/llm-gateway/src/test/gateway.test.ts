@@ -23,7 +23,7 @@ before(async () => {
 	dataDir = mkdtempSync(join(tmpdir(), "harness-gw-test-"));
 	const store = new Store(dataDir);
 	service = new ControlPlaneService(store);
-	adminToken = service.bootstrapAdminToken("test");
+	adminToken = service.auth.bootstrapAdminToken("test");
 	controlPlane = createControlPlaneServer(service);
 	await new Promise<void>((resolve) => controlPlane.listen(0, resolve));
 	const controlPlaneUrl = `http://127.0.0.1:${(controlPlane.address() as AddressInfo).port}`;
@@ -37,13 +37,13 @@ before(async () => {
 	await new Promise<void>((resolve) => upstream.listen(0, resolve));
 	const upstreamUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
 
-	const identity = service.authenticateAdmin(adminToken);
-	const groupId = service.overview(identity).groups[0]?.groupId as string;
-	const enrollToken = service.createEnrollToken(identity, groupId, 10);
-	const enrollment = service.enrollDevice(enrollToken, "gw-client");
+	const identity = service.auth.authenticateAdmin(adminToken);
+	const groupId = service.org.overview(identity).groups[0]?.groupId as string;
+	const enrollToken = service.devices.createEnrollToken(identity, groupId, 10);
+	const enrollment = service.devices.enrollDevice(enrollToken, "gw-client");
 	deviceToken = enrollment.deviceToken;
 	deviceId = enrollment.deviceId;
-	const gatewayToken = service.createGatewayToken(identity, "gw");
+	const gatewayToken = service.auth.createGatewayToken(identity, "gw");
 
 	gateway = createGatewayServer({
 		controlPlaneUrl,
@@ -138,8 +138,8 @@ test("provider non configurato → 503", async () => {
 });
 
 test("device revocato → 401 dopo la scadenza della cache", async () => {
-	const identity = service.authenticateAdmin(adminToken);
-	service.updateDevice(identity, deviceId, { revoked: true });
+	const identity = service.auth.authenticateAdmin(adminToken);
+	service.devices.updateDevice(identity, deviceId, { revoked: true });
 	await new Promise((resolve) => setTimeout(resolve, 80)); // oltre il TTL di introspezione
 	const response = await fetch(`${gatewayUrl}/anthropic/v1/messages`, {
 		method: "POST",
@@ -147,7 +147,7 @@ test("device revocato → 401 dopo la scadenza della cache", async () => {
 		body: "{}",
 	});
 	assert.equal(response.status, 401);
-	service.updateDevice(identity, deviceId, { revoked: false });
+	service.devices.updateDevice(identity, deviceId, { revoked: false });
 	await new Promise((resolve) => setTimeout(resolve, 80));
 });
 
@@ -167,8 +167,8 @@ test("le risposte in streaming (SSE) vengono inoltrate chunk per chunk", async (
 	await new Promise<void>((resolve) => sse.listen(0, resolve));
 	const sseUrl = `http://127.0.0.1:${(sse.address() as AddressInfo).port}`;
 
-	const identity = service.authenticateAdmin(adminToken);
-	const gatewayToken = service.createGatewayToken(identity, "gw-sse");
+	const identity = service.auth.authenticateAdmin(adminToken);
+	const gatewayToken = service.auth.createGatewayToken(identity, "gw-sse");
 	const streamGateway = createGatewayServer({
 		controlPlaneUrl: `http://127.0.0.1:${(controlPlane.address() as AddressInfo).port}`,
 		gatewayToken,
@@ -212,8 +212,8 @@ test("il body viene inoltrato in streaming: un payload grande arriva integro e i
 	});
 
 	const logged: Record<string, unknown>[] = [];
-	const identity = service.authenticateAdmin(adminToken);
-	const gwToken = service.createGatewayToken(identity, "gw-stream-body");
+	const identity = service.auth.authenticateAdmin(adminToken);
+	const gwToken = service.auth.createGatewayToken(identity, "gw-stream-body");
 	const streamBodyGateway = createGatewayServer({
 		controlPlaneUrl: `http://127.0.0.1:${(controlPlane.address() as AddressInfo).port}`,
 		gatewayToken: gwToken,
@@ -255,8 +255,8 @@ test("timeout upstream: una connessione appesa risponde 504 entro la soglia conf
 	await new Promise<void>((resolve) => hanging.listen(0, resolve));
 	const hangingUrl = `http://127.0.0.1:${(hanging.address() as AddressInfo).port}`;
 
-	const identity = service.authenticateAdmin(adminToken);
-	const gwToken = service.createGatewayToken(identity, "gw-timeout");
+	const identity = service.auth.authenticateAdmin(adminToken);
+	const gwToken = service.auth.createGatewayToken(identity, "gw-timeout");
 	const timeoutGateway = createGatewayServer({
 		controlPlaneUrl: `http://127.0.0.1:${(controlPlane.address() as AddressInfo).port}`,
 		gatewayToken: gwToken,

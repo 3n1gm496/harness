@@ -54,15 +54,15 @@ before(async () => {
 	clientDir = mkdtempSync(join(tmpdir(), "harness-fleet-cli-"));
 	const store = new Store(dataDir);
 	service = new ControlPlaneService(store);
-	adminToken = service.bootstrapAdminToken("test");
+	adminToken = service.auth.bootstrapAdminToken("test");
 	server = createControlPlaneServer(service);
 	await new Promise<void>((resolve) => server.listen(0, resolve));
 	const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
 	// Enrollment reale via API, come farebbe l'agent-client.
-	const identity = service.authenticateAdmin(adminToken);
-	const groupId = service.overview(identity).groups[0]?.groupId as string;
-	const enrollToken = service.createEnrollToken(identity, groupId, 10);
+	const identity = service.auth.authenticateAdmin(adminToken);
+	const groupId = service.org.overview(identity).groups[0]?.groupId as string;
+	const enrollToken = service.devices.createEnrollToken(identity, groupId, 10);
 	const enrollResponse = await fetch(`${baseUrl}/api/enroll`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
@@ -89,7 +89,7 @@ before(async () => {
 
 	// La maggior parte dei test verifica l'enforcement della policy, non la
 	// sandbox: la si disabilita via override org (il default richiede sandbox).
-	service.updateOrg(identity, { policyOverride: { sandbox: { required: false } } });
+	service.org.updateOrg(identity, { policyOverride: { sandbox: { required: false } } });
 });
 
 after(async () => {
@@ -144,8 +144,8 @@ test("estensione end-to-end contro un control plane reale", async (t) => {
 	});
 
 	await t.test("il kill switch dal control plane blocca al sync successivo", async () => {
-		const identity = service.authenticateAdmin(adminToken);
-		service.updateDevice(identity, deviceId, { killSwitch: true });
+		const identity = service.auth.authenticateAdmin(adminToken);
+		service.devices.updateDevice(identity, deviceId, { killSwitch: true });
 
 		// Nuova istanza dell'estensione = nuovo sync (simula il refresh periodico).
 		const pi2 = new FakePi();
@@ -155,13 +155,13 @@ test("estensione end-to-end contro un control plane reale", async (t) => {
 		assert.equal(result?.block, true);
 		assert.match(result?.reason ?? "", /kill switch/);
 
-		service.updateDevice(identity, deviceId, { killSwitch: false });
+		service.devices.updateDevice(identity, deviceId, { killSwitch: false });
 	});
 
 	await t.test("l'audit arriva al control plane allo shutdown", async () => {
 		await pi.emit("session_shutdown", {}, ctx);
-		const identity = service.authenticateAdmin(adminToken);
-		const events = await service.readDeviceAudit(identity, deviceId, 100);
+		const identity = service.auth.authenticateAdmin(adminToken);
+		const events = await service.auditLog.readDeviceAudit(identity, deviceId, 100);
 		assert.ok(events.length > 0);
 		const types = new Set(events.map((event) => event.type));
 		assert.ok(types.has("policy_decision"));
@@ -208,17 +208,17 @@ test("la revoca degrada subito a fail-closed, senza attendere la scadenza del bu
 test("dopo la revoca, la riabilitazione del device recupera dallo stato fail-closed", async () => {
 	const { FleetState, loadAgentConfig } = await import("@harness/enforcement-core");
 	const config = loadAgentConfig();
-	const identity = service.authenticateAdmin(adminToken);
+	const identity = service.auth.authenticateAdmin(adminToken);
 
 	// Revoca → il client va fail-closed al refresh.
-	service.updateDevice(identity, deviceId, { revoked: true });
+	service.devices.updateDevice(identity, deviceId, { revoked: true });
 	const state = new FleetState(config);
 	await state.initialLoad();
 	assert.equal(state.status, "fail-closed");
 	assert.equal(state.policy.killSwitch, true);
 
 	// Riabilitazione → il refresh successivo recupera senza bisogno di re-enroll.
-	service.updateDevice(identity, deviceId, { revoked: false });
+	service.devices.updateDevice(identity, deviceId, { revoked: false });
 	await state.refresh();
 	assert.equal(state.status, "ok");
 	assert.equal(state.policy.killSwitch, false);
@@ -226,7 +226,7 @@ test("dopo la revoca, la riabilitazione del device recupera dallo stato fail-clo
 
 test("rotazione chiave di firma end-to-end: il client apprende B e sopravvive al ritiro di A", async () => {
 	const { FleetState, loadAgentConfig } = await import("@harness/enforcement-core");
-	const identity = service.authenticateAdmin(adminToken);
+	const identity = service.auth.authenticateAdmin(adminToken);
 
 	// Il client parte fidando solo la chiave A (quella dell'enrollment).
 	const config = loadAgentConfig();
@@ -237,28 +237,28 @@ test("rotazione chiave di firma end-to-end: il client apprende B e sopravvive al
 
 	// Fase 1 — add: nuova chiave B (non ancora firmante). Il client, al sync,
 	// riceve un bundle ancora firmato con A che elenca anche B, e la apprende.
-	const keyB = service.addSigningKey(identity);
+	const keyB = service.signingKeys.addSigningKey(identity);
 	await state.refresh();
 	assert.equal(state.status, "ok");
 	assert.equal((config.publicKeyPems ?? []).length, 2);
 
 	// Fase 2 — promote: B firma. Il client fida già B ⇒ resta ok.
-	service.promoteSigningKey(identity, keyB.keyId);
+	service.signingKeys.promoteSigningKey(identity, keyB.keyId);
 	await state.refresh();
 	assert.equal(state.status, "ok");
 
 	// Fase 3 — retire A: i bundle sono firmati con B, il client resta ok.
-	const keyAId = service.listSigningKeys(identity).find((k) => !k.active)?.keyId as string;
-	service.retireSigningKey(identity, keyAId);
+	const keyAId = service.signingKeys.listSigningKeys(identity).find((k) => !k.active)?.keyId as string;
+	service.signingKeys.retireSigningKey(identity, keyAId);
 	await state.refresh();
 	assert.equal(state.status, "ok");
 	assert.equal((config.publicKeyPems ?? []).length, 1);
 });
 
 test("sandbox obbligatoria: senza marker tutto è bloccato, col marker si opera", async () => {
-	const identity = service.authenticateAdmin(adminToken);
+	const identity = service.auth.authenticateAdmin(adminToken);
 	const markerPath = join(clientDir, "sandbox-marker");
-	service.updateOrg(identity, {
+	service.org.updateOrg(identity, {
 		policyOverride: { sandbox: { required: true, markerPath, markerValue: "ok" } },
 	});
 	try {
@@ -284,14 +284,14 @@ test("sandbox obbligatoria: senza marker tutto è bloccato, col marker si opera"
 		);
 		assert.equal(allowed, undefined);
 	} finally {
-		service.updateOrg(identity, { policyOverride: { sandbox: { required: false } } });
+		service.org.updateOrg(identity, { policyOverride: { sandbox: { required: false } } });
 	}
 });
 
 test("anti-rollback: un bundle con configVersion inferiore viene rifiutato", async () => {
 	const { FleetState, loadAgentConfig } = await import("@harness/enforcement-core");
 	const { readFileSync: readSync } = await import("node:fs");
-	const identity = service.authenticateAdmin(adminToken);
+	const identity = service.auth.authenticateAdmin(adminToken);
 
 	const config = loadAgentConfig();
 	config.bundleCachePath = join(clientDir, "rollback-bundle.jws");
@@ -305,7 +305,7 @@ test("anti-rollback: un bundle con configVersion inferiore viene rifiutato", asy
 	const oldToken = readSync(state.bundleCachePath, "utf8").trim();
 
 	// Il control plane avanza la versione; il client la accetta (vNew > vN).
-	service.updateOrg(identity, { name: "org-bumped" });
+	service.org.updateOrg(identity, { name: "org-bumped" });
 	await state.refresh();
 	const vNew = state.configVersion as number;
 	assert.ok(vNew > vOld);

@@ -51,9 +51,9 @@ async function main() {
 
 	// Questo esempio gira fuori da un container: disattiviamo la sandbox
 	// obbligatoria (in produzione resta attiva ed è il vero confine di sicurezza).
-	const admin = service.bootstrapAdminToken("example-admin");
-	const identity = service.authenticateAdmin(admin);
-	service.updateOrg(identity, { policyOverride: { sandbox: { required: false } } });
+	const admin = service.auth.bootstrapAdminToken("example-admin");
+	const identity = service.auth.authenticateAdmin(admin);
+	service.org.updateOrg(identity, { policyOverride: { sandbox: { required: false } } });
 
 	const server = createControlPlaneServer(service);
 	await new Promise((r) => server.listen(0, r));
@@ -61,8 +61,8 @@ async function main() {
 	line(`\n▶ Control plane in ascolto su ${baseUrl}`);
 
 	// 1) Enrollment reale via HTTP (come farebbe l'agent-client).
-	const groupId = service.overview(identity).groups[0].groupId;
-	const enrollToken = service.createEnrollToken(identity, groupId, 10);
+	const groupId = service.org.overview(identity).groups[0].groupId;
+	const enrollToken = service.devices.createEnrollToken(identity, groupId, 10);
 	const enrollResp = await fetch(`${baseUrl}/api/enroll`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
@@ -129,7 +129,7 @@ async function main() {
 	await adapter.endSession();
 
 	// 5) L'audit prodotto è finito nel control plane.
-	const events = await service.readDeviceAudit(identity, enrollment.deviceId, 100);
+	const events = await service.auditLog.readDeviceAudit(identity, enrollment.deviceId, 100);
 	line(`\n▶ Eventi di audit registrati sul control plane: ${events.length}`);
 	line(`  tipi: ${[...new Set(events.map((e) => e.type))].join(", ")}\n`);
 

@@ -35,13 +35,13 @@ before(async () => {
 
 	const store = new Store(dataDir);
 	const service = new ControlPlaneService(store);
-	const admin = service.authenticateAdmin(service.bootstrapAdminToken("t"));
-	const groupId = service.overview(admin).groups[0]?.groupId as string;
-	const enrollToken = service.createEnrollToken(admin, groupId, 10);
+	const admin = service.auth.authenticateAdmin(service.auth.bootstrapAdminToken("t"));
+	const groupId = service.org.overview(admin).groups[0]?.groupId as string;
+	const enrollToken = service.devices.createEnrollToken(admin, groupId, 10);
 	// Device legato al fingerprint del certificato client.
-	const enrollment = service.enrollDevice(enrollToken, "device-01", fingerprint(clientCert.certPem));
+	const enrollment = service.devices.enrollDevice(enrollToken, "device-01", fingerprint(clientCert.certPem));
 	deviceToken = enrollment.deviceToken;
-	const gatewayToken = service.createGatewayToken(admin, "gw");
+	const gatewayToken = service.auth.createGatewayToken(admin, "gw");
 
 	controlPlane = createControlPlaneServer(service);
 	await new Promise<void>((r) => controlPlane.listen(0, r));

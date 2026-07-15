@@ -86,11 +86,11 @@ test("il server serve HTTPS e accetta connessioni con la CA di test", { skip: !H
 
 test("device legato mTLS: config solo col certificato client corretto", { skip: !HAS_OPENSSL }, async () => {
 	// Bootstrap admin + enrollment del device legato al fingerprint del cert client.
-	const admin = service.bootstrapAdminToken("root");
-	const identity = service.authenticateAdmin(admin);
-	const groupId = service.overview(identity).groups[0]?.groupId as string;
-	const enrollToken = service.createEnrollToken(identity, groupId, 10);
-	const enrollment = service.enrollDevice(enrollToken, "device-01", clientFingerprint);
+	const admin = service.auth.bootstrapAdminToken("root");
+	const identity = service.auth.authenticateAdmin(admin);
+	const groupId = service.org.overview(identity).groups[0]?.groupId as string;
+	const enrollToken = service.devices.createEnrollToken(identity, groupId, 10);
+	const enrollment = service.devices.enrollDevice(enrollToken, "device-01", clientFingerprint);
 	const deviceToken = enrollment.deviceToken;
 
 	// Con il certificato client giusto → 200.

@@ -28,7 +28,7 @@ before(async () => {
 	dataDir = mkdtempSync(join(tmpdir(), "harness-cp-test-"));
 	const store = new Store(dataDir);
 	const service = new ControlPlaneService(store);
-	adminToken = service.bootstrapAdminToken("test-admin");
+	adminToken = service.auth.bootstrapAdminToken("test-admin");
 	server = createControlPlaneServer(service, { readiness: () => store.checkReady() });
 	await new Promise<void>((resolve) => server.listen(0, resolve));
 	baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -499,35 +499,35 @@ test("binding mTLS: la logica richiede il certificato legato", () => {
 	const dir = mkdtempSync(join(tmpdir(), "harness-mtls-"));
 	try {
 		const svc = new ControlPlaneService(new Store(dir));
-		const admin = svc.bootstrapAdminToken("t");
-		const identity = svc.authenticateAdmin(admin);
-		const groupId = svc.overview(identity).groups[0]?.groupId as string;
+		const admin = svc.auth.bootstrapAdminToken("t");
+		const identity = svc.auth.authenticateAdmin(admin);
+		const groupId = svc.org.overview(identity).groups[0]?.groupId as string;
 
 		// Device legato a un fingerprint fin dall'enrollment.
-		const enr = svc.createEnrollToken(identity, groupId, 10);
-		const bound = svc.enrollDevice(enr, "bound", "AA:BB:CC:DD");
+		const enr = svc.devices.createEnrollToken(identity, groupId, 10);
+		const bound = svc.devices.enrollDevice(enr, "bound", "AA:BB:CC:DD");
 
 		// Senza certificato → 403.
-		assert.throws(() => svc.authenticateDevice(bound.deviceToken), /certificato client mTLS richiesto/);
+		assert.throws(() => svc.auth.authenticateDevice(bound.deviceToken), /certificato client mTLS richiesto/);
 		// Certificato sbagliato → 403.
-		assert.throws(() => svc.authenticateDevice(bound.deviceToken, "99:88:77"), /non corrisponde/);
+		assert.throws(() => svc.auth.authenticateDevice(bound.deviceToken, "99:88:77"), /non corrisponde/);
 		// Certificato giusto (normalizzazione dei due-punti/maiuscole) → ok.
-		assert.equal(svc.authenticateDevice(bound.deviceToken, "aabbccdd").deviceId, bound.deviceId);
+		assert.equal(svc.auth.authenticateDevice(bound.deviceToken, "aabbccdd").deviceId, bound.deviceId);
 
 		// Device non legato, TOFU disabilitato (default): il bind è rifiutato.
-		const enr2 = svc.createEnrollToken(identity, groupId, 10);
-		const free = svc.enrollDevice(enr2, "free");
-		const dev = svc.authenticateDevice(free.deviceToken);
+		const enr2 = svc.devices.createEnrollToken(identity, groupId, 10);
+		const free = svc.devices.enrollDevice(enr2, "free");
+		const dev = svc.auth.authenticateDevice(free.deviceToken);
 		assert.equal(dev.deviceId, free.deviceId);
-		assert.throws(() => svc.bindDeviceCertificate(dev, "12:34:56:78"), /trust-on-first-use disabilitato/);
+		assert.throws(() => svc.auth.bindDeviceCertificate(dev, "12:34:56:78"), /trust-on-first-use disabilitato/);
 		// Il device resta autenticabile col solo token (nessun binding avvenuto).
-		assert.equal(svc.authenticateDevice(free.deviceToken).deviceId, free.deviceId);
+		assert.equal(svc.auth.authenticateDevice(free.deviceToken).deviceId, free.deviceId);
 
 		// Con l'opt-in esplicito, il TOFU funziona come prima.
-		svc.updateOrg(identity, { allowCertTofu: true });
-		svc.bindDeviceCertificate(dev, "12:34:56:78");
-		assert.throws(() => svc.authenticateDevice(free.deviceToken), /richiesto/);
-		assert.equal(svc.authenticateDevice(free.deviceToken, "12345678").deviceId, free.deviceId);
+		svc.org.updateOrg(identity, { allowCertTofu: true });
+		svc.auth.bindDeviceCertificate(dev, "12:34:56:78");
+		assert.throws(() => svc.auth.authenticateDevice(free.deviceToken), /richiesto/);
+		assert.equal(svc.auth.authenticateDevice(free.deviceToken, "12345678").deviceId, free.deviceId);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -620,35 +620,35 @@ test("P2: scadenza server-side del device token, requireDeviceCert e rate-limit 
 	try {
 		const store = new Store(dir);
 		const svc = new ControlPlaneService(store);
-		const admin = svc.bootstrapAdminToken("t");
-		const id = svc.authenticateAdmin(admin);
-		const groupId = svc.overview(id).groups[0]?.groupId as string;
+		const admin = svc.auth.bootstrapAdminToken("t");
+		const id = svc.auth.authenticateAdmin(admin);
+		const groupId = svc.org.overview(id).groups[0]?.groupId as string;
 
 		// Scadenza token: un device con tokenIssuedAt vecchio è rifiutato.
-		const enr = svc.createEnrollToken(id, groupId, 10);
-		const dev = svc.enrollDevice(enr, "d");
-		assert.equal(svc.authenticateDevice(dev.deviceToken).deviceId, dev.deviceId);
-		svc.updateOrg(id, { deviceTokenMaxAgeDays: 1 });
+		const enr = svc.devices.createEnrollToken(id, groupId, 10);
+		const dev = svc.devices.enrollDevice(enr, "d");
+		assert.equal(svc.auth.authenticateDevice(dev.deviceToken).deviceId, dev.deviceId);
+		svc.org.updateOrg(id, { deviceTokenMaxAgeDays: 1 });
 		const aged = store.state.devices[dev.deviceId];
 		if (!aged) throw new Error("device non trovato nello store");
 		aged.tokenIssuedAt = new Date(Date.now() - 3 * 86_400_000).toISOString();
-		assert.throws(() => svc.authenticateDevice(dev.deviceToken), /scaduto/);
+		assert.throws(() => svc.auth.authenticateDevice(dev.deviceToken), /scaduto/);
 		// La rotazione riemette il token e azzera l'età (il device è raggiunto
 		// direttamente, come farebbe un flusso di re-emissione amministrativo).
 		const record = store.state.devices[dev.deviceId];
 		if (!record) throw new Error("device non trovato nello store");
-		const rotated = svc.rotateDeviceToken(record);
-		assert.equal(svc.authenticateDevice(rotated).deviceId, dev.deviceId);
+		const rotated = svc.auth.rotateDeviceToken(record);
+		assert.equal(svc.auth.authenticateDevice(rotated).deviceId, dev.deviceId);
 
 		// requireDeviceCert: l'enrollment senza fingerprint è rifiutato, con è ok.
-		svc.updateOrg(id, { requireDeviceCert: true });
-		const enr2 = svc.createEnrollToken(id, groupId, 10);
-		assert.throws(() => svc.enrollDevice(enr2, "d2"), /certificato client/);
-		const enr3 = svc.createEnrollToken(id, groupId, 10);
-		const dev3 = svc.enrollDevice(enr3, "d3", "AA:BB:CC:DD");
+		svc.org.updateOrg(id, { requireDeviceCert: true });
+		const enr2 = svc.devices.createEnrollToken(id, groupId, 10);
+		assert.throws(() => svc.devices.enrollDevice(enr2, "d2"), /certificato client/);
+		const enr3 = svc.devices.createEnrollToken(id, groupId, 10);
+		const dev3 = svc.devices.enrollDevice(enr3, "d3", "AA:BB:CC:DD");
 		assert.ok(dev3.deviceId);
 		// TOFU disabilitato: bind-cert è rifiutato se il device non è già legato.
-		const enr4 = svc.createEnrollToken(id, groupId, 10);
+		const enr4 = svc.devices.createEnrollToken(id, groupId, 10);
 		// (device legato all'enroll: per testare il rifiuto TOFU serve un device non legato,
 		//  ma con requireDeviceCert non se ne creano; il percorso è coperto dalla logica.)
 		void enr4;
@@ -662,31 +662,31 @@ test("eliminazione device: richiede il ruolo admin, rimuove lo stato ma l'audit 
 	try {
 		const store = new Store(dir);
 		const svc = new ControlPlaneService(store);
-		const admin = svc.bootstrapAdminToken("root");
-		const id = svc.authenticateAdmin(admin);
-		const groupId = svc.overview(id).groups[0]?.groupId as string;
+		const admin = svc.auth.bootstrapAdminToken("root");
+		const id = svc.auth.authenticateAdmin(admin);
+		const groupId = svc.org.overview(id).groups[0]?.groupId as string;
 
-		const enr = svc.createEnrollToken(id, groupId, 10);
-		const dev = svc.enrollDevice(enr, "da-eliminare");
+		const enr = svc.devices.createEnrollToken(id, groupId, 10);
+		const dev = svc.devices.enrollDevice(enr, "da-eliminare");
 		const device = store.state.devices[dev.deviceId];
 		if (!device) throw new Error("device non trovato nello store");
-		svc.ingestAudit(device, [
+		svc.devices.ingestAudit(device, [
 			{ eventId: "e1", deviceId: dev.deviceId, timestamp: new Date().toISOString(), type: "agent_start", data: {} },
 		]);
 
 		// operator non può eliminare device: serve il ruolo admin.
-		const operatorToken = svc.createAdminToken(id, "op", "operator", 1);
-		const operatorId = svc.authenticateAdmin(operatorToken);
-		assert.throws(() => svc.deleteDevice(operatorId, dev.deviceId), /riservata al ruolo/);
+		const operatorToken = svc.auth.createAdminToken(id, "op", "operator", 1);
+		const operatorId = svc.auth.authenticateAdmin(operatorToken);
+		assert.throws(() => svc.devices.deleteDevice(operatorId, dev.deviceId), /riservata al ruolo/);
 
-		svc.deleteDevice(id, dev.deviceId);
+		svc.devices.deleteDevice(id, dev.deviceId);
 		assert.equal(store.state.devices[dev.deviceId], undefined);
-		assert.throws(() => svc.deleteDevice(id, dev.deviceId), /non trovato/);
-		assert.throws(() => svc.effectivePolicy(id, dev.deviceId), /non trovato/);
+		assert.throws(() => svc.devices.deleteDevice(id, dev.deviceId), /non trovato/);
+		assert.throws(() => svc.devices.effectivePolicy(id, dev.deviceId), /non trovato/);
 
 		// L'audit del device resta consultabile per stream id, indipendentemente
 		// dal ciclo di vita del device (retention separata, vedi Store.pruneAudit).
-		const events = await svc.readDeviceAudit(id, dev.deviceId, 10);
+		const events = await svc.auditLog.readDeviceAudit(id, dev.deviceId, 10);
 		assert.equal(events.length, 1);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
@@ -698,11 +698,11 @@ test("retention: i token amministrativi scaduti vengono potati, quelli validi re
 	try {
 		const store = new Store(dir);
 		const svc = new ControlPlaneService(store);
-		const admin = svc.bootstrapAdminToken("root");
-		const id = svc.authenticateAdmin(admin);
+		const admin = svc.auth.bootstrapAdminToken("root");
+		const id = svc.auth.authenticateAdmin(admin);
 
-		const validToken = svc.createAdminToken(id, "valido", "viewer", 30);
-		const expiringToken = svc.createAdminToken(id, "scaduto", "viewer", 30);
+		const validToken = svc.auth.createAdminToken(id, "valido", "viewer", 30);
+		const expiringToken = svc.auth.createAdminToken(id, "scaduto", "viewer", 30);
 		// Retrodata la scadenza direttamente nello stato, come farebbe il tempo.
 		for (const record of Object.values(store.state.adminTokens)) {
 			if (record.name === "scaduto") record.expiresAt = new Date(Date.now() - 1000).toISOString();
@@ -710,10 +710,10 @@ test("retention: i token amministrativi scaduti vengono potati, quelli validi re
 
 		const pruned = svc.auth.pruneExpiredAdminTokens();
 		assert.equal(pruned, 1);
-		assert.equal(svc.authenticateAdmin(validToken).name, "valido");
-		assert.throws(() => svc.authenticateAdmin(expiringToken), /non valido/);
+		assert.equal(svc.auth.authenticateAdmin(validToken).name, "valido");
+		assert.throws(() => svc.auth.authenticateAdmin(expiringToken), /non valido/);
 		// Il token di bootstrap (senza scadenza) non viene mai toccato dal pruning.
-		assert.equal(svc.authenticateAdmin(admin).role, "admin");
+		assert.equal(svc.auth.authenticateAdmin(admin).role, "admin");
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -724,14 +724,14 @@ test("retention: pruneAudit in file-mode non cancella righe (ruota su archivio p
 	try {
 		const store = new Store(dir);
 		const svc = new ControlPlaneService(store);
-		const admin = svc.bootstrapAdminToken("root");
-		const id = svc.authenticateAdmin(admin);
-		const groupId = svc.overview(id).groups[0]?.groupId as string;
-		const enr = svc.createEnrollToken(id, groupId, 10);
-		const dev = svc.enrollDevice(enr, "d");
+		const admin = svc.auth.bootstrapAdminToken("root");
+		const id = svc.auth.authenticateAdmin(admin);
+		const groupId = svc.org.overview(id).groups[0]?.groupId as string;
+		const enr = svc.devices.createEnrollToken(id, groupId, 10);
+		const dev = svc.devices.enrollDevice(enr, "d");
 		const device = store.state.devices[dev.deviceId];
 		if (!device) throw new Error("device non trovato nello store");
-		svc.ingestAudit(device, [
+		svc.devices.ingestAudit(device, [
 			{ eventId: "e1", deviceId: dev.deviceId, timestamp: new Date().toISOString(), type: "agent_start", data: {} },
 		]);
 

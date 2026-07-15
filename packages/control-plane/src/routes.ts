@@ -31,7 +31,7 @@ export function buildRoutes(): RouteDef[] {
 			path: "/api/enroll",
 			auth: "none",
 			handler: async (ctx: RouteContext) => {
-				if (!(await ctx.service.checkEnrollRateLimit(clientIp(ctx.req)))) {
+				if (!(await ctx.service.devices.checkEnrollRateLimit(clientIp(ctx.req)))) {
 					throw new ServiceError(429, "troppi tentativi di enrollment, riprovare tra un minuto");
 				}
 				const body = await ctx.json();
@@ -43,14 +43,14 @@ export function buildRoutes(): RouteDef[] {
 				// Chiave pubblica di firma propria del device (provenance dell'audit),
 				// generata dal client all'enrollment: opzionale per retrocompatibilità.
 				const deviceSigningPublicKeyPem = optionalString(body, "deviceSigningPublicKeyPem");
-				return ctx.service.enrollDevice(enrollToken, deviceName, certFingerprint, deviceSigningPublicKeyPem);
+				return ctx.service.devices.enrollDevice(enrollToken, deviceName, certFingerprint, deviceSigningPublicKeyPem);
 			},
 		},
 		{
 			method: "GET",
 			path: "/api/device/config",
 			auth: "device",
-			handler: (ctx) => ({ token: ctx.service.issueConfigBundle(ctx.device!) }),
+			handler: (ctx) => ({ token: ctx.service.devices.issueConfigBundle(ctx.device!) }),
 		},
 		{
 			method: "POST",
@@ -62,14 +62,14 @@ export function buildRoutes(): RouteDef[] {
 				// Firma del batch (JWS con la chiave di firma propria del device):
 				// verificata dal service se il device ne ha registrata una.
 				const signature = optionalString(body, "signature");
-				return { accepted: ctx.service.ingestAudit(ctx.device!, events, signature) };
+				return { accepted: ctx.service.devices.ingestAudit(ctx.device!, events, signature) };
 			},
 		},
 		{
 			method: "POST",
 			path: "/api/device/rotate-token",
 			auth: "device",
-			handler: (ctx) => ({ deviceToken: ctx.service.rotateDeviceToken(ctx.device!) }),
+			handler: (ctx) => ({ deviceToken: ctx.service.auth.rotateDeviceToken(ctx.device!) }),
 		},
 		{
 			method: "POST",
@@ -78,7 +78,7 @@ export function buildRoutes(): RouteDef[] {
 			handler: (ctx) => {
 				// Trust on first use: già autenticato col token (se legato, il
 				// fingerprint combacia); lega il device al certificato presentato.
-				ctx.service.bindDeviceCertificate(ctx.device!, ctx.fp);
+				ctx.service.auth.bindDeviceCertificate(ctx.device!, ctx.fp);
 				return { ok: true };
 			},
 		},
@@ -93,7 +93,7 @@ export function buildRoutes(): RouteDef[] {
 				const deviceToken = requireString(body, "deviceToken");
 				// Il gateway inoltra il fingerprint del cert presentato dal device.
 				const presentedFingerprint = optionalString(body, "presentedFingerprint");
-				return ctx.service.introspectDeviceToken(deviceToken, presentedFingerprint);
+				return ctx.service.auth.introspectDeviceToken(deviceToken, presentedFingerprint);
 			},
 		},
 
@@ -102,13 +102,13 @@ export function buildRoutes(): RouteDef[] {
 			method: "GET",
 			path: "/api/admin/overview",
 			auth: "admin",
-			handler: (ctx) => ctx.service.overview(ctx.identity!),
+			handler: (ctx) => ctx.service.org.overview(ctx.identity!),
 		},
 		{
 			method: "GET",
 			path: "/api/admin/fleet-summary",
 			auth: "admin",
-			handler: (ctx) => ctx.service.fleetSummary(ctx.identity!),
+			handler: (ctx) => ctx.service.org.fleetSummary(ctx.identity!),
 		},
 		{
 			method: "GET",
@@ -121,7 +121,7 @@ export function buildRoutes(): RouteDef[] {
 						? filterParam
 						: "all";
 				const q = ctx.url.searchParams.get("q");
-				return ctx.service.listDevices(ctx.identity!, {
+				return ctx.service.org.listDevices(ctx.identity!, {
 					offset: Number(ctx.url.searchParams.get("offset") ?? "0"),
 					limit: Number(ctx.url.searchParams.get("limit") ?? "25"),
 					filter,
@@ -133,14 +133,14 @@ export function buildRoutes(): RouteDef[] {
 			method: "GET",
 			path: "/api/admin/org/config",
 			auth: "admin",
-			handler: (ctx) => ctx.service.getOrgConfig(ctx.identity!),
+			handler: (ctx) => ctx.service.org.getOrgConfig(ctx.identity!),
 		},
 		{
 			method: "PUT",
 			path: "/api/admin/org",
 			auth: "admin",
 			handler: async (ctx) => {
-				ctx.service.updateOrg(ctx.identity!, await ctx.json());
+				ctx.service.org.updateOrg(ctx.identity!, await ctx.json());
 				return { ok: true };
 			},
 		},
@@ -148,14 +148,14 @@ export function buildRoutes(): RouteDef[] {
 			method: "POST",
 			path: "/api/admin/groups",
 			auth: "admin",
-			handler: async (ctx) => ctx.service.createGroup(ctx.identity!, requireString(await ctx.json(), "name")),
+			handler: async (ctx) => ctx.service.groups.createGroup(ctx.identity!, requireString(await ctx.json(), "name")),
 		},
 		{
 			method: "PUT",
 			path: "/api/admin/groups/:id",
 			auth: "admin",
 			handler: async (ctx) => {
-				ctx.service.updateGroup(ctx.identity!, ctx.params.id!, await ctx.json());
+				ctx.service.groups.updateGroup(ctx.identity!, ctx.params.id!, await ctx.json());
 				return { ok: true };
 			},
 		},
@@ -164,7 +164,7 @@ export function buildRoutes(): RouteDef[] {
 			path: "/api/admin/groups/:id",
 			auth: "admin",
 			handler: (ctx) => {
-				ctx.service.deleteGroup(ctx.identity!, ctx.params.id!);
+				ctx.service.groups.deleteGroup(ctx.identity!, ctx.params.id!);
 				return { ok: true };
 			},
 		},
@@ -176,7 +176,7 @@ export function buildRoutes(): RouteDef[] {
 				const body = await ctx.json();
 				const groupId = requireString(body, "groupId");
 				const ttlMinutes = typeof body.ttlMinutes === "number" ? body.ttlMinutes : 60;
-				return { enrollToken: ctx.service.createEnrollToken(ctx.identity!, groupId, ttlMinutes) };
+				return { enrollToken: ctx.service.devices.createEnrollToken(ctx.identity!, groupId, ttlMinutes) };
 			},
 		},
 		{
@@ -184,7 +184,7 @@ export function buildRoutes(): RouteDef[] {
 			path: "/api/admin/devices/:id",
 			auth: "admin",
 			handler: async (ctx) => {
-				ctx.service.updateDevice(ctx.identity!, ctx.params.id!, await ctx.json());
+				ctx.service.devices.updateDevice(ctx.identity!, ctx.params.id!, await ctx.json());
 				return { ok: true };
 			},
 		},
@@ -193,7 +193,7 @@ export function buildRoutes(): RouteDef[] {
 			path: "/api/admin/devices/:id",
 			auth: "admin",
 			handler: (ctx) => {
-				ctx.service.deleteDevice(ctx.identity!, ctx.params.id!);
+				ctx.service.devices.deleteDevice(ctx.identity!, ctx.params.id!);
 				return { ok: true };
 			},
 		},
@@ -201,26 +201,26 @@ export function buildRoutes(): RouteDef[] {
 			method: "GET",
 			path: "/api/admin/devices/:id/effective-policy",
 			auth: "admin",
-			handler: (ctx) => ctx.service.effectivePolicy(ctx.identity!, ctx.params.id!),
+			handler: (ctx) => ctx.service.devices.effectivePolicy(ctx.identity!, ctx.params.id!),
 		},
 		{
 			method: "GET",
 			path: "/api/admin/signing-keys",
 			auth: "admin",
-			handler: (ctx) => ({ keys: ctx.service.listSigningKeys(ctx.identity!) }),
+			handler: (ctx) => ({ keys: ctx.service.signingKeys.listSigningKeys(ctx.identity!) }),
 		},
 		{
 			method: "POST",
 			path: "/api/admin/signing-keys",
 			auth: "admin",
-			handler: (ctx) => ctx.service.addSigningKey(ctx.identity!),
+			handler: (ctx) => ctx.service.signingKeys.addSigningKey(ctx.identity!),
 		},
 		{
 			method: "POST",
 			path: "/api/admin/signing-keys/:id/promote",
 			auth: "admin",
 			handler: (ctx) => {
-				ctx.service.promoteSigningKey(ctx.identity!, ctx.params.id!);
+				ctx.service.signingKeys.promoteSigningKey(ctx.identity!, ctx.params.id!);
 				return { ok: true };
 			},
 		},
@@ -229,7 +229,7 @@ export function buildRoutes(): RouteDef[] {
 			path: "/api/admin/signing-keys/:id",
 			auth: "admin",
 			handler: (ctx) => {
-				ctx.service.retireSigningKey(ctx.identity!, ctx.params.id!);
+				ctx.service.signingKeys.retireSigningKey(ctx.identity!, ctx.params.id!);
 				return { ok: true };
 			},
 		},
@@ -239,14 +239,14 @@ export function buildRoutes(): RouteDef[] {
 			auth: "admin",
 			handler: async (ctx) => {
 				const deviceId = ctx.url.searchParams.get("deviceId") ?? undefined;
-				return ctx.service.verifyAudit(ctx.identity!, deviceId);
+				return ctx.service.auditLog.verifyAudit(ctx.identity!, deviceId);
 			},
 		},
 		{
 			method: "GET",
 			path: "/api/admin/audit/anchor",
 			auth: "admin",
-			handler: (ctx) => ctx.service.exportAuditAnchor(ctx.identity!),
+			handler: (ctx) => ctx.service.auditLog.exportAuditAnchor(ctx.identity!),
 		},
 		{
 			method: "GET",
@@ -256,8 +256,8 @@ export function buildRoutes(): RouteDef[] {
 				const deviceId = ctx.url.searchParams.get("deviceId");
 				const limit = Number(ctx.url.searchParams.get("limit") ?? "100");
 				const events = deviceId
-					? await ctx.service.readDeviceAudit(ctx.identity!, deviceId, limit)
-					: await ctx.service.readAdminAudit(ctx.identity!, limit);
+					? await ctx.service.auditLog.readDeviceAudit(ctx.identity!, deviceId, limit)
+					: await ctx.service.auditLog.readAdminAudit(ctx.identity!, limit);
 				return { events };
 			},
 		},
@@ -265,7 +265,7 @@ export function buildRoutes(): RouteDef[] {
 			method: "GET",
 			path: "/api/admin/admin-tokens",
 			auth: "admin",
-			handler: (ctx) => ({ tokens: ctx.service.listAdminTokens(ctx.identity!) }),
+			handler: (ctx) => ({ tokens: ctx.service.auth.listAdminTokens(ctx.identity!) }),
 		},
 		{
 			method: "POST",
@@ -275,7 +275,7 @@ export function buildRoutes(): RouteDef[] {
 				const body = await ctx.json();
 				const role = requireString(body, "role") as "admin" | "operator" | "viewer";
 				const ttlDays = typeof body.ttlDays === "number" ? body.ttlDays : 90;
-				return { token: ctx.service.createAdminToken(ctx.identity!, requireString(body, "name"), role, ttlDays) };
+				return { token: ctx.service.auth.createAdminToken(ctx.identity!, requireString(body, "name"), role, ttlDays) };
 			},
 		},
 		{
@@ -283,7 +283,7 @@ export function buildRoutes(): RouteDef[] {
 			path: "/api/admin/admin-tokens/:id",
 			auth: "admin",
 			handler: (ctx) => {
-				ctx.service.revokeAdminToken(ctx.identity!, ctx.params.id!);
+				ctx.service.auth.revokeAdminToken(ctx.identity!, ctx.params.id!);
 				return { ok: true };
 			},
 		},
@@ -292,7 +292,7 @@ export function buildRoutes(): RouteDef[] {
 			path: "/api/admin/gateway-tokens",
 			auth: "admin",
 			handler: async (ctx) => ({
-				token: ctx.service.createGatewayToken(ctx.identity!, requireString(await ctx.json(), "name")),
+				token: ctx.service.auth.createGatewayToken(ctx.identity!, requireString(await ctx.json(), "name")),
 			}),
 		},
 

@@ -68,32 +68,32 @@ test("Store.deviceByTokenHash: indice O(1) coerente dopo enroll, rotate e revoke
 	try {
 		const store = new Store(dir);
 		const service = new ControlPlaneService(store);
-		const admin = service.bootstrapAdminToken("root");
-		const identity = service.authenticateAdmin(admin);
-		const groupId = service.overview(identity).groups[0]?.groupId as string;
+		const admin = service.auth.bootstrapAdminToken("root");
+		const identity = service.auth.authenticateAdmin(admin);
+		const groupId = service.org.overview(identity).groups[0]?.groupId as string;
 
 		// Enroll: il device è subito risolvibile dall'indice.
-		const enr = service.createEnrollToken(identity, groupId, 10);
-		const dev = service.enrollDevice(enr, "d1");
-		assert.equal(service.authenticateDevice(dev.deviceToken).deviceId, dev.deviceId);
+		const enr = service.devices.createEnrollToken(identity, groupId, 10);
+		const dev = service.devices.enrollDevice(enr, "d1");
+		assert.equal(service.auth.authenticateDevice(dev.deviceToken).deviceId, dev.deviceId);
 
 		// Rotate: il vecchio token sparisce dall'indice, il nuovo compare.
 		const device = store.state.devices[dev.deviceId];
 		if (!device) throw new Error("device non trovato");
-		const rotated = service.rotateDeviceToken(device);
-		assert.throws(() => service.authenticateDevice(dev.deviceToken), /non valido/);
-		assert.equal(service.authenticateDevice(rotated).deviceId, dev.deviceId);
+		const rotated = service.auth.rotateDeviceToken(device);
+		assert.throws(() => service.auth.authenticateDevice(dev.deviceToken), /non valido/);
+		assert.equal(service.auth.authenticateDevice(rotated).deviceId, dev.deviceId);
 
 		// Un secondo device non deve interferire con l'indice del primo.
-		const enr2 = service.createEnrollToken(identity, groupId, 10);
-		const dev2 = service.enrollDevice(enr2, "d2");
-		assert.equal(service.authenticateDevice(rotated).deviceId, dev.deviceId);
-		assert.equal(service.authenticateDevice(dev2.deviceToken).deviceId, dev2.deviceId);
+		const enr2 = service.devices.createEnrollToken(identity, groupId, 10);
+		const dev2 = service.devices.enrollDevice(enr2, "d2");
+		assert.equal(service.auth.authenticateDevice(rotated).deviceId, dev.deviceId);
+		assert.equal(service.auth.authenticateDevice(dev2.deviceToken).deviceId, dev2.deviceId);
 
 		// Revoca: il token resta nell'indice (mapping tokenHash→deviceId) ma
 		// l'autenticazione deve comunque fallire (device.revoked).
-		service.updateDevice(identity, dev2.deviceId, { revoked: true });
-		assert.throws(() => service.authenticateDevice(dev2.deviceToken), /revocato/);
+		service.devices.updateDevice(identity, dev2.deviceId, { revoked: true });
+		assert.throws(() => service.auth.authenticateDevice(dev2.deviceToken), /revocato/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -106,9 +106,9 @@ test("Store con backend in-memory: idratazione e write-behind", async () => {
 		// Prima apertura: backend vuoto → lo stato locale viene salvato nel backend.
 		const store = await Store.openWithBackend(dir1, backend, KEK);
 		const service = new ControlPlaneService(store);
-		const admin = service.bootstrapAdminToken("capo");
-		const identity = service.authenticateAdmin(admin);
-		service.createGroup(identity, "produzione");
+		const admin = service.auth.bootstrapAdminToken("capo");
+		const identity = service.auth.authenticateAdmin(admin);
+		service.groups.createGroup(identity, "produzione");
 		await store.flush();
 
 		// Seconda apertura (data dir diversa) sullo stesso backend: lo stato
@@ -133,9 +133,9 @@ test("le chiavi di firma sono incluse nello snapshot durevole", async () => {
 	try {
 		const store = await Store.openWithBackend(dir, backend, KEK);
 		const service = new ControlPlaneService(store);
-		const admin = service.bootstrapAdminToken("k");
-		const identity = service.authenticateAdmin(admin);
-		service.addSigningKey(identity);
+		const admin = service.auth.bootstrapAdminToken("k");
+		const identity = service.auth.authenticateAdmin(admin);
+		service.signingKeys.addSigningKey(identity);
 		await store.flush();
 		const snapshot = await backend.load();
 		assert.ok(snapshot);
@@ -202,30 +202,30 @@ test("Postgres normalizzato: scritture mirate e multi-istanza convergente (live)
 	const storeB = await Store.openWithBackend(dirB, new PostgresStateStore(url), KEK);
 	try {
 		const svcA = new ControlPlaneService(storeA);
-		const admin = svcA.bootstrapAdminToken("root");
-		const idA = svcA.authenticateAdmin(admin);
-		const groupId = svcA.overview(idA).groups[0]?.groupId as string;
+		const admin = svcA.auth.bootstrapAdminToken("root");
+		const idA = svcA.auth.authenticateAdmin(admin);
+		const groupId = svcA.org.overview(idA).groups[0]?.groupId as string;
 
 		// Istanza A arruola un device; B lo vede dopo un refresh (convergenza).
-		const enr = svcA.createEnrollToken(idA, groupId, 10);
-		const dev = svcA.enrollDevice(enr, "d-mtls");
+		const enr = svcA.devices.createEnrollToken(idA, groupId, 10);
+		const dev = svcA.devices.enrollDevice(enr, "d-mtls");
 		await storeA.flush();
 		await storeB.refreshNow();
 		assert.ok(storeB.state.devices[dev.deviceId], "l'istanza B deve vedere il device creato da A");
 		// L'indice tokenHash→deviceId converge insieme allo stato: B deve poter
 		// autenticare il device via il proprio service, non solo vederlo in state.
-		assert.equal(svcA.authenticateDevice(dev.deviceToken).deviceId, dev.deviceId);
+		assert.equal(svcA.auth.authenticateDevice(dev.deviceToken).deviceId, dev.deviceId);
 		const svcBForAuth = new ControlPlaneService(storeB);
-		assert.equal(svcBForAuth.authenticateDevice(dev.deviceToken).deviceId, dev.deviceId);
+		assert.equal(svcBForAuth.auth.authenticateDevice(dev.deviceToken).deviceId, dev.deviceId);
 
 		// Mutazioni concorrenti su device diversi non si sovrascrivono (row-level).
-		const enr2 = svcA.createEnrollToken(idA, groupId, 10);
-		const dev2 = svcA.enrollDevice(enr2, "d2");
+		const enr2 = svcA.devices.createEnrollToken(idA, groupId, 10);
+		const dev2 = svcA.devices.enrollDevice(enr2, "d2");
 		await storeA.flush();
 		await storeB.refreshNow();
 		const svcB = new ControlPlaneService(storeB);
 		// B sospende dev2 mentre A lo lascia attivo: scrittura mirata su dev2.
-		svcB.updateDevice(svcB.authenticateAdmin(admin), dev2.deviceId, { killSwitch: true });
+		svcB.devices.updateDevice(svcB.auth.authenticateAdmin(admin), dev2.deviceId, { killSwitch: true });
 		await storeB.flush();
 		await storeA.refreshNow();
 		assert.equal(storeA.state.devices[dev2.deviceId]?.killSwitch, true);
@@ -529,13 +529,13 @@ test(
 		const storeA = await Store.openWithBackend(dirA, new PostgresStateStore(url), KEK);
 		try {
 			const svcA = new ControlPlaneService(storeA);
-			const admin = svcA.bootstrapAdminToken("root");
-			const idA = svcA.authenticateAdmin(admin);
+			const admin = svcA.auth.bootstrapAdminToken("root");
+			const idA = svcA.auth.authenticateAdmin(admin);
 
 			// B si connette e cattura il cursore corrente, poi resta indietro.
 			const storeB = await Store.openWithBackend(dirB, new PostgresStateStore(url), KEK);
 			try {
-				for (let i = 0; i < 5; i += 1) svcA.createGroup(idA, `g${i}`);
+				for (let i = 0; i < 5; i += 1) svcA.groups.createGroup(idA, `g${i}`);
 				await storeA.flush();
 
 				// Pota il changelog condiviso ben oltre il cursore fermo di B.
