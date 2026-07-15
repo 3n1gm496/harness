@@ -100,6 +100,59 @@ test("corpus di bypass: evaluateBashCommand nega tutti i one-liner di esecuzione
 	}
 });
 
+test("corpus di bypass avanzati: forme attaccate, ANSI-C, wrapper, suffissi di versione", () => {
+	const bash = defaultPolicy().bash;
+	const bypasses = [
+		// Flag attaccati (un solo token argv, non === "-e"/"--eval"): erano un
+		// RCE nella config di default (node/python sono prefissi consentiti).
+		"node --eval='process.exit()'",
+		"node --eval=1",
+		"node -e'require(\"child_process\")'",
+		"node -praw",
+		"python3 -c'import os'",
+		"python3 -cprint(1)",
+		"perl -e'system(1)'",
+		"perl -E'say 1'",
+		"ruby -e'exec(1)'",
+		"php -r'echo 1;'",
+		// Cluster di short flag.
+		"perl -ne'print' file",
+		"perl -pe's/a/b/' file",
+		// ANSI-C quoting che maschera il nome shell/interprete.
+		"$'\\x62\\x61\\x73\\x68' -c id", // bash
+		"$'\\x6e\\x6f\\x64\\x65' -e x", // node
+		"$'\\163\\150' -c id", // sh (ottale)
+		// Wrapper che nascondevano una shell dietro un primo token innocuo.
+		"command bash -c id",
+		"time bash -c id",
+		"sudo sh -c id",
+		"busybox sh -c id",
+		// Interpreti con suffisso di versione.
+		"python3.11 -c 'import os'",
+		"node18 -e 'x'",
+		"ruby3.2 -e 'x'",
+	];
+	for (const cmd of bypasses) {
+		assert.equal(evaluateBashCommand(bash, cmd).action, "deny", `doveva negare: ${cmd}`);
+	}
+});
+
+test("dangerousInvocation: forme attaccate e wrapper riconosciuti a livello di argv", () => {
+	assert.ok(dangerousInvocation(["node", "--eval=1"]));
+	assert.ok(dangerousInvocation(["node", "-e1"]));
+	assert.ok(dangerousInvocation(["python3", "-cprint(1)"]));
+	assert.ok(dangerousInvocation(["perl", "-e'x'"]));
+	assert.ok(dangerousInvocation(["python3.11", "-c", "x"]));
+	assert.ok(dangerousInvocation(["node18", "-e", "x"]));
+	assert.ok(dangerousInvocation(["command", "bash", "-c", "id"]));
+	assert.ok(dangerousInvocation(["time", "bash", "-c", "id"]));
+	assert.ok(dangerousInvocation(["sudo", "sh", "-c", "id"]));
+	// Falsi positivi da evitare: flag legittimi che non sono eval.
+	assert.equal(dangerousInvocation(["node", "--experimental-vm-modules", "test.js"]), null);
+	assert.equal(dangerousInvocation(["node", "-r", "./register.js", "app.js"]), null);
+	assert.equal(dangerousInvocation(["ruby", "-rjson", "app.rb"]), null);
+});
+
 test("l'esecuzione legittima resta consentita", () => {
 	const bash = defaultPolicy().bash;
 	const allowed = [

@@ -6,6 +6,13 @@
 interface BuiltinPattern {
 	label: string;
 	regex: RegExp;
+	/**
+	 * Sostituzione per-match opzionale: riceve il match completo e i gruppi
+	 * catturati e ritorna il testo con cui sostituire, oppure `null` per NON
+	 * redigere questo match (whitelist di falsi positivi). Se assente, il match
+	 * è sostituito interamente da `[REDACTED:label]`.
+	 */
+	replace?: (match: string, groups: string[]) => string | null;
 }
 
 const BUILTIN_PATTERNS: BuiltinPattern[] = [
@@ -32,8 +39,33 @@ const BUILTIN_PATTERNS: BuiltinPattern[] = [
 		label: "generic-assignment",
 		regex: /\b(?:api[_-]?key|secret|password|passwd|token)\s*[=:]\s*["'][^"'\s]{8,}["']/gi,
 	},
+	// Coppia CHIAVE=VALORE *non quotata* con chiave sensibile: è lo scenario
+	// più comune e finora scoperto — un `cat .env` / `printenv` che espone
+	// `DB_PASSWORD=SuperSecret123`. Il pattern quotato sopra non lo cattura
+	// (richiede le virgolette) e nessun pattern branded matcha un segreto
+	// generico. La whitelist `SAFE_ASSIGNMENT_KEYS` evita di redigere
+	// assegnazioni innocue con nomi che *contengono* una parola sensibile ma
+	// non sono segreti (es. `PATH=`), gestita in `redactSecrets`.
+	{
+		label: "generic-assignment-unquoted",
+		regex:
+			/\b([A-Za-z0-9_]*(?:passwd|password|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth)[A-Za-z0-9_]*)(\s*[=:]\s*)(?!["'])(\S{8,})/gi,
+		replace: (match, groups) => {
+			const key = (groups[0] ?? "").toLowerCase();
+			if (SAFE_ASSIGNMENT_KEYS.has(key)) return null; // falso positivo (es. AUTHORS=…): non redigere
+			// Mantiene la chiave e l'operatore, redige solo il valore.
+			return `${groups[0]}${groups[1]}[REDACTED:generic-assignment-unquoted]`;
+		},
+	},
 	{ label: "bearer-header", regex: /\bAuthorization:\s*Bearer\s+[A-Za-z0-9._~+/=-]{16,}/gi },
 ];
+
+/**
+ * Nomi di variabile che *contengono* una parola sensibile ma il cui valore non
+ * è un segreto: non vanno redatti (falsi positivi che nasconderebbero output
+ * legittimo). Confronto case-insensitive sul nome catturato prima di `=`.
+ */
+const SAFE_ASSIGNMENT_KEYS = new Set(["path", "authors", "author", "authority", "tokenizer", "tokens"]);
 
 export interface RedactionResult {
 	text: string;
@@ -45,11 +77,25 @@ export function redactSecrets(text: string, extraPatterns: string[] = []): Redac
 	let result = text;
 	const matches = new Set<string>();
 
-	for (const { label, regex } of BUILTIN_PATTERNS) {
+	for (const { label, regex, replace } of BUILTIN_PATTERNS) {
 		regex.lastIndex = 0;
-		if (regex.test(result)) {
+		if (!regex.test(result)) continue;
+		regex.lastIndex = 0;
+		if (replace) {
+			// Sostituzione per-match con whitelist: registra il label solo se
+			// almeno un match è stato effettivamente redatto (non tutti whitelisted).
+			let redactedAny = false;
+			result = result.replace(regex, (match, ...rest) => {
+				// `rest` = gruppi catturati + offset + stringa intera; teniamo i gruppi.
+				const groups = rest.slice(0, -2) as string[];
+				const replacement = replace(match, groups);
+				if (replacement === null) return match;
+				redactedAny = true;
+				return replacement;
+			});
+			if (redactedAny) matches.add(label);
+		} else {
 			matches.add(label);
-			regex.lastIndex = 0;
 			result = result.replace(regex, `[REDACTED:${label}]`);
 		}
 	}

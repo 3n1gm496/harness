@@ -120,47 +120,108 @@ function commandName(argv: string[]): string {
  * quelli sono esecuzione legittima di un coding-agent, contenuta dalla sandbox
  * (che è il vero confine). Chiude i bypass banali "one-liner".
  */
+/** Normalizza il nome comando rimuovendo un suffisso di versione: `python3.11` → `python`, `node18` → `node`. */
+function interpreterBase(cmd: string): string {
+	return cmd.replace(/[0-9.]+$/, "");
+}
+
+/**
+ * Vero se fra gli argomenti compare uno dei flag indicati, riconoscendo anche
+ * le forme "attaccate" che un confronto esatto mancherebbe: `--eval=CODE`,
+ * `-eCODE`, e i cluster di short flag (`-pe`). È il fix di sicurezza centrale:
+ * `node --eval='...'`, `python3 -c'...'`, `perl -e'...'` producono un singolo
+ * token argv che non è mai `=== "-e"`, e sfuggirebbero a un match esatto —
+ * eseguendo codice arbitrario attraverso l'allowlist di default (node/python
+ * sono prefissi consentiti). Sui cluster short il match è volutamente
+ * conservativo (fail-closed): se la lettera-flag pericolosa compare, blocca.
+ */
+function hasFlag(args: string[], shortFlags: string[], longFlags: string[]): boolean {
+	for (const a of args) {
+		if (a === "-" || a === "--" || !a.startsWith("-")) continue;
+		if (a.startsWith("--")) {
+			const name = a.slice(2).split("=", 1)[0] as string;
+			if (longFlags.includes(name)) return true;
+		} else {
+			const cluster = a.slice(1);
+			if (shortFlags.some((f) => cluster.includes(f))) return true;
+		}
+	}
+	return false;
+}
+
 export function dangerousInvocation(argv: string[]): string | null {
 	if (argv.length === 0) return null;
 	const cmd = commandName(argv);
+	const base = interpreterBase(cmd);
 	const args = argv.slice(1);
 	const has = (...flags: string[]) => args.some((a) => flags.includes(a));
 
 	// Shell: eseguono qualunque cosa.
-	if (["sh", "bash", "zsh", "dash", "ksh", "ash"].includes(cmd)) {
-		if (has("-c") || args.some((a) => a === "-")) return `shell inline (${cmd} -c) non consentita`;
+	if (["sh", "bash", "zsh", "dash", "ksh", "ash"].includes(base)) {
+		if (hasFlag(args, ["c"], ["command"]) || args.some((a) => a === "-"))
+			return `shell inline (${cmd} -c) non consentita`;
 		// `bash script.sh` esegue uno script del repo: exec arbitrario → deny.
 		return `esecuzione di shell (${cmd}) non consentita: usa i tool dedicati`;
 	}
-	// Interpreti con valutazione inline.
-	if (["node", "nodejs", "bun", "deno"].includes(cmd) && has("-e", "--eval", "-p", "--print", "eval")) {
+	// Interpreti con valutazione inline (forme attaccate incluse, vedi hasFlag).
+	if (
+		["node", "nodejs", "bun", "deno"].includes(base) &&
+		(hasFlag(args, ["e", "p"], ["eval", "print"]) || has("eval"))
+	) {
 		return `esecuzione inline (${cmd} -e/-p) non consentita`;
 	}
-	if (["python", "python3", "python2"].includes(cmd) && has("-c")) {
+	if (base === "python" && hasFlag(args, ["c"], [])) {
 		return "esecuzione inline (python -c) non consentita";
 	}
-	if (cmd === "perl" && has("-e", "-E")) return "esecuzione inline (perl -e) non consentita";
-	if (cmd === "ruby" && has("-e")) return "esecuzione inline (ruby -e) non consentita";
-	if (cmd === "php" && has("-r")) return "esecuzione inline (php -r) non consentita";
+	if (base === "perl" && hasFlag(args, ["e", "E"], [])) return "esecuzione inline (perl -e) non consentita";
+	if (base === "ruby" && hasFlag(args, ["e"], [])) return "esecuzione inline (ruby -e) non consentita";
+	if (base === "php" && hasFlag(args, ["r"], [])) return "esecuzione inline (php -r) non consentita";
 	// awk: system()/pipe eseguono comandi.
-	if (["awk", "gawk", "mawk"].includes(cmd) && args.some((a) => /system\s*\(|\|\s*(&|getline|")/.test(a))) {
+	if (["awk", "gawk", "mawk"].includes(base) && args.some((a) => /system\s*\(|\|\s*(&|getline|")/.test(a))) {
 		return "awk con system()/pipe non consentito";
 	}
 	// find: azioni che eseguono comandi o scrivono file.
-	if (cmd === "find" && has("-exec", "-execdir", "-ok", "-okdir", "-fprintf", "-fprint", "-delete")) {
+	if (base === "find" && has("-exec", "-execdir", "-ok", "-okdir", "-fprintf", "-fprint", "-delete")) {
 		return "find con -exec/-delete non consentito";
 	}
 	// sed: comando `e` (shell), scrittura file, in-place.
-	if (["sed", "gsed"].includes(cmd)) {
+	if (["sed", "gsed"].includes(base)) {
 		if (has("-i", "--in-place") || args.some((a) => a.startsWith("-i"))) return "sed -i (in-place) non consentito";
 		if (args.some((a) => /(^|;|\})\s*[ewW]\b/.test(a))) return "sed con comando e/w non consentito";
 	}
-	// Wrapper che rilanciano un comando arbitrario.
-	if (["xargs", "env", "nice", "nohup", "timeout", "watch", "setsid", "stdbuf", "ionice", "chroot"].includes(cmd)) {
+	// Wrapper che rilanciano un comando arbitrario: `command`/`time`/`sudo`/…
+	// permettevano di nascondere una shell bloccata dietro un primo token innocuo
+	// (`command bash -c …`), aggirando l'intero guard che ispeziona solo argv[0].
+	if (
+		[
+			"xargs",
+			"env",
+			"nice",
+			"nohup",
+			"timeout",
+			"watch",
+			"setsid",
+			"stdbuf",
+			"ionice",
+			"chroot",
+			"command",
+			"time",
+			"sudo",
+			"doas",
+			"runuser",
+			"su",
+			"busybox",
+			"coproc",
+			"setpriv",
+			"unshare",
+			"caffeinate",
+			"proxychains",
+		].includes(base)
+	) {
 		return `wrapper di esecuzione (${cmd}) non consentito`;
 	}
 	// eval/exec/source come primo token (se mai passassero come comando).
-	if (["eval", "exec", "source", "."].includes(cmd)) return `costrutto "${cmd}" non consentito`;
+	if (["eval", "exec", "source", "."].includes(base)) return `costrutto "${cmd}" non consentito`;
 	return null;
 }
 

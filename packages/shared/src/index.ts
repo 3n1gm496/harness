@@ -8,6 +8,7 @@ export * from "./logger.js";
 export * from "./merge.js";
 export * from "./metrics.js";
 export * from "./policy.js";
+export * from "./process-guard.js";
 export * from "./redaction.js";
 export * from "./sandbox.js";
 export * from "./signing.js";

@@ -297,3 +297,142 @@ test("rate limit per device → 429", async () => {
 	}
 	assert.equal(got429, true);
 });
+
+test("un errore dello stream upstream DOPO gli header non fa crashare il processo del gateway", async () => {
+	// Upstream che invia gli header + un chunk e poi RESETTA la connessione a
+	// metà stream (reset del provider, o il timeout upstream che scatta mentre
+	// la risposta è già in corso). Prima del fix questo emetteva un evento
+	// 'error' non gestito su un Readable → crash dell'intero processo, buttando
+	// giù ogni altra richiesta in volo. Se il processo crashasse, morirebbe il
+	// test runner stesso: il fatto che il test prosegua e una richiesta
+	// successiva riesca è la prova che il gateway è sopravvissuto.
+	const faulty = createServer((_req, res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.write('data: {"chunk":0}\n\n');
+		// Reset duro della connessione TCP dopo il primo chunk.
+		setTimeout(() => res.socket?.destroy(), 20);
+	});
+	await new Promise<void>((resolve) => faulty.listen(0, resolve));
+	const faultyUrl = `http://127.0.0.1:${(faulty.address() as AddressInfo).port}`;
+
+	// Upstream "sano" per la richiesta di controllo post-crash.
+	const healthy = createServer((_req, res) => {
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ ok: true }));
+	});
+	await new Promise<void>((resolve) => healthy.listen(0, resolve));
+	const healthyUrl = `http://127.0.0.1:${(healthy.address() as AddressInfo).port}`;
+
+	const identity = service.auth.authenticateAdmin(adminToken);
+	const gwToken = service.auth.createGatewayToken(identity, "gw-faulty-stream");
+	let faultyGateway = createGatewayServer({
+		controlPlaneUrl: `http://127.0.0.1:${(controlPlane.address() as AddressInfo).port}`,
+		gatewayToken: gwToken,
+		providers: { anthropic: { baseUrl: faultyUrl, apiKey: "k" } },
+		log: () => {},
+	});
+	await new Promise<void>((resolve) => faultyGateway.listen(0, resolve));
+	let gwUrl = `http://127.0.0.1:${(faultyGateway.address() as AddressInfo).port}`;
+	try {
+		// La richiesta verso l'upstream difettoso: il client riceve una risposta
+		// troncata o un errore di rete, ma NON deve far crashare il gateway.
+		try {
+			const response = await fetch(`${gwUrl}/anthropic/v1/messages`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${deviceToken}`, "content-type": "application/json" },
+				body: JSON.stringify({ model: "x", stream: true }),
+			});
+			// Gli header sono già passati (200) prima del reset: consumiamo il body,
+			// che si interrompe. L'errore lato client è atteso e innocuo.
+			await response.text().catch(() => {});
+		} catch {
+			// Anche un errore di fetch lato client è accettabile: l'importante è
+			// che il PROCESSO del gateway non sia morto.
+		}
+
+		// Piccola attesa perché un eventuale crash asincrono (evento 'error' non
+		// gestito) si manifesti prima del controllo.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		// Prova del nove: il gateway è ancora vivo e serve una nuova richiesta.
+		faultyGateway.close();
+		faultyGateway = createGatewayServer({
+			controlPlaneUrl: `http://127.0.0.1:${(controlPlane.address() as AddressInfo).port}`,
+			gatewayToken: gwToken,
+			providers: { anthropic: { baseUrl: healthyUrl, apiKey: "k" } },
+			log: () => {},
+		});
+		await new Promise<void>((resolve) => faultyGateway.listen(0, resolve));
+		gwUrl = `http://127.0.0.1:${(faultyGateway.address() as AddressInfo).port}`;
+		const probe = await fetch(`${gwUrl}/anthropic/v1/messages`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${deviceToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ model: "x" }),
+		});
+		assert.equal(probe.status, 200, "il gateway deve essere ancora vivo dopo l'errore dello stream");
+	} finally {
+		await new Promise((resolve) => faultyGateway.close(resolve));
+		await new Promise((resolve) => faulty.close(resolve));
+		await new Promise((resolve) => healthy.close(resolve));
+	}
+});
+
+test("la disconnessione del client a metà stream aborta la richiesta upstream", async () => {
+	// Upstream che streamma lentamente e registra quando la SUA connessione
+	// viene chiusa: se il gateway aborta la fetch upstream alla disconnessione
+	// del client, l'upstream vede la connessione chiudersi presto invece di
+	// continuare a generare (per un provider LLM: fine del leak di costo).
+	let upstreamClosedEarly = false;
+	let upstreamFinished = false;
+	const slow = createServer((_req, res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		let n = 0;
+		const timer = setInterval(() => {
+			if (!res.write(`data: {"chunk":${n}}\n\n`)) return;
+			if (++n >= 50) {
+				clearInterval(timer);
+				upstreamFinished = true;
+				res.end();
+			}
+		}, 20);
+		res.on("close", () => {
+			clearInterval(timer);
+			if (!upstreamFinished) upstreamClosedEarly = true;
+		});
+	});
+	await new Promise<void>((resolve) => slow.listen(0, resolve));
+	const slowUrl = `http://127.0.0.1:${(slow.address() as AddressInfo).port}`;
+
+	const identity = service.auth.authenticateAdmin(adminToken);
+	const gwToken = service.auth.createGatewayToken(identity, "gw-client-abort");
+	const abortGateway = createGatewayServer({
+		controlPlaneUrl: `http://127.0.0.1:${(controlPlane.address() as AddressInfo).port}`,
+		gatewayToken: gwToken,
+		providers: { anthropic: { baseUrl: slowUrl, apiKey: "k" } },
+		log: () => {},
+	});
+	await new Promise<void>((resolve) => abortGateway.listen(0, resolve));
+	const gwUrl = `http://127.0.0.1:${(abortGateway.address() as AddressInfo).port}`;
+	try {
+		const controller = new AbortController();
+		const response = await fetch(`${gwUrl}/anthropic/v1/messages`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${deviceToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ model: "x", stream: true }),
+			signal: controller.signal,
+		});
+		// Legge un chunk, poi il client abbandona.
+		const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+		await reader.read();
+		controller.abort();
+		await reader.cancel().catch(() => {});
+
+		// Attende che la chiusura si propaghi dal client → gateway → upstream.
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		assert.equal(upstreamClosedEarly, true, "l'upstream deve vedere la connessione chiusa presto (fetch abortita)");
+		assert.equal(upstreamFinished, false, "l'upstream non deve aver completato la generazione");
+	} finally {
+		await new Promise((resolve) => abortGateway.close(resolve));
+		await new Promise((resolve) => slow.close(resolve));
+	}
+});

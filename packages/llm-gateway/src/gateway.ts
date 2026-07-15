@@ -2,6 +2,7 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { type Logger, MetricsRegistry, peerCertFingerprint } from "@harness/shared";
 
 /**
@@ -224,6 +225,29 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 			}
 		}
 
+		// Un solo AbortController combina il timeout upstream e la disconnessione
+		// del client: se il client abbandona (a metà stream o prima), la fetch
+		// upstream viene abortita subito invece di restare in corso (per un
+		// provider LLM è anche un leak di costo — la generazione continuerebbe a
+		// essere fatturata a token con nessuno in ascolto). Il segnale di
+		// disconnessione è la chiusura di `res` PRIMA che la risposta sia
+		// completata (`writableEnded`): la chiusura di `req` non va usata, perché
+		// scatta già quando il body della richiesta è stato letto per intero (una
+		// richiesta normale), abortendo erroneamente ogni upstream.
+		const upstreamAbort = new AbortController();
+		const timeout = setTimeout(
+			() => upstreamAbort.abort(new DOMException("timeout", "TimeoutError")),
+			upstreamTimeoutMs,
+		);
+		const onClientDisconnect = () => {
+			if (!res.writableEnded) upstreamAbort.abort(new DOMException("client disconnesso", "AbortError"));
+		};
+		res.on("close", onClientDisconnect);
+		const cleanup = () => {
+			clearTimeout(timeout);
+			res.off("close", onClientDisconnect);
+		};
+
 		let upstream: Response;
 		try {
 			upstream = await fetch(`${provider.baseUrl}${upstreamPath}${url.search}`, {
@@ -232,9 +256,20 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 				body: hasRequestBody(req) ? relayBody() : null,
 				// Node (undici) richiede duplex:"half" quando il body è uno stream.
 				duplex: "half",
-				signal: AbortSignal.timeout(upstreamTimeoutMs),
+				signal: upstreamAbort.signal,
 			} as RequestInit & { duplex: "half" });
 		} catch (error) {
+			cleanup();
+			if (upstreamAbort.signal.aborted && !res.headersSent) {
+				const reason = upstreamAbort.signal.reason as Error | undefined;
+				if (reason?.name === "TimeoutError") {
+					metrics.incCounter("harness_gateway_requests_total", { provider: providerName, status: "504" });
+					sendJson(res, 504, { error: `upstream non ha risposto entro ${upstreamTimeoutMs}ms` });
+					return;
+				}
+				// Client disconnesso prima degli header: niente da rispondere.
+				return;
+			}
 			if (error instanceof Error && error.name === "TimeoutError") {
 				metrics.incCounter("harness_gateway_requests_total", { provider: providerName, status: "504" });
 				sendJson(res, 504, { error: `upstream non ha risposto entro ${upstreamTimeoutMs}ms` });
@@ -260,10 +295,31 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 			"content-type": upstream.headers.get("content-type") ?? "application/json",
 			"cache-control": "no-store",
 		});
-		if (upstream.body) {
-			Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream).pipe(res);
-		} else {
+		if (!upstream.body) {
+			cleanup();
 			res.end();
+			return;
+		}
+		// Inoltro dello stream di risposta con gestione degli errori: una volta
+		// scritti gli header, un errore sullo stream upstream (il timeout che
+		// scatta a metà streaming, un reset del provider) NON deve propagarsi come
+		// evento 'error' non gestito su un Readable — ucciderebbe l'intero
+		// processo, buttando giù ogni altra richiesta in volo. `pipeline` cattura
+		// l'errore in modo strutturato; noi chiudiamo la risposta troncata e
+		// logghiamo, senza rilanciare (non c'è più modo di cambiare lo status).
+		try {
+			await pipeline(Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream), res);
+		} catch (error) {
+			log({
+				ts: new Date().toISOString(),
+				level: "error",
+				deviceId: introspection.deviceId,
+				provider: providerName,
+				error: `stream upstream interrotto: ${String(error)}`,
+			});
+			if (!res.writableEnded) res.destroy();
+		} finally {
+			cleanup();
 		}
 	}
 }

@@ -91,6 +91,33 @@ export function parseBashCommand(input: string): BashParseResult {
 		}
 
 		// Fuori dalle virgolette.
+		// ANSI-C quoting: `$'...'` con decodifica degli escape (\xNN, \nnn ottale,
+		// \uNNNN, \n, \t, ...). Senza decodifica, `$'\x62\x61\x73\x68'` verrebbe
+		// letto come `$` + stringa letterale e il nome shell `bash` sfuggirebbe al
+		// riconoscimento di sicurezza (bypass di dangerousInvocation).
+		if (ch === "$" && next === "'") {
+			let j = i + 2;
+			let raw = "";
+			while (j < n) {
+				const c = input[j] as string;
+				if (c === "\\" && j + 1 < n) {
+					raw += c + (input[j + 1] as string);
+					j += 2;
+					continue;
+				}
+				if (c === "'") break;
+				raw += c;
+				j += 1;
+			}
+			if (j >= n) {
+				unbalanced = true;
+				break;
+			}
+			word += decodeAnsiC(raw);
+			wordStarted = true;
+			i = j; // punta al ' di chiusura
+			continue;
+		}
 		if (ch === "'") {
 			inSingle = true;
 			wordStarted = true;
@@ -214,6 +241,72 @@ export function parseBashCommand(input: string): BashParseResult {
 	pushCommand();
 
 	return { commands, hasHeredoc, unbalanced };
+}
+
+/**
+ * Decodifica gli escape ANSI-C dentro `$'...'` (bash): letterali (`\n`, `\t`,
+ * …), esadecimali `\xNN`, ottali `\nnn`, unicode `\uNNNN`/`\UNNNNNNNN`. Serve
+ * a smascherare i nomi comando offuscati (`$'\x62\x61\x73\x68'` → `bash`) prima
+ * dei controlli di policy. In caso di sequenza non riconosciuta, mantiene il
+ * carattere letterale (comportamento conservativo, non fa mai sparire testo).
+ */
+export function decodeAnsiC(s: string): string {
+	let out = "";
+	for (let i = 0; i < s.length; i += 1) {
+		if (s[i] !== "\\") {
+			out += s[i];
+			continue;
+		}
+		const e = s[i + 1];
+		if (e === undefined) {
+			out += "\\";
+			break;
+		}
+		const simple: Record<string, string> = {
+			a: "\x07",
+			b: "\b",
+			e: "\x1b",
+			E: "\x1b",
+			f: "\f",
+			n: "\n",
+			r: "\r",
+			t: "\t",
+			v: "\v",
+			"\\": "\\",
+			"'": "'",
+			'"': '"',
+			"?": "?",
+		};
+		if (e in simple) {
+			out += simple[e];
+			i += 1;
+			continue;
+		}
+		if (e === "x" || e === "u" || e === "U") {
+			const width = e === "x" ? 2 : e === "u" ? 4 : 8;
+			const m = new RegExp(`^[0-9a-fA-F]{1,${width}}`).exec(s.slice(i + 2));
+			if (m) {
+				const cp = parseInt(m[0], 16);
+				if (e === "x") out += String.fromCharCode(cp);
+				else if (cp <= 0x10ffff) out += String.fromCodePoint(cp);
+				i += 1 + m[0].length;
+				continue;
+			}
+			out += e;
+			i += 1;
+			continue;
+		}
+		// Ottale \nnn (1-3 cifre).
+		const oct = /^[0-7]{1,3}/.exec(s.slice(i + 1));
+		if (oct) {
+			out += String.fromCharCode(parseInt(oct[0], 8) & 0xff);
+			i += oct[0].length;
+			continue;
+		}
+		out += e;
+		i += 1;
+	}
+	return out;
 }
 
 /**

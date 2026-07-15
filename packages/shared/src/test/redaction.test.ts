@@ -45,6 +45,31 @@ test("i token della piattaforma harness vengono redatti", () => {
 	assert.ok(result.matches.includes("harness-token"));
 });
 
+test("segreti in coppie CHIAVE=VALORE non quotate vengono redatti (cat .env / printenv)", () => {
+	const input = [
+		"DB_PASSWORD=SuperSecretValue123",
+		"export API_KEY=abcdef1234567890ghijk",
+		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI0K7MDENGbPxRfiCYEXAMPLEKEY",
+		"AUTH_TOKEN=ya29.a0AfB_verylongtokenvalue",
+		"github_token: ghijklmnop1234567890",
+	].join("\n");
+	const result = redactSecrets(input);
+	assert.ok(!result.text.includes("SuperSecretValue123"), "password non quotata deve essere redatta");
+	assert.ok(!result.text.includes("abcdef1234567890ghijk"), "api key non quotata deve essere redatta");
+	assert.ok(!result.text.includes("wJalrXUtnFEMI0K7MDENGbPxRfiCYEXAMPLEKEY"));
+	assert.ok(!result.text.includes("ya29.a0AfB_verylongtokenvalue"));
+	// La chiave resta visibile (solo il valore è redatto): utile per il debug.
+	assert.ok(result.text.includes("DB_PASSWORD="));
+	assert.ok(result.matches.includes("generic-assignment-unquoted"));
+});
+
+test("assegnazioni innocue non vengono redatte (nessun falso positivo)", () => {
+	const input = ["PATH=/usr/local/bin:/usr/bin", "NODE_ENV=production", "AUTHORS=Mario Rossi", "TOKENS=42"].join("\n");
+	const result = redactSecrets(input);
+	assert.equal(result.text, input, "assegnazioni non sensibili devono restare invariate");
+	assert.ok(!result.matches.includes("generic-assignment-unquoted"));
+});
+
 test("deepMerge non attraversa __proto__ (prototype pollution)", () => {
 	const malicious = JSON.parse('{"__proto__": {"polluted": true}, "constructor": {"x": 1}, "safe": 2}') as object;
 	const merged = deepMerge({ a: 1 }, malicious) as Record<string, unknown>;

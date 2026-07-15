@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
-import { createLogger } from "@harness/shared";
+import { createLogger, installProcessGuards } from "@harness/shared";
 import { createGatewayServer, type GatewayOptions } from "./gateway.js";
 
 /**
@@ -43,6 +43,10 @@ function main(): void {
 	}
 
 	const logger = createLogger("llm-gateway");
+	// Ultima linea di difesa: un'eccezione non gestita (es. un errore imprevisto
+	// nel percorso di streaming) logga ed esce ≠0 così il supervisore riavvia
+	// pulito, invece di lasciare il processo in uno stato indefinito.
+	installProcessGuards(logger);
 	const options: GatewayOptions = { controlPlaneUrl, gatewayToken, providers, logger };
 	if (process.env.RATE_LIMIT_PER_MINUTE) {
 		options.rateLimitPerMinute = Number(process.env.RATE_LIMIT_PER_MINUTE);

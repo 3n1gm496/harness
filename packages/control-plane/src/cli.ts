@@ -2,7 +2,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { Kek } from "@harness/shared";
-import { createLogger, loadKekFromEnv } from "@harness/shared";
+import { createLogger, installProcessGuards, loadKekFromEnv } from "@harness/shared";
 import { createControlPlaneServer } from "./server.js";
 import { ControlPlaneService } from "./service.js";
 import { Store } from "./store.js";
@@ -65,6 +65,9 @@ async function main(): Promise<void> {
 		adminTokenPruneTimer.unref();
 		const tls = loadTlsFromEnv();
 		const logger = createLogger("control-plane");
+		// Ultima linea di difesa: un'eccezione non gestita logga ed esce ≠0 così
+		// il supervisore riavvia pulito invece di proseguire in stato indefinito.
+		installProcessGuards(logger);
 		const options: Parameters<typeof createControlPlaneServer>[1] = {
 			logger,
 			readiness: () => store.checkReady(),
