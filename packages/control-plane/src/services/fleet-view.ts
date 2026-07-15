@@ -1,4 +1,4 @@
-import type { DeviceRecord, OrgRecord } from "../store.js";
+import type { ControlPlaneState, DeviceRecord, OrgRecord } from "../store.js";
 
 /**
  * Stato operativo di un device dal punto di vista di un operatore: non è
@@ -31,4 +31,30 @@ export function deviceState(device: DeviceRecord, org: OrgRecord): DeviceState {
 	if (device.killSwitch || org.killSwitch) return "suspended";
 	if (isDeviceStale(device, org.configTtlMinutes)) return "stale";
 	return "active";
+}
+
+/**
+ * Contatori aggregati di flotta per stato: unica fonte di verità condivisa da
+ * `OrgService.fleetSummary` (dashboard/API, con auth) e da `/metrics`
+ * (Prometheus, senza auth) — la stessa definizione di "stale"/"suspended"
+ * vale in entrambi, invece di due calcoli che potrebbero divergere.
+ */
+export function fleetCounts(state: ControlPlaneState): {
+	total: number;
+	active: number;
+	stale: number;
+	suspended: number;
+} {
+	const { org, devices } = state;
+	let active = 0;
+	let stale = 0;
+	let suspended = 0;
+	const deviceList = Object.values(devices);
+	for (const device of deviceList) {
+		const s = deviceState(device, org);
+		if (s === "active") active += 1;
+		else if (s === "stale") stale += 1;
+		else suspended += 1;
+	}
+	return { total: deviceList.length, active, stale, suspended };
 }

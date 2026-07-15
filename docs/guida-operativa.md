@@ -81,6 +81,7 @@ Control plane e gateway espongono:
 - `GET /healthz` — liveness (il processo risponde);
 - `GET /readyz` — readiness **reale**: sul control plane verifica la connettività del backend (con Postgres: una query sul changelog) e la presenza di una chiave di firma attiva; sul gateway la raggiungibilità del control plane. Risponde 503 se non pronto — da usare come readiness probe di Kubernetes/compose;
 - `GET /metrics` — formato Prometheus: `harness_http_requests_total{method,status}`, `harness_http_request_duration_seconds` (histogram), richieste in-flight, `harness_up`; sul gateway `harness_gateway_requests_total{provider,status}` e durata upstream.
+- Metriche di flotta (stesso `/metrics`, aggiornate a ogni scrape): `harness_fleet_devices{state="active|stale|suspended"}`, `harness_fleet_kill_switch` (1 se il kill switch globale è attivo), `harness_fleet_config_version`. Sono le stesse informazioni della dashboard UI, in un formato su cui si può alertare (es. `harness_fleet_devices{state="stale"} > N` o `harness_fleet_kill_switch == 1`) senza dover guardare la UI.
 
 Il livello di log si controlla con `HARNESS_LOG_LEVEL` (`debug|info|warn|error`, default `info`); l'output è una riga JSON per evento, pronto per qualunque collector.
 

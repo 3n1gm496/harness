@@ -46,6 +46,13 @@ export function createControlPlaneServer(
 	metrics.gauge("harness_http_requests_in_flight", "Richieste HTTP attualmente in elaborazione");
 	metrics.gauge("harness_up", "1 se il processo è vivo");
 	metrics.setGauge("harness_up", 1);
+	// Metriche di flotta: le stesse informazioni che la dashboard UI calcola
+	// per gli operatori (device attivi/stale/sospesi, kill switch, versione di
+	// config), ma in Prometheus — così un alert può scattare su "troppi device
+	// stale" o "kill switch attivo" senza dover guardare la UI.
+	metrics.gauge("harness_fleet_devices", "Device per stato operativo (active|stale|suspended)");
+	metrics.gauge("harness_fleet_kill_switch", "1 se il kill switch globale dell'organizzazione è attivo");
+	metrics.gauge("harness_fleet_config_version", "Versione corrente della configurazione dell'organizzazione");
 	const infra: Infra = { metrics, readiness: options.readiness ?? (async () => ({ ready: true })) };
 
 	const listener = (req: IncomingMessage, res: ServerResponse): void => {
@@ -98,6 +105,7 @@ async function dispatch(
 	// Endpoint di osservabilità: dipendono da stato locale al server (registro
 	// metriche, sonda readiness), quindi non passano dalla tabella di route.
 	if (method === "GET" && path === "/metrics") {
+		refreshFleetGauges(service, infra.metrics);
 		const body = infra.metrics.render();
 		res.writeHead(200, {
 			"content-type": "text/plain; version=0.0.4; charset=utf-8",
@@ -157,6 +165,23 @@ async function dispatch(
 	const result = await matched.route.def.handler(ctx);
 	if (matched.route.def.raw) return; // l'handler ha già scritto la risposta
 	sendJson(res, 200, result);
+}
+
+/**
+ * Aggiorna i gauge di flotta a ogni scrape (non su un timer: un servizio
+ * scrape-driven come Prometheus non ha bisogno di uno stato aggiornato più
+ * spesso di quanto lo legga). `/metrics` non richiede autenticazione (come
+ * `/healthz`/`/readyz`, per lo scraping automatico): l'identità "viewer"
+ * sintetica riusa lo stesso calcolo con ruolo minimo dell'API amministrativa,
+ * senza introdurre un secondo percorso di calcolo che potrebbe divergere.
+ */
+function refreshFleetGauges(service: ControlPlaneService, metrics: MetricsRegistry): void {
+	const summary = service.org.fleetSummary({ name: "metrics-scrape", role: "viewer" });
+	metrics.setGauge("harness_fleet_devices", summary.active, { state: "active" });
+	metrics.setGauge("harness_fleet_devices", summary.stale, { state: "stale" });
+	metrics.setGauge("harness_fleet_devices", summary.suspended, { state: "suspended" });
+	metrics.setGauge("harness_fleet_kill_switch", summary.killSwitch ? 1 : 0);
+	metrics.setGauge("harness_fleet_config_version", summary.configVersion);
 }
 
 function bearerToken(req: IncomingMessage): string | undefined {

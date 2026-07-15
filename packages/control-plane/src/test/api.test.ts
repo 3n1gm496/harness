@@ -774,6 +774,61 @@ test("retention: pruneAudit in file-mode non cancella righe (ruota su archivio p
 	}
 });
 
+test("metriche di flotta: /metrics espone gauge coerenti con lo stato seedato (chiude E3)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-fleet-metrics-"));
+	const isolatedStore = new Store(dir);
+	const isolatedService = new ControlPlaneService(isolatedStore);
+	const isolatedServer = createControlPlaneServer(isolatedService, { readiness: () => isolatedStore.checkReady() });
+	try {
+		await new Promise<void>((resolve) => isolatedServer.listen(0, resolve));
+		const port = (isolatedServer.address() as AddressInfo).port;
+		const url = `http://127.0.0.1:${port}`;
+
+		const admin = isolatedService.auth.bootstrapAdminToken("root");
+		const identity = isolatedService.auth.authenticateAdmin(admin);
+		const groupId = isolatedService.org.overview(identity).groups[0]?.groupId as string;
+
+		// 2 device attivi, 1 stale (nessun contatto da oltre la finestra), 1
+		// sospeso (kill switch acceso sul device).
+		for (let i = 0; i < 2; i += 1) {
+			const enr = isolatedService.devices.createEnrollToken(identity, groupId, 10);
+			isolatedService.devices.enrollDevice(enr, `active-${i}`);
+		}
+		const enrStale = isolatedService.devices.createEnrollToken(identity, groupId, 10);
+		const stale = isolatedService.devices.enrollDevice(enrStale, "stale-device");
+		const staleRecord = isolatedStore.state.devices[stale.deviceId];
+		if (!staleRecord) throw new Error("device stale non trovato");
+		staleRecord.lastSeenAt = new Date(Date.now() - 24 * 3600_000).toISOString();
+		const enrSuspended = isolatedService.devices.createEnrollToken(identity, groupId, 10);
+		const suspended = isolatedService.devices.enrollDevice(enrSuspended, "suspended-device");
+		isolatedService.devices.updateDevice(identity, suspended.deviceId, { killSwitch: true });
+		isolatedStore.save();
+
+		const response = await fetch(`${url}/metrics`);
+		assert.equal(response.status, 200);
+		const text = await response.text();
+
+		assert.match(text, /# TYPE harness_fleet_devices gauge/);
+		assert.match(text, /harness_fleet_devices\{state="active"\} 2/);
+		assert.match(text, /harness_fleet_devices\{state="stale"\} 1/);
+		assert.match(text, /harness_fleet_devices\{state="suspended"\} 1/);
+		assert.match(text, /harness_fleet_kill_switch 0/);
+		assert.match(text, /harness_fleet_config_version \d+/);
+
+		// Il kill switch globale si riflette subito nel gauge al prossimo scrape.
+		isolatedService.org.updateOrg(identity, { killSwitch: true });
+		const response2 = await fetch(`${url}/metrics`);
+		const text2 = await response2.text();
+		assert.match(text2, /harness_fleet_kill_switch 1/);
+		// Col kill switch globale attivo, tutti i device (anche i due "attivi") sono sospesi.
+		assert.match(text2, /harness_fleet_devices\{state="suspended"\} 4/);
+		assert.match(text2, /harness_fleet_devices\{state="active"\} 0/);
+	} finally {
+		await new Promise((resolve) => isolatedServer.close(resolve));
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("rate limit sull'enrollment: oltre la soglia risponde 429 (in-memory, file-mode)", async () => {
 	// Server isolato: il rate limit è per-IP e condiviso da tutte le richieste
 	// che colpiscono lo stesso processo, quindi non va condiviso col fixture

@@ -1,6 +1,6 @@
 import type { AdminRole, DeepPartial, DeviceInfo, GroupInfo, PolicyDocument } from "@harness/shared";
 import { type AdminIdentity, requireRole, type ServiceContext, ServiceError, toDeviceInfo } from "./context.js";
-import { type DeviceState, deviceState } from "./fleet-view.js";
+import { type DeviceState, deviceState, fleetCounts } from "./fleet-view.js";
 
 /** Organizzazione: panoramica della flotta e configurazione a livello org. */
 export class OrgService {
@@ -87,25 +87,8 @@ export class OrgService {
 		killSwitch: boolean;
 	} {
 		requireRole(identity, "viewer");
-		const { org, devices } = this.store.state;
-		let active = 0;
-		let stale = 0;
-		let suspended = 0;
-		const deviceList = Object.values(devices);
-		for (const device of deviceList) {
-			const state = deviceState(device, org);
-			if (state === "active") active += 1;
-			else if (state === "stale") stale += 1;
-			else suspended += 1;
-		}
-		return {
-			total: deviceList.length,
-			active,
-			stale,
-			suspended,
-			configVersion: org.configVersion,
-			killSwitch: org.killSwitch,
-		};
+		const { org } = this.store.state;
+		return { ...fleetCounts(this.store.state), configVersion: org.configVersion, killSwitch: org.killSwitch };
 	}
 
 	getOrgConfig(identity: AdminIdentity): {
