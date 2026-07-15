@@ -14,10 +14,11 @@
 		"test": "npm run build && node --test dist/test/*.test.js"
 	},
 	"dependencies": {
-		"@harness/fleet-extension": "0.1.0",
+		"@harness/enforcement-core": "0.1.0",
 		"@harness/shared": "0.1.0"
 	},
 	"devDependencies": {
-		"@harness/control-plane": "0.1.0"
+		"@harness/control-plane": "0.1.0",
+		"@harness/fleet-extension": "0.1.0"
 	}
 }

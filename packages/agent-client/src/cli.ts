@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { defaultAgentConfigPath, loadAgentConfig } from "@harness/fleet-extension";
+import { defaultAgentConfigPath, loadAgentConfig } from "@harness/enforcement-core";
 import { isSandboxSatisfied, verifyConfigBundleMulti } from "@harness/shared";
 import { readFileSync } from "node:fs";
 import { applyManagedPiSettings, buildPiArgs, enroll, maybeRotateToken, syncConfig } from "./client.js";
@@ -78,8 +78,19 @@ async function main(): Promise<void> {
 				);
 				process.exit(1);
 			}
+			// @harness/fleet-extension è l'unico legame con PI in questo client
+			// (il resto dipende solo da @harness/enforcement-core, agent-agnostic):
+			// serve solo per `run`, quindi resta risolto a runtime invece che
+			// importato staticamente, e non è richiesto per enroll/sync/status.
 			const require = createRequire(import.meta.url);
-			const extensionPath = require.resolve("@harness/fleet-extension");
+			let extensionPath: string;
+			try {
+				extensionPath = require.resolve("@harness/fleet-extension");
+			} catch {
+				console.error("@harness/fleet-extension non installato (necessario solo per `harness-agent run`).");
+				console.error("Installalo con: npm install @harness/fleet-extension");
+				process.exit(1);
+			}
 			const separatorIndex = args.indexOf("--");
 			const piArgs = buildPiArgs(extensionPath, separatorIndex === -1 ? [] : args.slice(separatorIndex + 1));
 			console.log(`Avvio: pi ${piArgs.join(" ")}`);

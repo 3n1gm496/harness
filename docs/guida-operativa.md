@@ -186,7 +186,7 @@ Il device token **ruota automaticamente** ogni 30 giorni (`rotateAfterDays` in a
 
 ### Comportamento a runtime (motore di enforcement)
 
-L'enforcement vive in `@harness/enforcement-core`, **agent-agnostic**: definisce un contratto neutro `AgentAdapter` e non conosce PI. `@harness/fleet-extension` è l'adapter che traduce la Extension API di PI sulle primitive neutre; integrare un altro coding agent significa scrivere un adapter analogo, senza toccare il motore (dimostrazione funzionante: `npm run example:mock-agent`).
+L'enforcement vive in `@harness/enforcement-core`, **agent-agnostic**: definisce un contratto neutro `AgentAdapter` e non conosce PI. `@harness/fleet-extension` è l'adapter che traduce la Extension API di PI sulle primitive neutre; integrare un altro coding agent significa scrivere un adapter analogo, senza toccare il motore (dimostrazione funzionante: `npm run example:mock-agent`). `@harness/agent-client` dipende direttamente dal core (`FleetState`, `loadAgentConfig`, …), non dall'adapter PI: `@harness/fleet-extension` resta una devDependency, risolta solo a runtime (`require.resolve`) dal comando `harness-agent run`, l'unico che lancia effettivamente `pi`. `enroll`/`sync`/`status`/`rotate-token` non la richiedono affatto.
 
 - ogni `tool_call` dell'agente è valutata contro la policy: default **deny** sui tool sconosciuti, allowlist bash per segmenti di comando, filesystem limitato alla workspace;
 - i comandi `!` dell'utente seguono la stessa policy bash;

@@ -77,7 +77,7 @@ test("flusso completo enroll → audit: il batch viene firmato e riconosciuto co
 	config.auditFlushSeconds = 3600;
 	config.syncIntervalSeconds = 3600;
 
-	const { FleetState } = await import("@harness/fleet-extension");
+	const { FleetState } = await import("@harness/enforcement-core");
 	const state = new FleetState(config, configPath);
 	await state.initialLoad();
 	assert.equal(state.status, "ok");
@@ -154,7 +154,7 @@ test("maybeRotateToken ruota su richiesta e non ruota se il token è recente", a
 });
 
 test("loadAgentConfig senza file dà un messaggio d'aiuto, non un ENOENT grezzo", async () => {
-	const { loadAgentConfig } = await import("@harness/fleet-extension");
+	const { loadAgentConfig } = await import("@harness/enforcement-core");
 	assert.throws(
 		() => loadAgentConfig(join(clientDir, "non-esiste.json")),
 		/device non arruolato.*harness-agent enroll/s,
