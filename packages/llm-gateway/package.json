@@ -1,7 +1,15 @@
 {
 	"name": "@harness/llm-gateway",
 	"version": "0.1.0",
+	"description": "Proxy Anthropic/OpenAI-compatibile: le credenziali provider restano solo qui, mai sui client.",
 	"private": true,
+	"license": "UNLICENSED",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/3n1gm496/harness.git",
+		"directory": "packages/llm-gateway"
+	},
+	"homepage": "https://github.com/3n1gm496/harness/tree/main/packages/llm-gateway#readme",
 	"type": "module",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",

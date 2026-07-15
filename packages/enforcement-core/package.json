@@ -1,7 +1,15 @@
 {
 	"name": "@harness/enforcement-core",
 	"version": "0.1.0",
+	"description": "Motore di enforcement agent-agnostic: contratto neutro AgentAdapter, config firmata fail-closed/anti-rollback, audit, sandbox.",
 	"private": true,
+	"license": "UNLICENSED",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/3n1gm496/harness.git",
+		"directory": "packages/enforcement-core"
+	},
+	"homepage": "https://github.com/3n1gm496/harness/tree/main/packages/enforcement-core#readme",
 	"type": "module",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",

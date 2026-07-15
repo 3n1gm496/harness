@@ -1,7 +1,15 @@
 {
 	"name": "@harness/fleet-extension",
 	"version": "0.1.0",
+	"description": "Adapter PI per @harness/enforcement-core: traduce la Extension API di PI sulle primitive neutre del motore.",
 	"private": true,
+	"license": "UNLICENSED",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/3n1gm496/harness.git",
+		"directory": "packages/fleet-extension"
+	},
+	"homepage": "https://github.com/3n1gm496/harness/tree/main/packages/fleet-extension#readme",
 	"type": "module",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",

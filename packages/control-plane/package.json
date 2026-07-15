@@ -1,7 +1,15 @@
 {
 	"name": "@harness/control-plane",
 	"version": "0.1.0",
+	"description": "Piattaforma amministrativa: API, storage (file o Postgres normalizzato), RBAC, kill switch, audit, UI web, osservabilità.",
 	"private": true,
+	"license": "UNLICENSED",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/3n1gm496/harness.git",
+		"directory": "packages/control-plane"
+	},
+	"homepage": "https://github.com/3n1gm496/harness/tree/main/packages/control-plane#readme",
 	"type": "module",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",

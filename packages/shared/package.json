@@ -1,7 +1,15 @@
 {
 	"name": "@harness/shared",
 	"version": "0.1.0",
+	"description": "Tipi condivisi, firma Ed25519, policy engine default-deny, redaction, logger e metriche Prometheus — zero dipendenze runtime esterne.",
 	"private": true,
+	"license": "UNLICENSED",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/3n1gm496/harness.git",
+		"directory": "packages/shared"
+	},
+	"homepage": "https://github.com/3n1gm496/harness/tree/main/packages/shared#readme",
 	"type": "module",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",

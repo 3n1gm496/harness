@@ -81,3 +81,5 @@ Osservabilità: `GET /metrics` (Prometheus) e `GET /readyz` (readiness reale) su
 - [Modello di minaccia](docs/threat-model.md) — avversari, confini di fiducia, garanzie e non-garanzie
 - [Analisi di PI e architettura](docs/analisi-pi-e-architettura.md)
 - [Guida operativa](docs/guida-operativa.md) — deploy, enrollment, operazioni di sicurezza, limiti noti
+- [Scrivere un adapter](packages/enforcement-core/README.md) per integrare un coding agent diverso da PI
+- [Contribuire](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [Licenza](LICENSE) (proprietaria, uso interno)

@@ -1,6 +1,14 @@
 {
 	"name": "harness-monorepo",
+	"version": "0.1.0",
+	"description": "Harness AI aziendale: motore di enforcement agent-agnostic e piattaforma amministrativa per configurazioni/policy centralizzate.",
 	"private": true,
+	"license": "UNLICENSED",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/3n1gm496/harness.git"
+	},
+	"homepage": "https://github.com/3n1gm496/harness#readme",
 	"type": "module",
 	"engines": {
 		"node": ">=22"
