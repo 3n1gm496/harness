@@ -702,11 +702,21 @@ export class Store {
 	 */
 	save(): void {
 		this.rebuildTokenIndex();
-		if (this.mirror) {
-			if (Date.now() - this.lastFileWriteAt >= Store.FILE_CACHE_THROTTLE_MS) this.writeStateFile();
-		} else {
+		if (!this.mirror) {
+			// File-mode puro: il file È la fonte di verità, scrittura sincrona sempre.
 			this.writeStateFile();
+			this.mirrorNow();
+			return;
 		}
+		// Con un mirror il file è cache di bootstrap: normalmente throttlato. MA se
+		// il mirror sta fallendo (`lastMirrorError`), la scrittura write-behind su
+		// Postgres non sta andando a buon fine e il file diventa l'unica copia
+		// durevole di questa mutazione: forziamo la scrittura, altrimenti un
+		// `kill -9` entro la finestra di throttle la perderebbe da *entrambe* le
+		// parti. In regime normale (mirror confermato) il throttle resta e
+		// l'amplificazione di scrittura non torna.
+		const throttleElapsed = Date.now() - this.lastFileWriteAt >= Store.FILE_CACHE_THROTTLE_MS;
+		if (throttleElapsed || this.lastMirrorError) this.writeStateFile();
 		this.mirrorNow();
 	}
 

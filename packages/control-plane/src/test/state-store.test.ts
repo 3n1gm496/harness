@@ -126,6 +126,40 @@ test("Store con backend in-memory: idratazione e write-behind", async () => {
 	}
 });
 
+test("durabilità cache file (F2.6): con mirror che fallisce, save() forza la scrittura del file entro il throttle", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-ss-durab-"));
+	let failWrites = false;
+	// Backend snapshot-based il cui save() può fallire su richiesta.
+	const backend: import("../state-store.js").DurableStateStore = {
+		async load() {
+			return null;
+		},
+		async save() {
+			if (failWrites) throw new Error("mirror giù");
+		},
+		async close() {},
+	};
+	try {
+		const store = await Store.openWithBackend(dir, backend, KEK);
+		await store.flush();
+		// Il mirror va giù. Prima mutazione: la write-behind fallisce → lastMirrorError.
+		failWrites = true;
+		store.state.org.name = "durante-outage-1";
+		store.save();
+		await store.flush();
+		// Seconda mutazione ENTRO la finestra di throttle (30s): con il mirror in
+		// errore, save() deve forzare comunque la scrittura del file, altrimenti un
+		// kill -9 perderebbe la mutazione da entrambe le parti.
+		store.state.org.name = "durante-outage-2";
+		store.save();
+		const onDisk = readFileSync(join(dir, "state.json"), "utf8");
+		assert.match(onDisk, /durante-outage-2/, "la mutazione durante l'outage del mirror deve essere sul file");
+		await store.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("le chiavi di firma sono incluse nello snapshot durevole", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "harness-ss-keys-"));
 	const backend = new InMemoryStateStore();

@@ -337,7 +337,20 @@ export function buildRoutes(): RouteDef[] {
 			path: "/api/admin/session/logout",
 			auth: "none",
 			handler: async (ctx) => {
-				await ctx.service.auth.destroySession(sessionCookieValue(ctx.req));
+				const sessionId = sessionCookieValue(ctx.req);
+				if (sessionId) {
+					// Richiede il CSRF token anche sul logout (difesa in profondità,
+					// come ogni mutazione): impedisce un logout forzato via CSRF. Se la
+					// sessione è già invalida (401) il logout è idempotente e prosegue;
+					// un CSRF errato su sessione valida (403) viene propagato.
+					try {
+						const csrf = ctx.req.headers["x-csrf-token"];
+						await ctx.service.auth.authenticateSession(sessionId, typeof csrf === "string" ? csrf : undefined, true);
+					} catch (error) {
+						if (error instanceof ServiceError && error.status === 403) throw error;
+					}
+					await ctx.service.auth.destroySession(sessionId);
+				}
 				ctx.res.setHeader("set-cookie", clearSessionCookie(isSecureRequest(ctx.req)));
 				return { ok: true };
 			},
@@ -369,8 +382,10 @@ export function buildRoutes(): RouteDef[] {
  * CSP dell'unica pagina statica servita: nessun `'unsafe-inline'` (A2), grazie
  * a script e stile esternalizzati in `app.js`/`app.css` e alla rimozione di
  * ogni `onclick=` inline (l'HTML delega gli eventi via `addEventListener`).
+ * `frame-ancestors 'none'` (più `X-Frame-Options: DENY` per i browser datati)
+ * blocca l'inclusione in un iframe: anti-clickjacking sulla UI amministrativa.
  */
-const CSP = "default-src 'self'; img-src 'self' data:";
+const CSP = "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'";
 
 function serveIndexHtml(ctx: RouteContext): void {
 	const html = readPublicFile("index.html");
@@ -378,6 +393,7 @@ function serveIndexHtml(ctx: RouteContext): void {
 		"content-type": "text/html; charset=utf-8",
 		"x-content-type-options": "nosniff",
 		"content-security-policy": CSP,
+		"x-frame-options": "DENY",
 	});
 	ctx.res.end(html);
 }

@@ -1001,3 +1001,68 @@ test("sessione UI: login→cookie+csrf, CSRF su mutazioni, revoca del token la i
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("logout richiede il CSRF token (no logout forzato via CSRF)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-logout-"));
+	const store = new Store(dir);
+	const service = new ControlPlaneService(store);
+	const token = service.auth.bootstrapAdminToken("root");
+	const isolatedServer = createControlPlaneServer(service, { readiness: () => store.checkReady() });
+	try {
+		await new Promise<void>((resolve) => isolatedServer.listen(0, resolve));
+		const base = `http://127.0.0.1:${(isolatedServer.address() as AddressInfo).port}`;
+		const login = await fetch(`${base}/api/admin/session/login`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ token }),
+		});
+		const cookie = ((login.headers.get("set-cookie") ?? "").match(/harness_session=[^;]*/) ?? [])[0] as string;
+		const { csrfToken } = (await login.json()) as { csrfToken: string };
+
+		// Logout senza CSRF token (simula CSRF cross-site: il cookie è allegato ma
+		// l'attaccante non conosce il CSRF token) → 403, sessione ancora valida.
+		const forced = await fetch(`${base}/api/admin/session/logout`, { method: "POST", headers: { cookie } });
+		assert.equal(forced.status, 403);
+		assert.equal((await fetch(`${base}/api/admin/overview`, { headers: { cookie } })).status, 200);
+
+		// Logout legittimo con CSRF token → ok, sessione invalidata.
+		const ok = await fetch(`${base}/api/admin/session/logout`, {
+			method: "POST",
+			headers: { cookie, "x-csrf-token": csrfToken },
+		});
+		assert.equal(ok.status, 200);
+		assert.equal((await fetch(`${base}/api/admin/overview`, { headers: { cookie } })).status, 401);
+	} finally {
+		await new Promise((resolve) => isolatedServer.close(resolve));
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("cap sugli input e path param malformato (F2.8)", async () => {
+	const overview = await call("GET", "/api/admin/overview", { token: adminToken });
+	const groupId = (overview.data.groups as { groupId: string }[])[0]?.groupId as string;
+
+	// ttlMinutes fuori range → 400.
+	const badTtl = await call("POST", "/api/admin/enroll-tokens", { token: adminToken, body: { groupId, ttlMinutes: 999999 } });
+	assert.equal(badTtl.status, 400);
+
+	// deviceName gigante → 400.
+	const enroll = await call("POST", "/api/admin/enroll-tokens", { token: adminToken, body: { groupId, ttlMinutes: 10 } });
+	const enrollToken = enroll.data.enrollToken as string;
+	const bigName = await call("POST", "/api/enroll", { body: { enrollToken, deviceName: "x".repeat(500) } });
+	assert.equal(bigName.status, 400);
+
+	// Path param con percent-encoding malformato → 400 pulito (non 500). Si usa
+	// una route che matcha davvero il pattern `:id`, così il decode viene eseguito.
+	const badParam = await fetch(`${baseUrl}/api/admin/devices/%ZZ/effective-policy`, {
+		headers: { authorization: `Bearer ${adminToken}` },
+	});
+	assert.equal(badParam.status, 400);
+});
+
+test("la CSP della UI blocca il framing (frame-ancestors + X-Frame-Options)", async () => {
+	const response = await fetch(`${baseUrl}/`);
+	assert.match(response.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
+	assert.equal(response.headers.get("x-frame-options"), "DENY");
+	assert.doesNotMatch(response.headers.get("content-security-policy") ?? "", /unsafe-inline/);
+});

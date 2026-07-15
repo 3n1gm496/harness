@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ControlPlaneService } from "./service.js";
-import type { AdminIdentity } from "./services/context.js";
+import { type AdminIdentity, ServiceError } from "./services/context.js";
 import type { DeviceRecord } from "./store.js";
 
 /** Modalità di autenticazione richiesta da una route, risolta dal dispatcher. */
@@ -82,7 +82,14 @@ export function matchRoute(
 		if (!match) continue;
 		const params: Record<string, string> = {};
 		route.paramNames.forEach((name, index) => {
-			params[name] = decodeURIComponent(match[index + 1] as string);
+			const raw = match[index + 1] as string;
+			try {
+				params[name] = decodeURIComponent(raw);
+			} catch {
+				// Sequenza percent-encoding malformata (es. `%ZZ`): 400 pulito
+				// invece di lasciar propagare l'URIError come 500 con stack.
+				throw new ServiceError(400, `parametro di path non valido: ${name}`);
+			}
 		});
 		return { route, params };
 	}

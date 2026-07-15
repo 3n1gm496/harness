@@ -22,13 +22,17 @@ export function sessionCookieValue(req: IncomingMessage): string | undefined {
 
 /**
  * Una connessione è considerata sicura (per l'attributo `Secure` del cookie)
- * se è TLS diretto o se un reverse proxy davanti dichiara `x-forwarded-proto:
- * https` — necessario perché in molti deploy il TLS termina a monte del
- * processo Node (`options.tls` di `server.ts` resta comunque supportato).
+ * se è TLS diretto o se un reverse proxy FIDATO davanti dichiara
+ * `x-forwarded-proto: https`. L'header è fidato solo dietro
+ * `HARNESS_TRUST_PROXY=1` (stesso gate di `clientIp`): senza, sarebbe
+ * spoofabile da un client diretto per far marcare `Secure` un cookie su una
+ * connessione in chiaro (o viceversa). In molti deploy il TLS termina a monte
+ * del processo Node (`options.tls` di `server.ts` resta comunque supportato).
  */
 export function isSecureRequest(req: IncomingMessage): boolean {
 	if ((req.socket as { encrypted?: boolean }).encrypted) return true;
-	return req.headers["x-forwarded-proto"] === "https";
+	if (process.env.HARNESS_TRUST_PROXY === "1") return req.headers["x-forwarded-proto"] === "https";
+	return false;
 }
 
 /** Costruisce l'header `Set-Cookie` per aprire una sessione. */

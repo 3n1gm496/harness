@@ -39,6 +39,12 @@ export class DeviceService {
 
 	createEnrollToken(identity: AdminIdentity, groupId: string, ttlMinutes: number): string {
 		requireRole(identity, "operator");
+		// Range limitato (come ttlDays dei token admin): un TTL non validato
+		// permetterebbe token di enrollment praticamente eterni o con valori
+		// assurdi (NaN/negativi). Max 7 giorni.
+		if (!Number.isFinite(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > 10_080) {
+			throw new ServiceError(400, "ttlMinutes deve essere tra 1 e 10080 (7 giorni)");
+		}
 		this.ctx.requireGroup(groupId);
 		this.pruneEnrollTokens();
 		const token = newSecretToken("enr");
@@ -65,6 +71,15 @@ export class DeviceService {
 		if (record.usedBy) throw new ServiceError(401, "token di enrollment già usato");
 		if (Date.parse(record.expiresAt) < Date.now()) throw new ServiceError(401, "token di enrollment scaduto");
 
+		// Cap di lunghezza sugli input non fidati (oltre al limite globale di 1MB
+		// sul body): un nome/fingerprint gigante gonfierebbe lo stato e il file.
+		if (deviceName.length > 200) throw new ServiceError(400, "deviceName troppo lungo (max 200 caratteri)");
+		if (certFingerprint !== undefined && certFingerprint.length > 200) {
+			throw new ServiceError(400, "certFingerprint troppo lungo");
+		}
+		if (deviceSigningPublicKeyPem !== undefined && deviceSigningPublicKeyPem.length > 4096) {
+			throw new ServiceError(400, "deviceSigningPublicKeyPem troppo lungo");
+		}
 		if (this.store.state.org.requireDeviceCert && !normalizeFingerprint(certFingerprint)) {
 			throw new ServiceError(400, "questa organizzazione richiede un certificato client all'enrollment (mTLS)");
 		}
