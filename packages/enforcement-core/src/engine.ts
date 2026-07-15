@@ -48,79 +48,100 @@ export function attachEnforcement(adapter: AgentAdapter, state: FleetState): voi
 	});
 
 	adapter.onToolCall((call, session) => {
-		// Barriera sandbox: se la policy richiede il contenimento e il marker
-		// dell'ambiente sanzionato non c'è, si blocca tutto (fail-closed).
-		if (!isSandboxSatisfied(state.policy.sandbox)) {
+		try {
+			// Barriera sandbox: se la policy richiede il contenimento e il marker
+			// dell'ambiente sanzionato non c'è, si blocca tutto (fail-closed).
+			if (!isSandboxSatisfied(state.policy.sandbox)) {
+				state.pushAudit("policy_decision", {
+					toolName: call.toolName,
+					toolCallId: call.callId,
+					action: "deny",
+					reason: "sandbox obbligatoria assente",
+				});
+				return {
+					allow: false,
+					reason: `${POLICY_PREFIX} l'agente deve girare dentro l'ambiente contenuto sanzionato (marker sandbox assente)`,
+				};
+			}
+			const decision = evaluateToolCall(state.policy, {
+				toolName: call.toolName,
+				input: call.input,
+				cwd: session.cwd,
+			});
 			state.pushAudit("policy_decision", {
 				toolName: call.toolName,
 				toolCallId: call.callId,
-				action: "deny",
-				reason: "sandbox obbligatoria assente",
+				action: decision.action,
+				reason: decision.action === "deny" ? decision.reason : undefined,
+				input: summarizeInput(call.input),
+				configVersion: state.configVersion,
 			});
-			return {
-				allow: false,
-				reason: `${POLICY_PREFIX} l'agente deve girare dentro l'ambiente contenuto sanzionato (marker sandbox assente)`,
-			};
+			if (decision.action === "deny") {
+				return { allow: false, reason: `${POLICY_PREFIX} ${decision.reason}` };
+			}
+			return { allow: true };
+		} catch (error) {
+			return failClosed("tool_call", call.toolName, error, state);
 		}
-		const decision = evaluateToolCall(state.policy, {
-			toolName: call.toolName,
-			input: call.input,
-			cwd: session.cwd,
-		});
-		state.pushAudit("policy_decision", {
-			toolName: call.toolName,
-			toolCallId: call.callId,
-			action: decision.action,
-			reason: decision.action === "deny" ? decision.reason : undefined,
-			input: summarizeInput(call.input),
-			configVersion: state.configVersion,
-		});
-		if (decision.action === "deny") {
-			return { allow: false, reason: `${POLICY_PREFIX} ${decision.reason}` };
-		}
-		return { allow: true };
 	});
 
 	adapter.onToolResult((result) => {
-		const policy = state.policy;
-		if (!policy.redaction.enabled || result.isError) return undefined;
-		let changed = false;
-		const redactedLabels = new Set<string>();
-		const content: OutputBlock[] = result.content.map((block) => {
-			if (block.type !== "text" || typeof block.text !== "string") return block;
-			const redaction = redactSecrets(block.text, policy.redaction.patterns);
-			if (redaction.matches.length === 0) return block;
-			changed = true;
-			for (const label of redaction.matches) redactedLabels.add(label);
-			return { ...block, text: redaction.text };
-		});
-		if (!changed) return undefined;
-		state.pushAudit("tool_result", {
-			toolName: result.toolName,
-			toolCallId: result.callId,
-			redacted: [...redactedLabels],
-		});
-		return { content };
+		try {
+			const policy = state.policy;
+			if (!policy.redaction.enabled || result.isError) return undefined;
+			let changed = false;
+			const redactedLabels = new Set<string>();
+			const content: OutputBlock[] = result.content.map((block) => {
+				if (block.type !== "text" || typeof block.text !== "string") return block;
+				const redaction = redactSecrets(block.text, policy.redaction.patterns);
+				if (redaction.matches.length === 0) return block;
+				changed = true;
+				for (const label of redaction.matches) redactedLabels.add(label);
+				return { ...block, text: redaction.text };
+			});
+			if (!changed) return undefined;
+			state.pushAudit("tool_result", {
+				toolName: result.toolName,
+				toolCallId: result.callId,
+				redacted: [...redactedLabels],
+			});
+			return { content };
+		} catch {
+			// La redazione non è riuscita su un blocco: fail-closed sul contenuto —
+			// meglio sostituire il testo con un segnaposto che lasciar passare un
+			// risultato potenzialmente contenente un segreto non redatto.
+			return {
+				content: result.content.map((block) =>
+					block.type === "text"
+						? { ...block, text: `${POLICY_PREFIX} contenuto soppresso: redazione non riuscita` }
+						: block,
+				),
+			};
+		}
 	});
 
 	// I comandi shell dell'utente seguono la stessa policy bash dell'agente.
 	adapter.onShellCommand((command) => {
-		const policy = state.policy;
-		if (!isSandboxSatisfied(policy.sandbox)) {
-			return { allow: false, reason: `${POLICY_PREFIX} comando bloccato: sandbox obbligatoria assente` };
+		try {
+			const policy = state.policy;
+			if (!isSandboxSatisfied(policy.sandbox)) {
+				return { allow: false, reason: `${POLICY_PREFIX} comando bloccato: sandbox obbligatoria assente` };
+			}
+			const decision = policy.killSwitch
+				? ({ action: "deny", reason: "kill switch attivo" } as const)
+				: evaluateBashCommand(policy.bash, command.command);
+			state.pushAudit("user_bash", {
+				command: truncate(redactSecrets(command.command).text, 300),
+				action: decision.action,
+				reason: decision.action === "deny" ? decision.reason : undefined,
+			});
+			if (decision.action === "deny") {
+				return { allow: false, reason: `${POLICY_PREFIX} comando bloccato: ${decision.reason}` };
+			}
+			return { allow: true };
+		} catch (error) {
+			return failClosed("user_bash", command.command, error, state);
 		}
-		const decision = policy.killSwitch
-			? ({ action: "deny", reason: "kill switch attivo" } as const)
-			: evaluateBashCommand(policy.bash, command.command);
-		state.pushAudit("user_bash", {
-			command: truncate(redactSecrets(command.command).text, 300),
-			action: decision.action,
-			reason: decision.action === "deny" ? decision.reason : undefined,
-		});
-		if (decision.action === "deny") {
-			return { allow: false, reason: `${POLICY_PREFIX} comando bloccato: ${decision.reason}` };
-		}
-		return { allow: true };
 	});
 
 	adapter.onSessionEnd(async () => {
@@ -155,6 +176,32 @@ export async function bootstrapEnforcement(adapter: AgentAdapter): Promise<void>
 	await state.initialLoad();
 	state.startLoops();
 	state.pushAudit("agent_start", { cwd: process.cwd(), status: state.status });
+}
+
+/**
+ * Un'eccezione inattesa dentro un handler di decisione (bug del motore,
+ * policy corrotta, …) non deve propagarsi al chiamante — dove finirebbe
+ * fail-open o crasherebbe l'agente ospite. Qui degrada in un deny esplicito
+ * (fail-closed, coerente col resto del sistema) e tenta di registrarlo.
+ */
+function failClosed(
+	kind: "tool_call" | "user_bash",
+	subject: string,
+	error: unknown,
+	state: FleetState,
+): { allow: false; reason: string } {
+	const detail = error instanceof Error ? error.message : String(error);
+	try {
+		state.pushAudit("policy_decision", {
+			kind,
+			subject,
+			action: "deny",
+			reason: `errore interno di policy: ${detail}`,
+		});
+	} catch {
+		// se persino l'audit fallisce, non c'è altro da fare: la decisione resta un deny
+	}
+	return { allow: false, reason: `${POLICY_PREFIX} errore interno di policy: azione bloccata (fail-closed)` };
 }
 
 /**

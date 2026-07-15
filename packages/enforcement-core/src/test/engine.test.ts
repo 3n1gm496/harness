@@ -166,3 +166,47 @@ test("session end aggancia lo shutdown dello stato di flotta (flush audit, timer
 	// tentativo), ma emitSessionEnd non deve lanciare.
 	await adapter.emitSessionEnd();
 });
+
+test("fail-closed: un'eccezione nel handler di decisione diventa un deny, non si propaga", async () => {
+	const adapter = new MockAdapter();
+	const state = stateWithPolicy();
+	// Policy che fa esplodere qualunque accesso: simula un bug del motore o una
+	// policy corrotta. Il gate deve degradare a deny (fail-closed), non lanciare.
+	state.setPolicyForTesting(
+		new Proxy({} as ReturnType<typeof defaultPolicy>, {
+			get() {
+				throw new Error("policy corrotta");
+			},
+		}),
+	);
+	attachEnforcement(adapter, state);
+	const toolGate = await adapter.emitToolCall({ toolName: "read", callId: "1", input: { path: "x" } }, session);
+	assert.equal(toolGate.allow, false);
+	const shellGate = await adapter.emitShell({ command: "ls", cwd: session.cwd }, session);
+	assert.equal(shellGate.allow, false);
+});
+
+test("reentrancy: due flushAudit concorrenti coalescono (nessun doppio invio di eventi)", async () => {
+	const state = stateWithPolicy();
+	for (let i = 0; i < 3; i += 1) state.pushAudit("agent_start", { i });
+	let calls = 0;
+	const slowFetch = (async () => {
+		calls += 1;
+		await new Promise((r) => setTimeout(r, 30));
+		return new Response("{}", { status: 200 });
+	}) as unknown as typeof fetch;
+	await Promise.all([state.flushAudit(slowFetch), state.flushAudit(slowFetch)]);
+	assert.equal(calls, 1, "il secondo flush coalesce sull'in-flight: un solo POST, nessun doppio invio");
+});
+
+test("reentrancy: due refresh concorrenti coalescono (una sola richiesta)", async () => {
+	const state = stateWithPolicy();
+	let calls = 0;
+	const slowFetch = (async () => {
+		calls += 1;
+		await new Promise((r) => setTimeout(r, 30));
+		return new Response("{}", { status: 500 });
+	}) as unknown as typeof fetch;
+	await Promise.all([state.refresh(slowFetch), state.refresh(slowFetch)]);
+	assert.equal(calls, 1, "il secondo refresh coalesce sull'in-flight");
+});

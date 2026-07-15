@@ -78,7 +78,12 @@ export class FleetState {
 	private timers: NodeJS.Timeout[] = [];
 	status: FleetStatus = "fail-closed";
 	lastError = "";
+	/** Ultimo errore di persistenza della config locale (floor anti-rollback, chiavi fidate); "" se ok. */
+	persistError = "";
 	onStatusChange: ((state: FleetState) => void) | undefined;
+	/** Guardie di non-rientranza: coalescono le chiamate sovrapposte (timer lento vs. intervallo). */
+	private refreshPromise: Promise<void> | undefined;
+	private flushPromise: Promise<void> | undefined;
 
 	constructor(config: AgentConfig, configPath: string = defaultAgentConfigPath()) {
 		this.config = config;
@@ -116,8 +121,15 @@ export class FleetState {
 			mkdirSync(dirname(this.configPath), { recursive: true });
 			writeFileSync(tmp, JSON.stringify(this.config, null, "\t"), { mode: 0o600 });
 			renameSync(tmp, this.configPath);
-		} catch {
-			// La persistenza è best-effort: in memoria lo stato è comunque aggiornato.
+			this.persistError = "";
+		} catch (error) {
+			// La persistenza NON è silenziosamente best-effort: se fallisce proprio
+			// mentre si accetta una `configVersion` più alta, dopo un riavvio il
+			// floor `minConfigVersion` regredirebbe al valore durevole precedente,
+			// riaprendo la finestra di rollback che questo meccanismo deve chiudere.
+			// Lo si rende osservabile (flag + stderr) invece di ingoiarlo.
+			this.persistError = error instanceof Error ? error.message : String(error);
+			console.error(`[harness-fleet] persistenza della config locale fallita: ${this.persistError}`);
 		}
 	}
 
@@ -170,7 +182,21 @@ export class FleetState {
 		}
 	}
 
-	async refresh(fetchImpl: typeof fetch = fetch): Promise<void> {
+	/**
+	 * Refresh del bundle. Non-rientrante: se un refresh è già in corso (un sync
+	 * lento mentre l'intervallo rifà partire il timer), i chiamanti coalescono
+	 * su quello in volo invece di sovrapporsi — due refresh out-of-order
+	 * potrebbero altrimenti reinstallare uno stato stantìo.
+	 */
+	refresh(fetchImpl: typeof fetch = fetch): Promise<void> {
+		if (this.refreshPromise) return this.refreshPromise;
+		this.refreshPromise = this.doRefresh(fetchImpl).finally(() => {
+			this.refreshPromise = undefined;
+		});
+		return this.refreshPromise;
+	}
+
+	private async doRefresh(fetchImpl: typeof fetch = fetch): Promise<void> {
 		try {
 			const response = await fetchImpl(`${this.config.controlPlaneUrl}/api/device/config`, {
 				headers: { authorization: `Bearer ${this.config.deviceToken}` },
@@ -255,7 +281,22 @@ export class FleetState {
 		}
 	}
 
-	async flushAudit(fetchImpl: typeof fetch = fetch): Promise<void> {
+	/**
+	 * Spedizione batch dell'audit. Non-rientrante: senza la guardia, due flush
+	 * sovrapposti (POST lenta vs. intervallo) leggerebbero entrambi lo stesso
+	 * `slice(0, 200)` dal buffer, spedendo gli stessi eventi DUE volte e poi
+	 * tagliando il buffer di 400 (con perdita di eventi mai spediti). I chiamanti
+	 * coalescono sul flush in volo.
+	 */
+	flushAudit(fetchImpl: typeof fetch = fetch): Promise<void> {
+		if (this.flushPromise) return this.flushPromise;
+		this.flushPromise = this.doFlush(fetchImpl).finally(() => {
+			this.flushPromise = undefined;
+		});
+		return this.flushPromise;
+	}
+
+	private async doFlush(fetchImpl: typeof fetch = fetch): Promise<void> {
 		if (this.auditBuffer.length === 0) return;
 		const batch = this.auditBuffer.slice(0, 200);
 		try {
