@@ -57,10 +57,10 @@ async function main(): Promise<void> {
 		// sole, ma vanno comunque liberate periodicamente per non trattenerle
 		// oltre il TTL in caso di traffico di login sostenuto.
 		service.auth.pruneExpiredAdminTokens();
-		service.auth.pruneExpiredSessions();
+		void service.auth.pruneExpiredSessions().catch(() => {});
 		const adminTokenPruneTimer = setInterval(() => {
 			service.auth.pruneExpiredAdminTokens();
-			service.auth.pruneExpiredSessions();
+			void service.auth.pruneExpiredSessions().catch(() => {});
 		}, 6 * 3_600_000);
 		adminTokenPruneTimer.unref();
 		const tls = loadTlsFromEnv();
@@ -200,10 +200,12 @@ async function main(): Promise<void> {
 		const auditDays = Number(flagValue(args, "--audit-days") ?? "365");
 		const changelogKeep = Number(flagValue(args, "--changelog-keep") ?? "100000");
 		const prunedAdminTokens = service.auth.pruneExpiredAdminTokens();
+		const prunedSessions = await service.auth.pruneExpiredSessions();
 		const auditResults = await store.pruneAudit(auditDays);
 		const changelogResult = await store.pruneChangelog(changelogKeep);
 		await store.close();
 		console.log(`Token amministrativi scaduti rimossi: ${prunedAdminTokens}`);
+		console.log(`Sessioni UI scadute rimosse: ${prunedSessions}`);
 		for (const r of auditResults) {
 			if (r.prunedRows > 0) console.log(`  audit[${r.streamId}]: ${r.prunedRows} righe potate (oltre ${auditDays}gg)`);
 			if (r.rotated) console.log(`  audit[${r.streamId}]: file ruotato su archivio (dimensione)`);

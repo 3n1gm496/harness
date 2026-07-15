@@ -2,6 +2,7 @@ import type { ChainVerification } from "@harness/shared";
 import { CHAIN_GENESIS, computeChainHash, verifyChain } from "@harness/shared";
 import { runMigrations } from "./pg-migrations.js";
 import type {
+	AdminSessionRecord,
 	AdminTokenRecord,
 	ControlPlaneState,
 	DeviceRecord,
@@ -74,6 +75,18 @@ export interface NormalizedStateStore extends DurableStateStore {
 	 * true se `key` è ancora entro `limitPerWindow` in questa finestra.
 	 */
 	checkRateLimit(key: string, limitPerWindow: number): Promise<boolean>;
+
+	// ---- Sessioni della UI amministrativa (durevoli, condivise multi-istanza) ----
+	/** Crea/aggiorna una sessione. */
+	createSession(session: AdminSessionRecord): Promise<void>;
+	/** Ritorna la sessione se presente e non scaduta, altrimenti undefined. */
+	getSession(sessionHash: string): Promise<AdminSessionRecord | undefined>;
+	/** Elimina una singola sessione (logout). */
+	deleteSession(sessionHash: string): Promise<void>;
+	/** Elimina tutte le sessioni aperte con un dato token admin (revoca del token). */
+	deleteSessionsByToken(sourceTokenHash: string): Promise<void>;
+	/** Elimina le sessioni scadute; ritorna quante ne ha rimosse. */
+	pruneSessions(): Promise<number>;
 }
 
 /**
@@ -827,6 +840,61 @@ export class PostgresStateStore implements IncrementalStateStore {
 		);
 		const count = Number(result.rows[0]?.count ?? 1);
 		return count <= limitPerWindow;
+	}
+
+	async createSession(session: AdminSessionRecord): Promise<void> {
+		await this.ensureReady();
+		await this.query(
+			`INSERT INTO cp_sessions (session_hash, name, role, csrf_token, source_token_hash, expires_at)
+			 VALUES ($1, $2, $3, $4, $5, to_timestamp($6 / 1000.0))
+			 ON CONFLICT (session_hash) DO UPDATE SET
+				name = EXCLUDED.name, role = EXCLUDED.role, csrf_token = EXCLUDED.csrf_token,
+				source_token_hash = EXCLUDED.source_token_hash, expires_at = EXCLUDED.expires_at`,
+			[
+				session.sessionHash,
+				session.name,
+				session.role,
+				session.csrfToken,
+				session.sourceTokenHash ?? null,
+				session.expiresAt,
+			],
+		);
+	}
+
+	async getSession(sessionHash: string): Promise<AdminSessionRecord | undefined> {
+		await this.ensureReady();
+		// Filtra le scadute lato server: non vanno restituite neppure prima che il
+		// prune periodico le rimuova.
+		const r = await this.query("SELECT * FROM cp_sessions WHERE session_hash = $1 AND expires_at > now()", [
+			sessionHash,
+		]);
+		const row = r.rows[0];
+		if (!row) return undefined;
+		const record: AdminSessionRecord = {
+			sessionHash: row.session_hash,
+			name: row.name,
+			role: row.role,
+			csrfToken: row.csrf_token,
+			expiresAt: new Date(row.expires_at).getTime(),
+		};
+		if (row.source_token_hash) record.sourceTokenHash = row.source_token_hash;
+		return record;
+	}
+
+	async deleteSession(sessionHash: string): Promise<void> {
+		await this.ensureReady();
+		await this.query("DELETE FROM cp_sessions WHERE session_hash = $1", [sessionHash]);
+	}
+
+	async deleteSessionsByToken(sourceTokenHash: string): Promise<void> {
+		await this.ensureReady();
+		await this.query("DELETE FROM cp_sessions WHERE source_token_hash = $1", [sourceTokenHash]);
+	}
+
+	async pruneSessions(): Promise<number> {
+		await this.ensureReady();
+		const r = await this.query("DELETE FROM cp_sessions WHERE expires_at <= now() RETURNING session_hash");
+		return r.rows.length;
 	}
 
 	async close(): Promise<void> {

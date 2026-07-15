@@ -875,3 +875,81 @@ test("la UI statica viene servita con la dashboard, la paginazione e l'editor po
 	assert.match(html, /id="policyValidation"/);
 	assert.match(html, /id="diffOut"/);
 });
+
+test("sessione UI: login→cookie+csrf, CSRF su mutazioni, revoca del token la invalida, logout (file-mode)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-session-"));
+	const store = new Store(dir);
+	const service = new ControlPlaneService(store);
+	const rootToken = service.auth.bootstrapAdminToken("root");
+	const isolatedServer = createControlPlaneServer(service, { readiness: () => store.checkReady() });
+	try {
+		await new Promise<void>((resolve) => isolatedServer.listen(0, resolve));
+		const port = (isolatedServer.address() as AddressInfo).port;
+		const base = `http://127.0.0.1:${port}`;
+		const cookieOf = (h: string | null) => (h?.match(/harness_session=[^;]*/) ?? [])[0];
+
+		// Crea un secondo token admin: quello con cui apriremo (e poi revocheremo)
+		// la sessione, senza toccare l'ultimo admin di bootstrap.
+		const created = await fetch(`${base}/api/admin/admin-tokens`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${rootToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ name: "sessione", role: "admin", ttlDays: 1 }),
+		});
+		const opToken = ((await created.json()) as { token: string }).token;
+
+		// Login: cookie httpOnly + SameSite + csrfToken nel body.
+		const login = await fetch(`${base}/api/admin/session/login`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ token: opToken }),
+		});
+		assert.equal(login.status, 200);
+		const setCookie = login.headers.get("set-cookie") ?? "";
+		assert.match(setCookie, /HttpOnly/i);
+		assert.match(setCookie, /SameSite=Strict/i);
+		const cookie = cookieOf(setCookie) as string;
+		const { csrfToken } = (await login.json()) as { csrfToken: string };
+		assert.ok(csrfToken);
+
+		// GET via solo cookie (nessun CSRF richiesto sulle letture).
+		const overview = await fetch(`${base}/api/admin/overview`, { headers: { cookie } });
+		assert.equal(overview.status, 200);
+
+		// PUT mutante senza CSRF token → 403; con CSRF corretto → 200.
+		const putNoCsrf = await fetch(`${base}/api/admin/org`, {
+			method: "PUT",
+			headers: { cookie, "content-type": "application/json" },
+			body: JSON.stringify({ killSwitch: false }),
+		});
+		assert.equal(putNoCsrf.status, 403);
+		const putCsrf = await fetch(`${base}/api/admin/org`, {
+			method: "PUT",
+			headers: { cookie, "content-type": "application/json", "x-csrf-token": csrfToken },
+			body: JSON.stringify({ killSwitch: false }),
+		});
+		assert.equal(putCsrf.status, 200);
+
+		// /session/me riconsegna il CSRF token finché il cookie è valido.
+		const me = await fetch(`${base}/api/admin/session/me`, { headers: { cookie } });
+		const meBody = (await me.json()) as { authenticated: boolean; csrfToken?: string };
+		assert.equal(meBody.authenticated, true);
+		assert.equal(meBody.csrfToken, csrfToken);
+
+		// Revoca del token sorgente: la sessione aperta con esso smette SUBITO di
+		// autenticare (chiude il bug della regressione A2), usando l'admin root.
+		const tokens = (await (
+			await fetch(`${base}/api/admin/admin-tokens`, { headers: { authorization: `Bearer ${rootToken}` } })
+		).json()) as { tokens: { id: string; name: string }[] };
+		const opTokenId = tokens.tokens.find((t) => t.name === "sessione")?.id as string;
+		const revoke = await fetch(`${base}/api/admin/admin-tokens/${opTokenId}`, {
+			method: "DELETE",
+			headers: { authorization: `Bearer ${rootToken}` },
+		});
+		assert.equal(revoke.status, 200);
+		const afterRevoke = await fetch(`${base}/api/admin/overview`, { headers: { cookie } });
+		assert.equal(afterRevoke.status, 401, "la sessione deve cadere subito alla revoca del token sorgente");
+	} finally {
+		await new Promise((resolve) => isolatedServer.close(resolve));
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

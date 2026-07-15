@@ -161,7 +161,7 @@ async function dispatch(
 			} else {
 				const requireCsrf = method !== "GET" && method !== "HEAD";
 				const csrfHeader = req.headers["x-csrf-token"];
-				ctx.identity = service.auth.authenticateSession(
+				ctx.identity = await service.auth.authenticateSession(
 					sessionCookieValue(req),
 					typeof csrfHeader === "string" ? csrfHeader : undefined,
 					requireCsrf,

@@ -285,8 +285,8 @@ export function buildRoutes(): RouteDef[] {
 			method: "DELETE",
 			path: "/api/admin/admin-tokens/:id",
 			auth: "admin",
-			handler: (ctx) => {
-				ctx.service.auth.revokeAdminToken(ctx.identity!, ctx.params.id!);
+			handler: async (ctx) => {
+				await ctx.service.auth.revokeAdminToken(ctx.identity!, ctx.params.id!);
 				return { ok: true };
 			},
 		},
@@ -310,7 +310,9 @@ export function buildRoutes(): RouteDef[] {
 			auth: "none",
 			handler: async (ctx) => {
 				const body = await ctx.json();
-				const { sessionId, csrfToken, identity } = ctx.service.auth.createAdminSession(optionalString(body, "token"));
+				const { sessionId, csrfToken, identity } = await ctx.service.auth.createAdminSession(
+					optionalString(body, "token"),
+				);
 				ctx.res.setHeader(
 					"set-cookie",
 					buildSessionCookie(sessionId, SESSION_COOKIE_MAX_AGE_SECONDS, isSecureRequest(ctx.req)),
@@ -334,8 +336,8 @@ export function buildRoutes(): RouteDef[] {
 			method: "POST",
 			path: "/api/admin/session/logout",
 			auth: "none",
-			handler: (ctx) => {
-				ctx.service.auth.destroySession(sessionCookieValue(ctx.req));
+			handler: async (ctx) => {
+				await ctx.service.auth.destroySession(sessionCookieValue(ctx.req));
 				ctx.res.setHeader("set-cookie", clearSessionCookie(isSecureRequest(ctx.req)));
 				return { ok: true };
 			},

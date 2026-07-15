@@ -157,7 +157,7 @@ async function resetPgSchema(url: string): Promise<void> {
 	await (s as any).query(
 		`TRUNCATE cp_org, cp_groups, cp_devices, cp_admin_tokens, cp_gateway_tokens,
 			cp_enroll_tokens, cp_signing_keys, cp_audit_events, cp_audit_heads, cp_changelog,
-			cp_rate_buckets, cp_audit_prune_state, cp_changelog_prune_floor
+			cp_rate_buckets, cp_audit_prune_state, cp_changelog_prune_floor, cp_sessions
 		 RESTART IDENTITY CASCADE`,
 	);
 	await s.close();
@@ -344,7 +344,7 @@ test("migrazioni PG: converge alla versione più alta ed è idempotente (live)",
 		const versions = (
 			(await s.query("SELECT version FROM cp_schema_version ORDER BY version ASC")).rows as { version: number }[]
 		).map((r) => Number(r.version));
-		assert.deepEqual(versions, [1, 2, 3, 4, 5]);
+		assert.deepEqual(versions, [1, 2, 3, 4, 5, 6]);
 
 		// Le colonne aggiunte dalle migrazioni 2/3 esistono davvero.
 		const deviceCols = (
@@ -365,7 +365,7 @@ test("migrazioni PG: converge alla versione più alta ed è idempotente (live)",
 		// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
 		await (store as any).ensureReady();
 		const rows2 = (await s.query("SELECT COUNT(*) AS n FROM cp_schema_version")).rows as { n: string }[];
-		assert.equal(Number(rows2[0]?.n), 5);
+		assert.equal(Number(rows2[0]?.n), 6);
 	} finally {
 		await store.close();
 	}
@@ -400,7 +400,7 @@ test("migrazioni PG: due istanze in cold-start concorrente non vanno in race (ad
 				version: number;
 			}[]
 		).map((r) => Number(r.version));
-		assert.deepEqual(versions, [1, 2, 3, 4, 5]);
+		assert.deepEqual(versions, [1, 2, 3, 4, 5, 6]);
 	} finally {
 		await a.close();
 		await b.close();
@@ -434,7 +434,7 @@ test("migrazioni PG: partendo da uno schema fermo alla versione 1 applica le suc
 				version: number;
 			}[]
 		).map((r) => Number(r.version));
-		assert.deepEqual(versions, [1, 2, 3, 4, 5]);
+		assert.deepEqual(versions, [1, 2, 3, 4, 5, 6]);
 		const rateBuckets = (await u.query("SELECT to_regclass('cp_rate_buckets') AS reg")).rows as {
 			reg: string | null;
 		}[];
@@ -547,6 +547,52 @@ test("Postgres: checkRateLimit condivide il conteggio tra istanze diverse (chiud
 
 		// Chiavi diverse hanno bucket indipendenti.
 		assert.equal(await a.checkRateLimit("enroll:203.0.113.10", 5), true);
+	} finally {
+		await a.close();
+		await b.close();
+	}
+});
+
+test("Postgres: le sessioni UI sono durevoli, condivise multi-istanza e revocabili per token (live)", {
+	skip: !PG_URL,
+}, async () => {
+	const url = PG_URL as string;
+	await resetPgSchema(url);
+	const a = new PostgresStateStore(url);
+	const b = new PostgresStateStore(url);
+	try {
+		const now = Date.now();
+		await a.createSession({
+			sessionHash: "sess_hash_1",
+			name: "mario",
+			role: "admin",
+			csrfToken: "csrf_1",
+			sourceTokenHash: "tok_abc",
+			expiresAt: now + 3_600_000,
+		});
+		// Un'altra istanza (b) vede la sessione: è condivisa via DB, non in memoria.
+		const fromB = await b.getSession("sess_hash_1");
+		assert.equal(fromB?.name, "mario");
+		assert.equal(fromB?.csrfToken, "csrf_1");
+		assert.equal(fromB?.sourceTokenHash, "tok_abc");
+
+		// Una sessione scaduta non viene restituita (filtro server-side).
+		await a.createSession({
+			sessionHash: "sess_expired",
+			name: "x",
+			role: "viewer",
+			csrfToken: "c",
+			expiresAt: now - 1000,
+		});
+		assert.equal(await b.getSession("sess_expired"), undefined);
+
+		// Revoca per token sorgente: la sessione legata a tok_abc sparisce.
+		await b.deleteSessionsByToken("tok_abc");
+		assert.equal(await a.getSession("sess_hash_1"), undefined);
+
+		// Prune elimina le scadute e ritorna il conteggio.
+		const pruned = await a.pruneSessions();
+		assert.ok(pruned >= 1);
 	} finally {
 		await a.close();
 		await b.close();

@@ -121,6 +121,21 @@ export const MIGRATIONS: Migration[] = [
 				floor_id bigint NOT NULL);
 		`,
 	},
+	{
+		version: 6,
+		description: "sessioni UI durevoli (cookie httpOnly), revocabili per token sorgente, condivise multi-istanza",
+		sql: `
+			CREATE TABLE IF NOT EXISTS cp_sessions (
+				session_hash text PRIMARY KEY,
+				name text NOT NULL,
+				role text NOT NULL,
+				csrf_token text NOT NULL,
+				source_token_hash text,
+				expires_at timestamptz NOT NULL);
+			CREATE INDEX IF NOT EXISTS cp_sessions_source_idx ON cp_sessions(source_token_hash);
+			CREATE INDEX IF NOT EXISTS cp_sessions_expires_idx ON cp_sessions(expires_at);
+		`,
+	},
 ];
 
 /** Query minimale richiesta dal migration runner (sottoinsieme del client pg). */

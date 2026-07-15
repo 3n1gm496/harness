@@ -121,6 +121,22 @@ export interface GatewayTokenRecord {
 	createdAt: string;
 }
 
+/**
+ * Sessione della UI amministrativa (cookie httpOnly). Persistita (Postgres) o
+ * in memoria (file-mode): con un backend durevole sopravvive a un restart ed è
+ * condivisa multi-istanza, e la revoca del token sorgente (`sourceTokenHash`)
+ * la invalida subito. `expiresAt` è epoch in millisecondi.
+ */
+export interface AdminSessionRecord {
+	sessionHash: string;
+	name: string;
+	role: AdminRole;
+	csrfToken: string;
+	/** Hash del token admin statico che ha aperto la sessione (assente per OIDC): consente la revoca per-token. */
+	sourceTokenHash?: string;
+	expiresAt: number;
+}
+
 export interface ControlPlaneState {
 	org: OrgRecord;
 	groups: Record<string, GroupRecord>;
@@ -735,6 +751,61 @@ export class Store {
 		const backend = this.normalizedBackend();
 		if (backend) return backend.checkRateLimit(`enroll:${key}`, limitPerMinute);
 		return this.enrollRateLimiter.check(`enroll:${key}`, limitPerMinute);
+	}
+
+	/**
+	 * Sessioni della UI amministrativa. Con backend Postgres sono durevoli
+	 * (sopravvivono a un restart) e condivise multi-istanza (nessun login perso
+	 * dietro un load balancer); in file-mode restano in memoria di processo,
+	 * sufficiente perché c'è una sola istanza. La revoca di un token admin passa
+	 * da `deleteSessionsByToken` per chiudere subito le sessioni aperte con esso.
+	 */
+	private readonly memSessions = new Map<string, AdminSessionRecord>();
+
+	async createSession(session: AdminSessionRecord): Promise<void> {
+		const backend = this.normalizedBackend();
+		if (backend) return backend.createSession(session);
+		this.memSessions.set(session.sessionHash, session);
+	}
+
+	async getSession(sessionHash: string): Promise<AdminSessionRecord | undefined> {
+		const backend = this.normalizedBackend();
+		if (backend) return backend.getSession(sessionHash);
+		const record = this.memSessions.get(sessionHash);
+		if (!record) return undefined;
+		if (record.expiresAt <= Date.now()) {
+			this.memSessions.delete(sessionHash);
+			return undefined;
+		}
+		return record;
+	}
+
+	async deleteSession(sessionHash: string): Promise<void> {
+		const backend = this.normalizedBackend();
+		if (backend) return backend.deleteSession(sessionHash);
+		this.memSessions.delete(sessionHash);
+	}
+
+	async deleteSessionsByToken(sourceTokenHash: string): Promise<void> {
+		const backend = this.normalizedBackend();
+		if (backend) return backend.deleteSessionsByToken(sourceTokenHash);
+		for (const [hash, record] of this.memSessions) {
+			if (record.sourceTokenHash === sourceTokenHash) this.memSessions.delete(hash);
+		}
+	}
+
+	async pruneSessions(): Promise<number> {
+		const backend = this.normalizedBackend();
+		if (backend) return backend.pruneSessions();
+		const now = Date.now();
+		let pruned = 0;
+		for (const [hash, record] of this.memSessions) {
+			if (record.expiresAt <= now) {
+				this.memSessions.delete(hash);
+				pruned += 1;
+			}
+		}
+		return pruned;
 	}
 
 	appendDeviceAudit(deviceId: string, events: AuditEvent[]): void {

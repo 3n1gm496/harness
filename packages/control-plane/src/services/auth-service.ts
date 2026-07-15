@@ -1,6 +1,7 @@
+import { timingSafeEqual } from "node:crypto";
 import type { AdminRole } from "@harness/shared";
 import { newSecretToken, verifyJwt } from "@harness/shared";
-import type { AdminTokenRecord, DeviceRecord } from "../store.js";
+import type { AdminSessionRecord, AdminTokenRecord, DeviceRecord } from "../store.js";
 import { hashToken } from "../store.js";
 import {
 	type AdminIdentity,
@@ -13,17 +14,24 @@ import {
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
-interface AdminSessionRecord {
-	name: string;
-	role: AdminRole;
-	csrfToken: string;
-	expiresAt: number;
+/** Confronto a tempo costante di due stringhe (token CSRF): evita un side-channel di timing. */
+function timingSafeEqualStr(a: string, b: string): boolean {
+	const bufA = Buffer.from(a, "utf8");
+	const bufB = Buffer.from(b, "utf8");
+	if (bufA.length !== bufB.length) return false;
+	return timingSafeEqual(bufA, bufB);
 }
 
 /**
  * Autenticazione (admin/device/gateway) e ciclo di vita dei token/credenziali:
  * bootstrap, token amministrativi, token gateway, binding e rotazione dei
  * device token, introspezione per il gateway, sessioni della UI.
+ *
+ * Le sessioni della UI (cookie httpOnly al posto del bearer in `localStorage`)
+ * sono persistite tramite lo Store: con backend Postgres sopravvivono a un
+ * restart e sono condivise multi-istanza, e revocare il token sorgente le
+ * invalida subito (`revokeAdminToken` → `deleteSessionsByToken`); in file-mode
+ * restano in memoria di processo. Vedi `store.ts` (createSession, getSession, …).
  */
 export class AuthService {
 	constructor(private readonly ctx: ServiceContext) {}
@@ -31,17 +39,6 @@ export class AuthService {
 	private get store() {
 		return this.ctx.store;
 	}
-
-	/**
-	 * Sessioni della UI amministrativa (cookie httpOnly al posto del bearer in
-	 * `localStorage` — vedi `createAdminSession`). Vivono solo in memoria di
-	 * processo, mai su file/PG: sono credenziali derivate ed effimere (TTL 12h,
-	 * rinnovabili con un nuovo login), non dati di dominio che richiedono
-	 * durabilità o convergenza multi-istanza come device o admin token — dietro
-	 * un load balancer senza sticky session basta un nuovo login se si finisce
-	 * su un'altra istanza, esattamente come ci si aspetta da una sessione web.
-	 */
-	private readonly sessions = new Map<string, AdminSessionRecord>();
 
 	authenticateAdmin(token: string | undefined): AdminIdentity {
 		if (!token) throw new ServiceError(401, "token amministrativo mancante");
@@ -186,7 +183,7 @@ export class AuthService {
 		});
 	}
 
-	revokeAdminToken(identity: AdminIdentity, id: string): void {
+	async revokeAdminToken(identity: AdminIdentity, id: string): Promise<void> {
 		requireRole(identity, "admin");
 		const match = Object.keys(this.store.state.adminTokens).find((hash) => hash.startsWith(id));
 		if (!match) throw new ServiceError(404, "token amministrativo non trovato");
@@ -200,6 +197,10 @@ export class AuthService {
 		}
 		delete this.store.state.adminTokens[match];
 		this.store.save();
+		// Chiude subito ogni sessione UI aperta con questo token: senza, la
+		// sessione-cookie resterebbe valida fino alla scadenza (12h) nonostante la
+		// revoca — contraddicendo la promessa "chi lo usa perde subito l'accesso".
+		await this.store.deleteSessionsByToken(match);
 		this.ctx.audit(identity.name, "admin_token_revoked", { id, name: target.name, role: target.role });
 	}
 
@@ -249,14 +250,22 @@ export class AuthService {
 	 * httpOnly+Secure+SameSite e ritorna `csrfToken` nel body: da qui in poi il
 	 * bearer non tocca più il browser (né `localStorage` né altro storage JS).
 	 */
-	createAdminSession(token: string | undefined): { sessionId: string; csrfToken: string; identity: AdminIdentity } {
+	async createAdminSession(
+		token: string | undefined,
+	): Promise<{ sessionId: string; csrfToken: string; identity: AdminIdentity }> {
 		const identity = this.authenticateAdmin(token);
 		const sessionId = newSecretToken("ses");
 		const csrfToken = newSecretToken("csrf");
-		this.sessions.set(hashToken(sessionId), {
+		// Solo i token statici (adm_) sono revocabili per-token: legliamo la
+		// sessione al loro hash, così `revokeAdminToken` la può chiudere. Per OIDC
+		// (nessun token statico da revocare) resta senza sourceTokenHash.
+		const sourceTokenHash = token?.startsWith("adm_") ? hashToken(token) : undefined;
+		await this.store.createSession({
+			sessionHash: hashToken(sessionId),
 			name: identity.name,
 			role: identity.role,
 			csrfToken,
+			...(sourceTokenHash ? { sourceTokenHash } : {}),
 			expiresAt: Date.now() + SESSION_TTL_MS,
 		});
 		return { sessionId, csrfToken, identity };
@@ -270,16 +279,12 @@ export class AuthService {
 	 * nessun cookie) — altrimenti ogni caricamento di pagina produrrebbe un
 	 * 401 "atteso" ma comunque loggato dal browser come errore di rete.
 	 */
-	probeSession(
+	async probeSession(
 		sessionId: string | undefined,
-	): { authenticated: false } | { authenticated: true; name: string; role: AdminRole; csrfToken: string } {
+	): Promise<{ authenticated: false } | { authenticated: true; name: string; role: AdminRole; csrfToken: string }> {
 		if (!sessionId) return { authenticated: false };
-		const key = hashToken(sessionId);
-		const record = this.sessions.get(key);
-		if (!record || record.expiresAt < Date.now()) {
-			if (record) this.sessions.delete(key);
-			return { authenticated: false };
-		}
+		const record = await this.store.getSession(hashToken(sessionId));
+		if (!record) return { authenticated: false };
 		return { authenticated: true, name: record.name, role: record.role, csrfToken: record.csrfToken };
 	}
 
@@ -288,50 +293,37 @@ export class AuthService {
 	 * mutanti (`requireCsrf`) pretende anche l'header `x-csrf-token`: il cookie
 	 * da solo verrebbe comunque allegato dal browser a una richiesta cross-site
 	 * (mitigato da SameSite=Strict, ma in profondità), mentre il CSRF token è
-	 * noto solo a chi ha già letto la risposta di login/`describeSession` sulla
-	 * stessa origine.
+	 * noto solo a chi ha già letto la risposta di login/`probeSession` sulla
+	 * stessa origine. Il confronto è a tempo costante (`timingSafeEqualStr`).
 	 */
-	authenticateSession(
+	async authenticateSession(
 		sessionId: string | undefined,
 		csrfToken: string | undefined,
 		requireCsrf: boolean,
-	): AdminIdentity {
-		const record = this.lookupSession(sessionId);
-		if (requireCsrf && (!csrfToken || csrfToken !== record.csrfToken)) {
+	): Promise<AdminIdentity> {
+		const record = await this.lookupSession(sessionId);
+		if (requireCsrf && (!csrfToken || !timingSafeEqualStr(csrfToken, record.csrfToken))) {
 			throw new ServiceError(403, "token CSRF mancante o non valido");
 		}
 		return { name: record.name, role: record.role };
 	}
 
-	private lookupSession(sessionId: string | undefined): AdminSessionRecord {
+	private async lookupSession(sessionId: string | undefined): Promise<AdminSessionRecord> {
 		if (!sessionId) throw new ServiceError(401, "sessione mancante");
-		const key = hashToken(sessionId);
-		const record = this.sessions.get(key);
+		const record = await this.store.getSession(hashToken(sessionId));
 		if (!record) throw new ServiceError(401, "sessione non valida o scaduta");
-		if (record.expiresAt < Date.now()) {
-			this.sessions.delete(key);
-			throw new ServiceError(401, "sessione non valida o scaduta");
-		}
 		return record;
 	}
 
 	/** Logout: invalida la sessione lato server (il cookie va comunque cancellato dal chiamante). */
-	destroySession(sessionId: string | undefined): void {
+	async destroySession(sessionId: string | undefined): Promise<void> {
 		if (!sessionId) return;
-		this.sessions.delete(hashToken(sessionId));
+		await this.store.deleteSession(hashToken(sessionId));
 	}
 
-	/** Rimuove le sessioni scadute da tempo (retention in memoria — vedi `pruneExpiredAdminTokens`). */
-	pruneExpiredSessions(): number {
-		const now = Date.now();
-		let pruned = 0;
-		for (const [key, record] of this.sessions) {
-			if (record.expiresAt < now) {
-				this.sessions.delete(key);
-				pruned += 1;
-			}
-		}
-		return pruned;
+	/** Rimuove le sessioni scadute (retention — vedi `pruneExpiredAdminTokens`). Delega allo Store (PG o in-memory). */
+	pruneExpiredSessions(): Promise<number> {
+		return this.store.pruneSessions();
 	}
 
 	/** Introspezione dei device token per il gateway LLM. */
