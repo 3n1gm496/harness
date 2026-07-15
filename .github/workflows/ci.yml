@@ -43,11 +43,30 @@ jobs:
         run: npm run lint
       - name: Test (incluso adapter Postgres, mTLS e UI browser)
         run: npm test
-      - name: Coverage (soglia minima di regressione)
+      - name: Coverage aggregata (soglia alta complessiva)
         run: >-
           node --test --experimental-test-coverage
           --test-coverage-lines=85 --test-coverage-functions=85 --test-coverage-branches=75
           packages/*/dist/test/*.test.js
+      - name: Coverage per-pacchetto (floor anti-regressione)
+        # In aggiunta alla soglia aggregata: quella globale nasconde i pacchetti
+        # più piccoli e meno coperti dietro shared/control-plane. Questi floor
+        # per-pacchetto sono volutamente conservativi (riflettono la copertura
+        # attuale con un margine) — non aspirazionali: servono a impedire che un
+        # singolo pacchetto scivoli verso zero senza far scattare la CI. Vanno
+        # alzati man mano che la copertura di quei pacchetti migliora.
+        run: |
+          set -e
+          for pkg in shared enforcement-core control-plane llm-gateway agent-client fleet-extension; do
+            tests=$(ls packages/$pkg/dist/test/*.test.js 2>/dev/null || true)
+            if [ -z "$tests" ]; then echo "· $pkg: nessun test, salto"; continue; fi
+            echo "▶ coverage floor $pkg"
+            node --test --experimental-test-coverage \
+              --test-coverage-lines=45 --test-coverage-functions=45 --test-coverage-branches=55 \
+              $tests
+          done
+      - name: Load-test (regressione dell'indice O(1) token→device)
+        run: node scripts/load-test.mjs --devices 500
       - name: Esempio end-to-end senza PI (dimostra il disaccoppiamento dell'enforcement)
         run: node examples/mock-agent/run.mjs
       - name: Valida deploy/docker-compose.yml
@@ -58,9 +77,9 @@ jobs:
         run: docker build -f deploy/Dockerfile.backend -t harness-backend:ci .
       - name: Build immagine Docker del client gestito
         run: docker build -f deploy/Dockerfile.agent -t harness-agent:ci .
-      - name: Audit dipendenze di produzione
-        run: npm audit --omit=dev
-        continue-on-error: true
-      - name: Verifica firme dei pacchetti (supply chain)
+      - name: Audit dipendenze di produzione (gate reale su severità alta/critica)
+        # Gate vero, non informativo: una CVE alta/critica in una dipendenza di
+        # produzione rompe la build (le dipendenze runtime sono minime — solo pg).
+        run: npm audit --omit=dev --audit-level=high
+      - name: Verifica firme dei pacchetti (supply chain, gate reale)
         run: npm audit signatures
-        continue-on-error: true

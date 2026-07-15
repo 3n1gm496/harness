@@ -11,6 +11,7 @@
 // all'adapter mock → l'agente emette una sequenza di azioni e vediamo le
 // decisioni (allow/deny/redaction).
 
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -119,25 +120,33 @@ async function main() {
 	// 4) L'agente finto emette una sequenza di azioni; il motore le giudica.
 	line("▶ Sequenza di azioni dell'agente:\n");
 
+	// Ogni azione porta la decisione ATTESA: così l'esempio non si limita a
+	// stampare l'esito, ma lo verifica. Se una regressione del motore invertisse
+	// una decisione (es. consentisse `rm -rf /` o smettesse di negare l'eval
+	// inline), l'assert fallirebbe e la CI diventerebbe rossa — è la prova del
+	// disaccoppiamento, non solo una demo.
 	const actions = [
-		["toolCall", { toolName: "read", callId: "1", input: { path: "src/app.ts" } }, "read src/app.ts"],
+		["toolCall", { toolName: "read", callId: "1", input: { path: "src/app.ts" } }, "read src/app.ts", true],
 		[
 			"toolCall",
 			{ toolName: "read", callId: "2", input: { path: "/etc/passwd" } },
 			"read /etc/passwd (fuori workspace)",
+			false,
 		],
-		["toolCall", { toolName: "bash", callId: "3", input: { command: "rm -rf /" } }, "bash: rm -rf /"],
-		["shell", { command: "ls -la | sort", cwd: session.cwd }, "shell utente: ls -la | sort"],
+		["toolCall", { toolName: "bash", callId: "3", input: { command: "rm -rf /" } }, "bash: rm -rf /", false],
+		["shell", { command: "ls -la | sort", cwd: session.cwd }, "shell utente: ls -la | sort", true],
 		[
 			"shell",
 			{ command: 'node -e \'require("child_process").exec("id")\'', cwd: session.cwd },
 			"shell utente: node -e (eval inline)",
+			false,
 		],
 	];
-	for (const [kind, payload, label] of actions) {
+	for (const [kind, payload, label, expectAllow] of actions) {
 		const gate = kind === "toolCall" ? await adapter.toolCall(payload, session) : await adapter.shell(payload, session);
 		if (gate.allow) ok(label);
 		else no(label, gate.reason);
+		assert.equal(gate.allow, expectAllow, `decisione di policy inattesa per «${label}»: atteso allow=${expectAllow}`);
 	}
 
 	// Redaction: un risultato con un segreto viene riscritto prima di tornare all'agente.
@@ -153,6 +162,11 @@ async function main() {
 	);
 	line("");
 	if (rewrite) line(`  \x1b[33m✎ redaction\x1b[0m  .env → ${JSON.stringify(rewrite.content[0].text)}`);
+	assert.ok(rewrite, "un risultato contenente un segreto deve essere riscritto");
+	assert.ok(
+		!rewrite.content[0].text.includes("ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
+		"il token GitHub deve essere redatto dal risultato",
+	);
 
 	await adapter.endSession();
 
@@ -160,6 +174,7 @@ async function main() {
 	const events = await service.auditLog.readDeviceAudit(identity, enrollment.deviceId, 100);
 	line(`\n▶ Eventi di audit registrati sul control plane: ${events.length}`);
 	line(`  tipi: ${[...new Set(events.map((e) => e.type))].join(", ")}\n`);
+	assert.ok(events.length > 0, "le decisioni di policy devono aver prodotto eventi di audit sul control plane");
 
 	server.close();
 	rmSync(dataDir, { recursive: true, force: true });
