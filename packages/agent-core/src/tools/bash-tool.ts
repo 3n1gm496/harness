@@ -17,6 +17,44 @@ const MAX_TIMEOUT_MS = 600_000;
 /** Tetto di byte catturati da stdout+stderr (protegge il contesto). */
 const MAX_OUTPUT_BYTES = 128 * 1024;
 
+/**
+ * Variabili d'ambiente passate ai comandi shell. Il comando è guidato dal
+ * modello: passargli l'INTERO `process.env` esporrebbe eventuali segreti del
+ * processo agente (token iniettati da CI, credenziali dell'operatore) a un
+ * `printenv`/`env`. Si passa quindi solo un insieme minimo e non sensibile; chi
+ * ha bisogno di variabili aggiuntive le abilita esplicitamente via
+ * `HARNESS_BASH_ENV_PASSTHROUGH` (lista di nomi separati da virgola).
+ */
+const BASH_ENV_ALLOWLIST = [
+	"PATH",
+	"HOME",
+	"USER",
+	"LOGNAME",
+	"SHELL",
+	"LANG",
+	"LANGUAGE",
+	"LC_ALL",
+	"LC_CTYPE",
+	"TERM",
+	"TZ",
+	"TMPDIR",
+	"PWD",
+];
+
+/** Costruisce l'ambiente ridotto per i comandi shell (allowlist + passthrough opt-in). */
+export function buildBashEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {};
+	const extra = (source.HARNESS_BASH_ENV_PASSTHROUGH ?? "")
+		.split(",")
+		.map((k) => k.trim())
+		.filter((k) => k !== "");
+	for (const key of [...BASH_ENV_ALLOWLIST, ...extra]) {
+		const value = source[key];
+		if (typeof value === "string") env[key] = value;
+	}
+	return env;
+}
+
 export const bashTool: NativeTool = {
 	name: "bash",
 	description:
@@ -44,7 +82,7 @@ export const bashTool: NativeTool = {
 				cwd: ctx.cwd,
 				detached: true,
 				stdio: ["ignore", "pipe", "pipe"],
-				env: process.env,
+				env: buildBashEnv(),
 			});
 
 			const chunks: Buffer[] = [];

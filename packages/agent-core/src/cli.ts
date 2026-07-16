@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import { FleetState, loadAgentConfig } from "@harness/enforcement-core";
 import { createLogger, installProcessGuards, isSandboxSatisfied } from "@harness/shared";
 import type { AgentEvent } from "./agent.js";
+import { flagValue, parseInvocation } from "./cli-args.js";
 import { createEnforcedAgent } from "./factory.js";
 import { LlmClient } from "./llm.js";
 import { ToolRegistry } from "./tools/registry.js";
@@ -13,8 +14,10 @@ import { ToolRegistry } from "./tools/registry.js";
  * comando avvia il nostro loop di agente: modello via gateway, tool nativi,
  * ogni azione governata dalla policy firmata.
  *
- *   harness-agent-native -p "<prompt>"    esecuzione singola (one-shot)
- *   harness-agent-native                  sessione interattiva (REPL)
+ *   harness-agent-native run "<prompt>"   esecuzione singola (one-shot)
+ *   harness-agent-native -p "<prompt>"    idem (forma con flag)
+ *   harness-agent-native repl             sessione interattiva (REPL)
+ *   harness-agent-native                  interattivo se su TTY, altrimenti richiede un prompt
  *   harness-agent-native tools            elenca i tool nativi
  *
  * Config via flag o ambiente:
@@ -33,19 +36,21 @@ async function main(): Promise<void> {
 	const args = process.argv.slice(2);
 	installProcessGuards(createLogger("harness-agent-native"));
 
-	if (args[0] === "tools") {
+	const invocation = parseInvocation(args);
+	if (invocation.tools) {
 		for (const tool of new ToolRegistry().list()) {
 			process.stdout.write(`${CYAN}${tool.name}${RESET}  ${tool.description.split("\n")[0]}\n`);
 		}
 		return;
 	}
+	const { forcedRepl, prompt, rest } = invocation;
 
-	const gatewayUrl = flagValue(args, "--gateway") ?? process.env.HARNESS_GATEWAY_URL;
+	const gatewayUrl = flagValue(rest, "--gateway") ?? process.env.HARNESS_GATEWAY_URL;
 	if (!gatewayUrl) {
 		fail("URL del gateway mancante: passa --gateway <url> o imposta HARNESS_GATEWAY_URL.");
 	}
-	const model = flagValue(args, "--model") ?? process.env.HARNESS_MODEL ?? DEFAULT_MODEL;
-	const cwd = flagValue(args, "--cwd") ?? process.cwd();
+	const model = flagValue(rest, "--model") ?? process.env.HARNESS_MODEL ?? DEFAULT_MODEL;
+	const cwd = flagValue(rest, "--cwd") ?? process.cwd();
 
 	// Identità del device + configurazione firmata (policy) dal control plane.
 	const config = loadAgentConfig();
@@ -70,7 +75,7 @@ async function main(): Promise<void> {
 	state.startLoops();
 
 	const llm = new LlmClient({ gatewayUrl, deviceToken: config.deviceToken, promptCache: true });
-	const interactive = !hasFlag(args, "-p") && !hasFlag(args, "--prompt") && process.stdin.isTTY;
+	const interactive = forcedRepl || (!prompt && process.stdin.isTTY);
 
 	const agent = createEnforcedAgent(state, {
 		llm,
@@ -87,9 +92,11 @@ async function main(): Promise<void> {
 		if (interactive) {
 			await repl(agent);
 		} else {
-			const prompt =
-				flagValue(args, "-p") ?? flagValue(args, "--prompt") ?? args.filter((a) => !a.startsWith("-")).join(" ");
-			if (!prompt) fail('Nessun prompt. Uso: harness-agent-native -p "<prompt>"  oppure una sessione interattiva.');
+			if (!prompt) {
+				fail(
+					'Nessun prompt. Uso: harness-agent-native run "<prompt>"  (o -p "<prompt>", o `repl` per la sessione interattiva).',
+				);
+			}
 			await runOnce(agent, prompt);
 		}
 	} finally {
@@ -163,16 +170,6 @@ function compactJson(input: Record<string, unknown>): string {
 function firstLine(text: string): string {
 	const line = text.split("\n")[0] ?? "";
 	return line.length > 160 ? `${line.slice(0, 160)}…` : line;
-}
-
-function flagValue(args: string[], flag: string): string | undefined {
-	const index = args.indexOf(flag);
-	if (index === -1 || index + 1 >= args.length) return undefined;
-	return args[index + 1];
-}
-
-function hasFlag(args: string[], flag: string): boolean {
-	return args.includes(flag);
 }
 
 function fail(message: string): never {

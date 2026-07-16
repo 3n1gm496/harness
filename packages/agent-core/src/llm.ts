@@ -37,12 +37,25 @@ export interface LlmClientOptions {
 	promptCache?: boolean;
 	/** `fetch` iniettabile (per i test). */
 	fetchImpl?: typeof fetch;
-	/** Timeout della singola chiamata in ms (default 300s). */
+	/** Timeout della singola chiamata (per tentativo) in ms (default 300s). */
 	timeoutMs?: number;
+	/**
+	 * Numero massimo di RITENTATIVI (oltre al primo tentativo) su errori
+	 * transitori del gateway/provider — 429, 5xx, `overloaded`, timeout, errori di
+	 * rete (default 2). I 4xx non ritentabili (400/401/403/404) falliscono subito.
+	 */
+	maxRetries?: number;
+	/** Base del backoff esponenziale con jitter, in ms (default 500). */
+	retryBaseMs?: number;
 }
 
 /** Valore dell'header beta che abilita il prompt caching della Messages API. */
 const PROMPT_CACHING_BETA = "prompt-caching-2024-07-31";
+
+/** Status HTTP considerati transitori e quindi ritentabili. */
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 529]);
+/** Tetto del backoff per singola attesa. */
+const MAX_BACKOFF_MS = 20_000;
 
 const PROVIDERS: Record<ProviderName, WireProvider> = {
 	anthropic: anthropicProvider,
@@ -58,6 +71,8 @@ export class LlmClient {
 	private readonly promptCache: boolean;
 	private readonly fetchImpl: typeof fetch;
 	private readonly timeoutMs: number;
+	private readonly maxRetries: number;
+	private readonly retryBaseMs: number;
 
 	constructor(options: LlmClientOptions) {
 		this.provider = PROVIDERS[options.provider ?? "anthropic"];
@@ -68,6 +83,51 @@ export class LlmClient {
 		this.promptCache = options.promptCache ?? false;
 		this.fetchImpl = options.fetchImpl ?? fetch;
 		this.timeoutMs = options.timeoutMs ?? 300_000;
+		this.maxRetries = Math.max(0, options.maxRetries ?? 2);
+		this.retryBaseMs = Math.max(1, options.retryBaseMs ?? 500);
+	}
+
+	/**
+	 * Esegue la richiesta con retry su errori transitori (429/5xx/`overloaded`,
+	 * timeout, errori di rete) e backoff esponenziale con jitter, rispettando
+	 * `Retry-After` se presente. Ogni tentativo ha il proprio timeout. Solo la
+	 * fase iniziale (fino agli header) è ritentata: una volta che lo stream del
+	 * corpo è partito non si ritenta (non sarebbe idempotente rispetto al testo
+	 * già consegnato).
+	 */
+	private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+		let attempt = 0;
+		for (;;) {
+			try {
+				const response = await this.fetchImpl(url, { ...init, signal: AbortSignal.timeout(this.timeoutMs) });
+				if (RETRYABLE_STATUS.has(response.status) && attempt < this.maxRetries) {
+					const retryAfter = response.headers.get("retry-after");
+					await response.body?.cancel().catch(() => {});
+					await sleep(this.backoffMs(attempt, retryAfter));
+					attempt++;
+					continue;
+				}
+				return response;
+			} catch (error) {
+				if (attempt < this.maxRetries && isRetryableError(error)) {
+					await sleep(this.backoffMs(attempt, null));
+					attempt++;
+					continue;
+				}
+				throw error;
+			}
+		}
+	}
+
+	/** Attesa di backoff: `Retry-After` (secondi) se presente, altrimenti esponenziale + jitter. */
+	private backoffMs(attempt: number, retryAfter: string | null): number {
+		if (retryAfter) {
+			const seconds = Number(retryAfter);
+			if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, MAX_BACKOFF_MS);
+		}
+		const base = this.retryBaseMs * 2 ** attempt;
+		const jitter = Math.random() * this.retryBaseMs;
+		return Math.min(base + jitter, MAX_BACKOFF_MS);
 	}
 
 	/** Header beta effettivo: unisce quello dell'utente con quello del caching, se attivo. */
@@ -94,11 +154,10 @@ export class LlmClient {
 
 	/** Completamento non-streaming: attende l'intera risposta e la normalizza. */
 	async complete(request: LlmRequest): Promise<LlmResponse> {
-		const response = await this.fetchImpl(this.provider.endpoint(this.gatewayUrl), {
+		const response = await this.fetchWithRetry(this.provider.endpoint(this.gatewayUrl), {
 			method: "POST",
 			headers: this.headers(),
 			body: JSON.stringify(this.provider.body(this.withCacheHint(request), false)),
-			signal: AbortSignal.timeout(this.timeoutMs),
 		});
 		if (!response.ok) throw new LlmError(await errorText(response), response.status);
 		return this.provider.parse(await response.json());
@@ -109,11 +168,10 @@ export class LlmClient {
 	 * testo man mano che arriva, e restituisce la risposta completa alla fine.
 	 */
 	async stream(request: LlmRequest, onTextDelta?: (delta: string) => void): Promise<LlmResponse> {
-		const response = await this.fetchImpl(this.provider.endpoint(this.gatewayUrl), {
+		const response = await this.fetchWithRetry(this.provider.endpoint(this.gatewayUrl), {
 			method: "POST",
 			headers: this.headers(),
 			body: JSON.stringify(this.provider.body(this.withCacheHint(request), true)),
-			signal: AbortSignal.timeout(this.timeoutMs),
 		});
 		if (!response.ok) throw new LlmError(await errorText(response), response.status);
 		if (!response.body) throw new LlmError("risposta in streaming senza body", response.status);
@@ -128,15 +186,30 @@ export class LlmClient {
 		if (!this.provider.countTokensEndpoint || !this.provider.countTokensBody || !this.provider.parseCountTokens) {
 			return undefined;
 		}
-		const response = await this.fetchImpl(this.provider.countTokensEndpoint(this.gatewayUrl), {
+		const response = await this.fetchWithRetry(this.provider.countTokensEndpoint(this.gatewayUrl), {
 			method: "POST",
 			headers: this.headers(),
 			body: JSON.stringify(this.provider.countTokensBody(request)),
-			signal: AbortSignal.timeout(this.timeoutMs),
 		});
 		if (!response.ok) throw new LlmError(await errorText(response), response.status);
 		return this.provider.parseCountTokens(await response.json());
 	}
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Un errore di `fetch` è ritentabile se è di rete (TypeError di undici) o un
+ * timeout del tentativo (TimeoutError da AbortSignal.timeout). Un abort esplicito
+ * di altro tipo non viene ritentato.
+ */
+function isRetryableError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	if (error.name === "TimeoutError") return true;
+	// undici lancia un TypeError ("fetch failed") sugli errori di connessione.
+	return error.name === "TypeError";
 }
 
 async function errorText(response: Response): Promise<string> {

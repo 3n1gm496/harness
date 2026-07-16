@@ -94,6 +94,9 @@ test("sub-agente: il padre delega via `task`, il figlio esegue e il padre riceve
 		| undefined;
 	assert.ok(taskResult);
 	assert.match(taskResult.content, /IL-CONTENUTO/);
+	// A4: il testo del figlio è emesso UNA sola volta (nessun doppio evento).
+	const childTexts = events.filter((e) => e.type === "assistant_text" && (e.depth ?? 0) === 1);
+	assert.equal(childTexts.length, 1);
 });
 
 test("sub-agente: oltre la profondità massima il tool `task` non è disponibile", async () => {

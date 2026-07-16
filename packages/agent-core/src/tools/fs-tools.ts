@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
@@ -92,13 +92,16 @@ export const writeFileTool: NativeTool = {
 	async execute(input, ctx): Promise<ToolExecutionResult> {
 		const path = resolvePath(ctx, requireString(input, "path"));
 		const content = requireString(input, "content");
+		const tmp = `${path}.harness-tmp`;
 		try {
 			mkdirSync(dirname(path), { recursive: true });
 			// Scrittura atomica: tmp + rename, così un crash a metà non lascia un file troncato.
-			const tmp = `${path}.harness-tmp`;
 			writeFileSync(tmp, content, "utf8");
 			renameSync(tmp, path);
 		} catch (error) {
+			// Se il rename fallisce dopo la write, il tmp resterebbe orfano: si pulisce
+			// best-effort (rmSync può a sua volta lanciare su path patologici).
+			safeUnlink(tmp);
 			return fail(`scrittura fallita: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		const bytes = Buffer.byteLength(content, "utf8");
@@ -137,11 +140,12 @@ export const editFileTool: NativeTool = {
 			return fail(`old_string compare ${occurrences} volte in ${input.path}: rendilo unico o usa replace_all`);
 		}
 		const updated = replaceAll ? original.split(oldString).join(newString) : original.replace(oldString, newString);
+		const tmp = `${path}.harness-tmp`;
 		try {
-			const tmp = `${path}.harness-tmp`;
 			writeFileSync(tmp, updated, "utf8");
 			renameSync(tmp, path);
 		} catch (error) {
+			safeUnlink(tmp);
 			return fail(`modifica fallita: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		return ok(`modificato ${input.path} (${occurrences} sostituzion${occurrences === 1 ? "e" : "i"})`);
@@ -173,6 +177,15 @@ export const listDirTool: NativeTool = {
 		return ok(`${header}:\n${sorted.join("\n")}${overflow}`);
 	},
 };
+
+/** Rimozione best-effort di un file temporaneo: non deve mai propagare un'eccezione. */
+function safeUnlink(path: string): void {
+	try {
+		rmSync(path, { force: true });
+	} catch {
+		// path patologico (es. antenato non-directory): il tmp non esiste comunque
+	}
+}
 
 function countOccurrences(haystack: string, needle: string): number {
 	if (needle === "") return 0;

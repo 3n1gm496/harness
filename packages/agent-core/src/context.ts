@@ -18,9 +18,19 @@ export interface ContextOptions {
 }
 
 export const DEFAULT_CONTEXT_OPTIONS: ContextOptions = {
-	budgetTokens: 150_000,
+	// Prudente: sotto la finestra dei modelli più piccoli (128k) con margine.
+	// Chi usa modelli a finestra più ampia può alzarlo esplicitamente.
+	budgetTokens: 100_000,
 	keepRecentMessages: 8,
 };
+
+/**
+ * Margine applicato alla STIMA euristica dei token (non al conteggio esatto):
+ * `chars/4` sottostima il codice/JSON (più token per carattere). Quando il
+ * conteggio esatto del provider non è disponibile (es. OpenAI), si gonfia la
+ * stima per far scattare la compaction PRIMA di superare davvero la finestra.
+ */
+const ESTIMATE_SAFETY_FACTOR = 1.3;
 
 export class ContextManager {
 	readonly messages: Message[] = [];
@@ -50,8 +60,10 @@ export class ContextManager {
 	 * provider che non lo espone) ricade sulla stima.
 	 */
 	async tokenCount(llm: LlmClient, model: string, tools?: ToolDefinition[]): Promise<number> {
-		const estimate = this.estimateTokens();
-		if (estimate < this.options.budgetTokens * 0.8) return estimate;
+		// La stima usata per le decisioni di budget include un margine di sicurezza:
+		// il conteggio esatto, quando disponibile, resta comunque autoritativo.
+		const safeEstimate = Math.ceil(this.estimateTokens() * ESTIMATE_SAFETY_FACTOR);
+		if (safeEstimate < this.options.budgetTokens * 0.8) return safeEstimate;
 		try {
 			const exact = await llm.countTokens({
 				model,
@@ -62,9 +74,9 @@ export class ContextManager {
 			});
 			if (typeof exact === "number" && exact > 0) return exact;
 		} catch {
-			// count_tokens non disponibile/errore: si ricade sulla stima.
+			// count_tokens non disponibile/errore: si ricade sulla stima con margine.
 		}
-		return estimate;
+		return safeEstimate;
 	}
 
 	/**

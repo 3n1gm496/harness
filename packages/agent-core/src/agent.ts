@@ -194,13 +194,12 @@ export class Agent {
 			// meno): l'upstream risponde in un solo formato, e mischiarli
 			// romperebbe il parsing.
 			stream: this.stream,
+			// Solo gli eventi strutturati sono inoltrati (il loop del figlio emette
+			// un `assistant_text` per turno via onEvent, già marcato con la
+			// profondità). NON si cabla `onText`: lo farebbe emettere una SECONDA
+			// volta il testo (per-delta in streaming, o intero), duplicando l'evento.
+			// Al padre torna comunque solo il risultato finale come tool_result.
 			...(forwardEvent ? { onEvent: forwardEvent } : {}),
-			// Il testo del figlio viene mostrato (indentato) via evento, non
-			// mandato allo stdout principale: al padre torna comunque solo il
-			// risultato finale come tool_result.
-			...(forwardEvent
-				? { onText: (text: string) => forwardEvent({ type: "assistant_text", text, depth: childDepth }) }
-				: {}),
 		});
 		const result = await child.run(prompt);
 		return result.text;

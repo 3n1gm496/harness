@@ -38,7 +38,8 @@ test("tokenCount: sotto l'80% del budget non chiama count_tokens (usa la stima)"
 	const { llm, countCalls } = routedLlm({ exactInputTokens: 999 });
 	const tokens = await ctx.tokenCount(llm, "m");
 	assert.equal(countCalls(), 0, "count_tokens non doveva essere chiamato lontano dal budget");
-	assert.equal(tokens, ctx.estimateTokens());
+	// La stima usata per il budget include un margine di sicurezza (>= stima grezza).
+	assert.ok(tokens >= ctx.estimateTokens());
 });
 
 test("tokenCount: vicino al budget usa il conteggio esatto del provider", async () => {
@@ -76,5 +77,6 @@ test("tokenCount: conteggio esatto 0 (provider senza supporto) ricade sulla stim
 	fill(ctx, 6, 80);
 	const { llm } = routedLlm({ exactInputTokens: 0 });
 	const tokens = await ctx.tokenCount(llm, "m");
-	assert.equal(tokens, ctx.estimateTokens());
+	// Fallback sulla stima con margine di sicurezza.
+	assert.equal(tokens, Math.ceil(ctx.estimateTokens() * 1.3));
 });
