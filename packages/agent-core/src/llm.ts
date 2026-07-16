@@ -27,11 +27,22 @@ export interface LlmClientOptions {
 	anthropicVersion?: string;
 	/** Header `anthropic-beta` opzionale (prompt caching, ecc.). */
 	anthropicBeta?: string;
+	/**
+	 * Attiva il prompt caching (Anthropic): marca il prefisso stabile della
+	 * richiesta (system + tool) con `cache_control` e invia l'header beta, così i
+	 * token del prefisso vengono riusati tra i turni del loop (che condividono lo
+	 * stesso system e gli stessi tool). Trasparente per i provider che non lo
+	 * supportano.
+	 */
+	promptCache?: boolean;
 	/** `fetch` iniettabile (per i test). */
 	fetchImpl?: typeof fetch;
 	/** Timeout della singola chiamata in ms (default 300s). */
 	timeoutMs?: number;
 }
+
+/** Valore dell'header beta che abilita il prompt caching della Messages API. */
+const PROMPT_CACHING_BETA = "prompt-caching-2024-07-31";
 
 const PROVIDERS: Record<ProviderName, WireProvider> = {
 	anthropic: anthropicProvider,
@@ -44,6 +55,7 @@ export class LlmClient {
 	private readonly deviceToken: string;
 	private readonly anthropicVersion: string;
 	private readonly anthropicBeta: string | undefined;
+	private readonly promptCache: boolean;
 	private readonly fetchImpl: typeof fetch;
 	private readonly timeoutMs: number;
 
@@ -53,16 +65,31 @@ export class LlmClient {
 		this.deviceToken = options.deviceToken;
 		this.anthropicVersion = options.anthropicVersion ?? "2023-06-01";
 		this.anthropicBeta = options.anthropicBeta;
+		this.promptCache = options.promptCache ?? false;
 		this.fetchImpl = options.fetchImpl ?? fetch;
 		this.timeoutMs = options.timeoutMs ?? 300_000;
 	}
 
+	/** Header beta effettivo: unisce quello dell'utente con quello del caching, se attivo. */
+	private effectiveBeta(): string | undefined {
+		const parts = new Set<string>();
+		if (this.anthropicBeta) for (const p of this.anthropicBeta.split(",")) parts.add(p.trim());
+		if (this.promptCache) parts.add(PROMPT_CACHING_BETA);
+		return parts.size > 0 ? [...parts].join(",") : undefined;
+	}
+
 	private headers(): Record<string, string> {
+		const beta = this.effectiveBeta();
 		return this.provider.headers({
 			deviceToken: this.deviceToken,
 			anthropicVersion: this.anthropicVersion,
-			...(this.anthropicBeta !== undefined ? { anthropicBeta: this.anthropicBeta } : {}),
+			...(beta !== undefined ? { anthropicBeta: beta } : {}),
 		});
+	}
+
+	/** Applica l'hint di caching alla richiesta prima di passarla al provider. */
+	private withCacheHint(request: LlmRequest): LlmRequest {
+		return this.promptCache ? { ...request, cacheHint: true } : request;
 	}
 
 	/** Completamento non-streaming: attende l'intera risposta e la normalizza. */
@@ -70,7 +97,7 @@ export class LlmClient {
 		const response = await this.fetchImpl(this.provider.endpoint(this.gatewayUrl), {
 			method: "POST",
 			headers: this.headers(),
-			body: JSON.stringify(this.provider.body(request, false)),
+			body: JSON.stringify(this.provider.body(this.withCacheHint(request), false)),
 			signal: AbortSignal.timeout(this.timeoutMs),
 		});
 		if (!response.ok) throw new LlmError(await errorText(response), response.status);
@@ -85,7 +112,7 @@ export class LlmClient {
 		const response = await this.fetchImpl(this.provider.endpoint(this.gatewayUrl), {
 			method: "POST",
 			headers: this.headers(),
-			body: JSON.stringify(this.provider.body(request, true)),
+			body: JSON.stringify(this.provider.body(this.withCacheHint(request), true)),
 			signal: AbortSignal.timeout(this.timeoutMs),
 		});
 		if (!response.ok) throw new LlmError(await errorText(response), response.status);

@@ -63,6 +63,12 @@ export interface LlmRequest {
 	messages: Message[];
 	tools?: ToolDefinition[];
 	temperature?: number;
+	/**
+	 * Uso interno (impostato dal client quando `promptCache` è attivo): suggerisce
+	 * al provider di marcare il prefisso stabile (system + tool) per il prompt
+	 * caching. Ignorato dai provider che non lo supportano.
+	 */
+	cacheHint?: boolean;
 }
 
 /** Consumo di token riportato dal provider. */

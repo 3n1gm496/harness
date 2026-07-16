@@ -84,6 +84,10 @@ test("sub-agente: il padre delega via `task`, il figlio esegue e il padre riceve
 	// Il figlio ha davvero eseguito read_file (evento presente e non in errore).
 	const readEvent = events.find((e) => e.type === "tool_result" && e.name === "read_file");
 	assert.ok(readEvent && readEvent.type === "tool_result" && !readEvent.isError);
+	// L'evento del figlio è marcato con la profondità 1; quello del padre (task) con 0/assente.
+	assert.equal((readEvent as { depth?: number }).depth, 1);
+	const taskUse = events.find((e) => e.type === "tool_use" && e.name === "task") as { depth?: number } | undefined;
+	assert.equal(taskUse?.depth ?? 0, 0);
 	// Il tool `task` del padre ha restituito il risultato del figlio.
 	const taskResult = events.find((e) => e.type === "tool_result" && e.name === "task") as
 		| { content: string }

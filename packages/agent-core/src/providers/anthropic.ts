@@ -37,9 +37,27 @@ export const anthropicProvider: WireProvider = {
 			messages: request.messages,
 			stream,
 		};
-		if (request.system !== undefined) body.system = request.system;
-		if (request.tools && request.tools.length > 0) body.tools = request.tools;
 		if (request.temperature !== undefined) body.temperature = request.temperature;
+
+		// Prompt caching: si marca il PREFISSO STABILE della richiesta — system e
+		// l'ultimo tool — con cache_control. Anthropic memorizza tutto ciò che
+		// precede il marker; poiché i turni del loop condividono system e tool, i
+		// loro token di input vengono riusati invece che rifatturati.
+		const cache = request.cacheHint === true;
+		if (request.system !== undefined) {
+			body.system = cache
+				? [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }]
+				: request.system;
+		}
+		if (request.tools && request.tools.length > 0) {
+			if (cache) {
+				const tools = request.tools.map((t) => ({ ...t }) as Record<string, unknown>);
+				tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: { type: "ephemeral" } };
+				body.tools = tools;
+			} else {
+				body.tools = request.tools;
+			}
+		}
 		return body;
 	},
 

@@ -69,7 +69,7 @@ async function main(): Promise<void> {
 	// delle azioni dell'agente viene spedito al control plane.
 	state.startLoops();
 
-	const llm = new LlmClient({ gatewayUrl, deviceToken: config.deviceToken });
+	const llm = new LlmClient({ gatewayUrl, deviceToken: config.deviceToken, promptCache: true });
 	const interactive = !hasFlag(args, "-p") && !hasFlag(args, "--prompt") && process.stdin.isTTY;
 
 	const agent = createEnforcedAgent(state, {
@@ -125,19 +125,26 @@ async function repl(agent: ReturnType<typeof createEnforcedAgent>): Promise<void
 }
 
 function printEvent(event: AgentEvent): void {
+	// Indentazione per profondità: l'attività dei sotto-agenti è rientrata.
+	const pad = "  ".repeat(event.depth ?? 0);
 	switch (event.type) {
+		case "assistant_text":
+			// Il testo dell'agente principale (depth 0) va già su stdout via onText;
+			// qui si mostra solo quello dei sotto-agenti, indentato.
+			if ((event.depth ?? 0) > 0) process.stderr.write(`${DIM}${pad}↳ ${firstLine(event.text)}${RESET}\n`);
+			break;
 		case "tool_use":
-			process.stderr.write(`\n${DIM}⚙ ${event.name} ${compactJson(event.input)}${RESET}\n`);
+			process.stderr.write(`\n${DIM}${pad}⚙ ${event.name} ${compactJson(event.input)}${RESET}\n`);
 			break;
 		case "tool_denied":
-			process.stderr.write(`${YELLOW}⛔ ${event.name} negato: ${event.reason}${RESET}\n`);
+			process.stderr.write(`${YELLOW}${pad}⛔ ${event.name} negato: ${event.reason}${RESET}\n`);
 			break;
 		case "tool_result":
-			if (event.isError) process.stderr.write(`${YELLOW}  ↳ errore: ${firstLine(event.content)}${RESET}\n`);
-			else process.stderr.write(`${DIM}  ↳ ok${RESET}\n`);
+			if (event.isError) process.stderr.write(`${YELLOW}${pad}  ↳ errore: ${firstLine(event.content)}${RESET}\n`);
+			else process.stderr.write(`${DIM}${pad}  ↳ ok${RESET}\n`);
 			break;
 		case "compaction":
-			process.stderr.write(`${DIM}ⓘ contesto compresso (${event.removedMessages} messaggi)${RESET}\n`);
+			process.stderr.write(`${DIM}${pad}ⓘ contesto compresso (${event.removedMessages} messaggi)${RESET}\n`);
 			break;
 		default:
 			break;

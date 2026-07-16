@@ -23,14 +23,19 @@ import type { AssistantBlock, Message, ToolResultBlock, ToolUseBlock, UserBlock 
  * adapter, ma l'agente è nostro.
  */
 
-/** Eventi strutturati emessi durante un run, per osservabilità/UI. */
+/**
+ * Eventi strutturati emessi durante un run, per osservabilità/UI. `depth` è la
+ * profondità dell'agente che ha emesso l'evento: 0 (o assente) per l'agente
+ * principale, >0 per i sotto-agenti, così una UI può indentare l'attività
+ * annidata. Gli eventi dei figli sono inoltrati al callback del padre.
+ */
 export type AgentEvent =
-	| { type: "assistant_text"; text: string }
-	| { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
-	| { type: "tool_denied"; id: string; name: string; reason: string }
-	| { type: "tool_result"; id: string; name: string; isError: boolean; content: string }
-	| { type: "usage"; inputTokens: number; outputTokens: number }
-	| { type: "compaction"; removedMessages: number };
+	| { type: "assistant_text"; text: string; depth?: number }
+	| { type: "tool_use"; id: string; name: string; input: Record<string, unknown>; depth?: number }
+	| { type: "tool_denied"; id: string; name: string; reason: string; depth?: number }
+	| { type: "tool_result"; id: string; name: string; isError: boolean; content: string; depth?: number }
+	| { type: "usage"; inputTokens: number; outputTokens: number; depth?: number }
+	| { type: "compaction"; removedMessages: number; depth?: number };
 
 export interface AgentOptions {
 	/** Client LLM (già puntato al gateway con il device token). */
@@ -161,6 +166,15 @@ export class Agent {
 	 * inoltrati per l'osservabilità.
 	 */
 	private async spawnSubAgent(prompt: string): Promise<string> {
+		const childDepth = this.depth + 1;
+		const parentOnEvent = this.onEvent;
+		// Gli eventi del figlio (e dei suoi discendenti) sono inoltrati al padre,
+		// marcati con la profondità di chi li ha emessi: un evento già marcato da
+		// un livello più profondo conserva il suo `depth`; uno non marcato prende
+		// quello di questo figlio.
+		const forwardEvent = parentOnEvent
+			? (event: AgentEvent): void => parentOnEvent(event.depth === undefined ? { ...event, depth: childDepth } : event)
+			: undefined;
 		const child = new Agent({
 			llm: this.llm,
 			model: this.model,
@@ -174,9 +188,15 @@ export class Agent {
 			hasUI: this.hasUI,
 			subAgents: this.subAgents,
 			maxDepth: this.maxDepth,
-			depth: this.depth + 1,
+			depth: childDepth,
 			emitLifecycle: false,
-			...(this.onEvent ? { onEvent: this.onEvent } : {}),
+			...(forwardEvent ? { onEvent: forwardEvent } : {}),
+			// Il testo del figlio viene mostrato (indentato) via evento, non
+			// mandato allo stdout principale: al padre torna comunque solo il
+			// risultato finale come tool_result.
+			...(forwardEvent
+				? { onText: (text: string) => forwardEvent({ type: "assistant_text", text, depth: childDepth }) }
+				: {}),
 		});
 		const result = await child.run(prompt);
 		return result.text;
