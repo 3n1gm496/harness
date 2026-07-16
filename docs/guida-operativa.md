@@ -189,7 +189,24 @@ ANTHROPIC_API_KEY=sk-ant-... \
 node packages/llm-gateway/dist/cli.js
 ```
 
-I client chiamano `http://gateway:8788/anthropic/v1/messages` autenticandosi con il **device token**; il gateway lo verifica via introspezione sul control plane (revoca e kill switch si propagano entro il TTL di cache, 60 s), applica il rate limit per device e inoltra la richiesta con la chiave provider iniettata.
+I client chiamano `http://gateway:8788/anthropic/v1/messages` autenticandosi con il **device token**; il gateway lo verifica via introspezione sul control plane (revoca e kill switch si propagano entro il TTL di cache, 60 s), applica il rate limit per device e inoltra la richiesta con la credenziale provider iniettata.
+
+### Credenziale del provider: API key oppure account/sessione (OAuth)
+
+L'accesso al provider non deve necessariamente passare da una **API key metered**. Per ciascun provider il gateway accetta, in alternativa, un **token di account/sessione** (OAuth), tipicamente legato a un abbonamento e non al credito API. Precedenza: `*_AUTH_TOKEN_FILE` > `*_AUTH_TOKEN` > `*_API_KEY`.
+
+```bash
+# API key (fatturata a token):
+ANTHROPIC_API_KEY=sk-ant-... node packages/llm-gateway/dist/cli.js
+# Token di sessione OAuth (usa l'abbonamento; inviato come Authorization: Bearer):
+ANTHROPIC_AUTH_TOKEN=... ANTHROPIC_AUTH_BETA=oauth-2025-04-20 node packages/llm-gateway/dist/cli.js
+# Token da file, riletto a ogni richiesta (rotazione esterna senza riavvio):
+ANTHROPIC_AUTH_TOKEN_FILE=/run/secrets/anthropic-oauth-token node packages/llm-gateway/dist/cli.js
+```
+
+- In modalità OAuth il token viaggia come `Authorization: Bearer` e **mai** come `x-api-key`; per Anthropic l'eventuale header beta del flusso OAuth (`ANTHROPIC_AUTH_BETA`) è unito a quello del client (es. prompt caching).
+- **Fallback:** se per un provider non è disponibile alcuna credenziale il gateway risponde `503` senza inoltrare; puoi mescolare API key su un provider e OAuth sull'altro.
+- **Limiti:** con un token di sessione valgono le quote dell'account e i termini d'uso del provider per quel canale. Il gateway **non** implementa il flusso OAuth interattivo né il refresh automatico: ottenere/rinnovare il token spetta all'operatore (statico, o scritto nel file da uno script esterno). Il client (device token) non cambia: la sostituzione della credenziale è trasparente.
 
 Il body della richiesta viene inoltrato **in streaming** (mai bufferizzato per intero in memoria): il cap di dimensione (32 MiB) resta applicato via un contatore sullo stream, non su un buffer completo. La chiamata upstream ha un timeout configurabile (`UPSTREAM_TIMEOUT_MS`, default 120s): senza, una connessione upstream appesa (provider irraggiungibile, rete che non chiude) resterebbe appesa per sempre — il gateway risponde invece con `504` entro la soglia.
 

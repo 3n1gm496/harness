@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { createLogger, installProcessGuards } from "@harness/shared";
-import { createGatewayServer, type GatewayOptions } from "./gateway.js";
+import { createGatewayServer, type GatewayOptions, type ProviderCredential } from "./gateway.js";
 import { type GatewayRateLimiter, PostgresGatewayRateLimiter } from "./rate-limit.js";
 
 /**
@@ -10,13 +10,38 @@ import { type GatewayRateLimiter, PostgresGatewayRateLimiter } from "./rate-limi
  *   PORT                     porta di ascolto (default 8788)
  *   CONTROL_PLANE_URL        URL del control plane (obbligatoria)
  *   GATEWAY_TOKEN            token gateway emesso dal control plane (obbligatoria)
- *   ANTHROPIC_API_KEY        chiave provider Anthropic (opzionale)
+ *
+ *   Credenziali provider — almeno una fonte per provider. In alternativa alla
+ *   API key metered si può usare un token di account/sessione (OAuth):
+ *   ANTHROPIC_API_KEY        chiave API Anthropic (fatturata a token)
+ *   ANTHROPIC_AUTH_TOKEN     token OAuth/sessione Anthropic (Authorization: Bearer)
+ *   ANTHROPIC_AUTH_TOKEN_FILE percorso da cui rileggere il token a ogni richiesta
+ *   ANTHROPIC_AUTH_BETA      header anthropic-beta richiesto dal flusso OAuth (opz.)
  *   ANTHROPIC_BASE_URL       default https://api.anthropic.com
- *   OPENAI_API_KEY           chiave provider OpenAI (opzionale)
- *   OPENAI_BASE_URL          default https://api.openai.com
+ *   OPENAI_API_KEY / OPENAI_AUTH_TOKEN / OPENAI_AUTH_TOKEN_FILE / OPENAI_BASE_URL
+ *
  *   RATE_LIMIT_PER_MINUTE    richieste/minuto per device (default 60)
  *   UPSTREAM_TIMEOUT_MS      timeout della chiamata upstream in ms (default 120000)
  */
+/**
+ * Costruisce la credenziale di un provider dalle variabili d'ambiente
+ * `${PREFIX}_API_KEY` / `_AUTH_TOKEN` / `_AUTH_TOKEN_FILE` / `_AUTH_BETA` /
+ * `_BASE_URL`. Restituisce undefined se nessuna fonte di credenziale è presente.
+ */
+function buildProvider(prefix: string, defaultBaseUrl: string): ProviderCredential | undefined {
+	const apiKey = process.env[`${prefix}_API_KEY`];
+	const authToken = process.env[`${prefix}_AUTH_TOKEN`];
+	const authTokenFile = process.env[`${prefix}_AUTH_TOKEN_FILE`];
+	if (!apiKey && !authToken && !authTokenFile) return undefined;
+	const provider: ProviderCredential = { baseUrl: process.env[`${prefix}_BASE_URL`] ?? defaultBaseUrl };
+	if (apiKey) provider.apiKey = apiKey;
+	if (authToken) provider.authToken = authToken;
+	if (authTokenFile) provider.authTokenFile = authTokenFile;
+	const beta = process.env[`${prefix}_AUTH_BETA`];
+	if (beta) provider.betaHeader = beta;
+	return provider;
+}
+
 function main(): void {
 	const controlPlaneUrl = process.env.CONTROL_PLANE_URL;
 	const gatewayToken = process.env.GATEWAY_TOKEN;
@@ -26,20 +51,15 @@ function main(): void {
 	}
 
 	const providers: GatewayOptions["providers"] = {};
-	if (process.env.ANTHROPIC_API_KEY) {
-		providers.anthropic = {
-			baseUrl: process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com",
-			apiKey: process.env.ANTHROPIC_API_KEY,
-		};
-	}
-	if (process.env.OPENAI_API_KEY) {
-		providers.openai = {
-			baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com",
-			apiKey: process.env.OPENAI_API_KEY,
-		};
-	}
+	const anthropic = buildProvider("ANTHROPIC", "https://api.anthropic.com");
+	if (anthropic) providers.anthropic = anthropic;
+	const openai = buildProvider("OPENAI", "https://api.openai.com");
+	if (openai) providers.openai = openai;
 	if (!providers.anthropic && !providers.openai) {
-		console.error("nessun provider configurato: impostare almeno ANTHROPIC_API_KEY o OPENAI_API_KEY");
+		console.error(
+			"nessun provider configurato: impostare almeno una credenziale " +
+				"(ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN/ANTHROPIC_AUTH_TOKEN_FILE o l'equivalente OPENAI_*)",
+		);
 		process.exit(2);
 	}
 

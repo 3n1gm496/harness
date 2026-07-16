@@ -43,6 +43,33 @@ Versioning pubblico — la versione `0.1.0` copre l'intero sviluppo fino a oggi.
   bloccato, `.env` redatto, delega, credenziali del provider confinate nel
   gateway), aggiunta come gate CI. 52 test nel package.
 
+- **Gateway: credenziale provider via account/sessione (OAuth), non solo API
+  key.** Per ciascun provider il gateway accetta una API key metered
+  (`*_API_KEY`) **oppure** un token di account/sessione (`*_AUTH_TOKEN` o
+  `*_AUTH_TOKEN_FILE`) inviato come `Authorization: Bearer` (mai `x-api-key`),
+  così l'accesso può usare un abbonamento invece del credito API. Con il file il
+  token è riletto a ogni richiesta (cache per mtime) per la rotazione esterna
+  senza riavvio; `ANTHROPIC_AUTH_BETA` unisce l'header beta OAuth a quello del
+  client; senza credenziale il gateway risponde 503. Documentato in
+  `packages/llm-gateway/README.md` e nella guida operativa.
+
+### Fixed (review pre-release agente nativo)
+
+- **A1** — gestione del contesto robusta anche senza `count_tokens` (OpenAI):
+  budget di default più prudente (100k) e margine di sicurezza (×1.3) sulla stima
+  euristica, così la compaction scatta prima di superare la finestra.
+- **A2** — il tool `bash` non eredita più l'intero `process.env`: env allowlist
+  (PATH/HOME/LANG/…) con passthrough opt-in (`HARNESS_BASH_ENV_PASSTHROUGH`),
+  chiudendo l'esposizione di segreti d'ambiente ai comandi guidati dal modello.
+- **A3** — retry/backoff sul client LLM (429/5xx/overloaded/timeout/rete, con
+  `Retry-After` e jitter): un errore transitorio non fa più fallire il turno.
+- **A4** — niente più doppio evento di testo dei sotto-agenti (un solo
+  `assistant_text` per turno, marcato con la profondità).
+- **A5** — CLI dell'agente nativo con sottocomandi `run`/`repl`; il prompt
+  posizionale non ingloba più i valori dei flag (es. l'URL del gateway).
+- **A6** — i tool `write_file`/`edit_file` rimuovono il file temporaneo (best
+  effort) se il rename fallisce.
+
 ### Security
 
 - **Chiusi due bypass del motore di policy bash** (config di default):

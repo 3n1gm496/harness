@@ -19,5 +19,34 @@ CONTROL_PLANE_URL=http://localhost:8787 GATEWAY_TOKEN=gwt_... \
 ANTHROPIC_API_KEY=sk-ant-... node dist/cli.js
 ```
 
+## Credenziale del provider: API key **oppure** account/sessione (OAuth)
+
+L'accesso al provider **non** è legato esclusivamente a una API key metered. Per
+ogni provider il gateway accetta una di queste fonti (precedenza
+`*_AUTH_TOKEN_FILE` > `*_AUTH_TOKEN` > `*_API_KEY`):
+
+| Fonte | Variabili | Header verso l'upstream | Fatturazione |
+| --- | --- | --- | --- |
+| API key | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Anthropic: `x-api-key`; OpenAI: `Authorization: Bearer` | credito API a token |
+| Token account/sessione (OAuth) | `*_AUTH_TOKEN` | `Authorization: Bearer` (mai `x-api-key`) | abbonamento dell'account |
+| Token da file rotante | `*_AUTH_TOKEN_FILE` | come sopra, riletto a ogni richiesta | abbonamento dell'account |
+
+- **Configurazione.** Ottieni il token di sessione dal login ufficiale del
+  provider e passalo via `*_AUTH_TOKEN` o, meglio, scrivilo in un file indicato
+  da `*_AUTH_TOKEN_FILE`. Per Anthropic imposta anche l'header beta richiesto dal
+  flusso OAuth con `ANTHROPIC_AUTH_BETA` (unito a quello del client, es. prompt
+  caching). Il device token del client resta invariato: la sostituzione della
+  credenziale è trasparente lato agente.
+- **Rotazione / fallback.** Con `*_AUTH_TOKEN_FILE` il gateway rilegge il token
+  quando cambia l'mtime del file, così un processo esterno (che rinnova la
+  sessione OAuth) può aggiornarlo senza riavviare il gateway. Se nessuna
+  credenziale è disponibile il gateway risponde **503** senza inoltrare. Puoi
+  configurare API key su un provider e OAuth sull'altro.
+- **Limiti.** Con un token di sessione valgono i limiti/quote dell'account (non
+  quelli dell'API a consumo) e i termini d'uso del provider per quel canale. Il
+  gateway non implementa il flusso OAuth interattivo né il refresh: ottenere e
+  rinnovare il token è responsabilità dell'operatore (statico, o scritto nel file
+  da uno script/servizio esterno).
+
 Vedi la [guida operativa](../../docs/guida-operativa.md#3-gateway-llm) per
 la configurazione completa.

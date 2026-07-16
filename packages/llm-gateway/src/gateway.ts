@@ -1,3 +1,4 @@
+import { readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
@@ -15,13 +16,39 @@ import { type GatewayRateLimiter, InMemoryGatewayRateLimiter } from "./rate-limi
  *   /anthropic/*  →  ANTHROPIC_BASE_URL con header x-api-key
  *   /openai/*     →  OPENAI_BASE_URL con header Authorization: Bearer
  */
+/**
+ * Credenziale verso un provider upstream. Il gateway supporta due modalità,
+ * così l'accesso NON è legato esclusivamente a una API key metered:
+ *
+ *  - `apiKey`  — chiave API classica (fatturata a token). Per Anthropic va
+ *                nell'header `x-api-key`; per OpenAI come `Authorization: Bearer`.
+ *  - `authToken` / `authTokenFile` — token di **account/sessione** (es. OAuth
+ *                ottenuto dal login ufficiale del provider, tipicamente legato a
+ *                un abbonamento e non al credito API): inviato come
+ *                `Authorization: Bearer` e SENZA `x-api-key`. Con `authTokenFile`
+ *                il token viene riletto dal file a ogni richiesta (cache per
+ *                mtime), così un processo esterno può rinnovarlo senza riavviare
+ *                il gateway. `betaHeader` aggiunge l'header `anthropic-beta`
+ *                eventualmente richiesto dal flusso OAuth.
+ *
+ * Precedenza: `authTokenFile` > `authToken` > `apiKey`. Almeno una fonte deve
+ * essere presente.
+ */
+export interface ProviderCredential {
+	baseUrl: string;
+	apiKey?: string;
+	authToken?: string;
+	authTokenFile?: string;
+	betaHeader?: string;
+}
+
 export interface GatewayOptions {
 	controlPlaneUrl: string;
 	/** Token gateway emesso dal control plane per l'introspezione. */
 	gatewayToken: string;
 	providers: {
-		anthropic?: { baseUrl: string; apiKey: string };
-		openai?: { baseUrl: string; apiKey: string };
+		anthropic?: ProviderCredential;
+		openai?: ProviderCredential;
 	};
 	/** Richieste al minuto per device (default 60). */
 	rateLimitPerMinute?: number;
@@ -197,18 +224,31 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 		}
 
 		const started = Date.now();
+		let token: string;
+		try {
+			token = resolveProviderToken(provider);
+		} catch (error) {
+			log({ ts: new Date().toISOString(), level: "error", error: `credenziale provider non disponibile: ${error}` });
+			sendJson(res, 503, { error: `credenziale del provider ${providerName} non disponibile` });
+			return;
+		}
+		const useOAuth = Boolean(provider.authToken || provider.authTokenFile);
 		const headers: Record<string, string> = {
 			"content-type": headerValue(req, "content-type") ?? "application/json",
 		};
 		if (providerName === "anthropic") {
-			headers["x-api-key"] = provider.apiKey;
+			// OAuth/sessione → Authorization: Bearer (SENZA x-api-key). API key → x-api-key.
+			if (useOAuth) headers.authorization = `Bearer ${token}`;
+			else headers["x-api-key"] = token;
 			const version = headerValue(req, "anthropic-version");
 			if (version) headers["anthropic-version"] = version;
-			// Le funzionalità beta (prompt caching, ecc.) viaggiano in questo header.
-			const beta = headerValue(req, "anthropic-beta");
+			// Header beta: unione tra quello del client (prompt caching, ecc.) e
+			// quello eventualmente richiesto dal flusso OAuth del provider.
+			const beta = mergeCsv(headerValue(req, "anthropic-beta"), provider.betaHeader);
 			if (beta) headers["anthropic-beta"] = beta;
 		} else {
-			headers.authorization = `Bearer ${provider.apiKey}`;
+			// OpenAI usa Authorization: Bearer sia per la API key sia per il token OAuth.
+			headers.authorization = `Bearer ${token}`;
 		}
 
 		// Il body viene inoltrato in streaming (mai bufferizzato per intero in
@@ -329,6 +369,47 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 			cleanup();
 		}
 	}
+}
+
+/**
+ * Risolve il token da presentare all'upstream secondo la precedenza
+ * authTokenFile > authToken > apiKey. Lancia se nessuna fonte è disponibile o
+ * se il file è illeggibile/vuoto.
+ */
+function resolveProviderToken(provider: ProviderCredential): string {
+	if (provider.authTokenFile) {
+		const token = readTokenFile(provider.authTokenFile);
+		if (token === "") throw new Error("file del token vuoto");
+		return token;
+	}
+	if (provider.authToken) return provider.authToken;
+	if (provider.apiKey) return provider.apiKey;
+	throw new Error("nessuna credenziale configurata (apiKey/authToken/authTokenFile)");
+}
+
+/** Cache del token letto da file, invalidata sul cambio di mtime (rotazione esterna). */
+const tokenFileCache = new Map<string, { mtimeMs: number; token: string }>();
+
+function readTokenFile(path: string): string {
+	const stat = statSync(path);
+	const cached = tokenFileCache.get(path);
+	if (cached && cached.mtimeMs === stat.mtimeMs) return cached.token;
+	const token = readFileSync(path, "utf8").trim();
+	tokenFileCache.set(path, { mtimeMs: stat.mtimeMs, token });
+	return token;
+}
+
+/** Unisce due liste comma-separated (deduplicando, ignorando i vuoti). */
+function mergeCsv(a: string | undefined, b: string | undefined): string | undefined {
+	const parts = new Set<string>();
+	for (const raw of [a, b]) {
+		if (!raw) continue;
+		for (const p of raw.split(",")) {
+			const trimmed = p.trim();
+			if (trimmed !== "") parts.add(trimmed);
+		}
+	}
+	return parts.size > 0 ? [...parts].join(",") : undefined;
 }
 
 function bearerToken(req: IncomingMessage): string | undefined {
