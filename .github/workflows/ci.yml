@@ -69,6 +69,8 @@ jobs:
         run: node scripts/load-test.mjs --devices 500
       - name: Esempio end-to-end senza PI (dimostra il disaccoppiamento dell'enforcement)
         run: node examples/mock-agent/run.mjs
+      - name: Demo live dell'agente nativo (agente reale → gateway reale → upstream finto)
+        run: node examples/native-agent/run.mjs
       - name: Valida deploy/docker-compose.yml
         run: |
           export HARNESS_SIGNING_KEK=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")

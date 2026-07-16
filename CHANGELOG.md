@@ -34,6 +34,14 @@ Versioning pubblico — la versione `0.1.0` copre l'intero sviluppo fino a oggi.
   esatto** via `count_tokens` (Anthropic), chiamato solo vicino al budget con
   fallback trasparente alla stima per i provider che non lo espongono. La
   `defaultPolicy` elenca anche `task`. 48 test nel package.
+- **Agente nativo — eventi annidati, prompt caching, demo live**: gli
+  `AgentEvent` portano `depth` (l'attività dei sotto-agenti è inoltrata e
+  indentabile); **prompt caching** Anthropic opt-in (`cache_control` su
+  system+ultimo tool, header beta, riuso dei token del prefisso tra i turni);
+  **demo live** `npm run example:native-agent` — agente reale contro il
+  **gateway reale** su HTTP, con asserzioni (compito multi-step, `rm -rf`
+  bloccato, `.env` redatto, delega, credenziali del provider confinate nel
+  gateway), aggiunta come gate CI. 52 test nel package.
 
 ### Security
 

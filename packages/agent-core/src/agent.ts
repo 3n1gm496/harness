@@ -190,6 +190,10 @@ export class Agent {
 			maxDepth: this.maxDepth,
 			depth: childDepth,
 			emitLifecycle: false,
+			// Il figlio usa la stessa modalità di trasporto del padre (stream o
+			// meno): l'upstream risponde in un solo formato, e mischiarli
+			// romperebbe il parsing.
+			stream: this.stream,
 			...(forwardEvent ? { onEvent: forwardEvent } : {}),
 			// Il testo del figlio viene mostrato (indentato) via evento, non
 			// mandato allo stdout principale: al padre torna comunque solo il

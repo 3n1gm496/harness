@@ -95,8 +95,20 @@ la stima euristica (~4 caratteri/token) si avvicina al budget (80%), per non
 aggiungere un round-trip a ogni turno. Un provider senza `count_tokens`
 (OpenAI) ricade in modo trasparente sulla stima.
 
-## Evoluzioni ancora aperte
+## Prompt caching
 
-- Streaming del testo dei sotto-agenti verso una UI annidata (oggi gli eventi
-  strutturati sono inoltrati, il testo del figlio no).
-- Riuso della cache di prompt del provider (header `anthropic-beta`) nel loop.
+Con `promptCache` attivo (la CLI lo abilita) il client marca il **prefisso
+stabile** della richiesta — system + ultimo tool — con `cache_control: ephemeral`
+e invia l'header beta. Poiché ogni turno del loop condivide lo stesso system e
+gli stessi tool, i loro token di input vengono **riusati** invece che
+rifatturati. OpenAI (cache automatica) ignora l'hint in modo trasparente.
+
+## Demo live
+
+`npm run example:native-agent` avvia l'agente nativo contro il **gateway reale**
+(`@harness/llm-gateway`) su HTTP vero, con upstream del provider e introspezione
+del control plane simulati. La demo (che è anche un gate CI, con asserzioni)
+mostra: compito multi-step su file veri, `rm -rf /` bloccato dall'enforcement,
+segreto `.env` redatto, delega a un sotto-agente, e la prova che le **credenziali
+del provider non lasciano mai il gateway** (l'upstream vede la API key iniettata,
+non il device token). Vedi `examples/README.md`.
