@@ -25,6 +25,15 @@ Versioning pubblico — la versione `0.1.0` copre l'intero sviluppo fino a oggi.
   inclusa una verifica end-to-end su HTTP reale (server-gateway finto in
   streaming SSE che guida un `edit_file` sotto enforcement). La `defaultPolicy`
   ora elenca anche i nomi dei tool nativi. Vedi `docs/agente-nativo.md`.
+- **Agente nativo — multi-provider, sub-agenti, token esatti**: astrazione
+  `WireProvider` con provider **Anthropic** e **OpenAI** (Chat Completions:
+  traduzione della cronologia neutra ↔ `tool_calls`/ruolo `tool`, streaming SSE
+  con accumulo dei tool_calls frammentati e usage via `stream_options`); tool
+  **`task`** per delegare a un agente **figlio** con contesto isolato ma stesso
+  enforcement/audit e profondità limitata (`maxDepth`); **conteggio token
+  esatto** via `count_tokens` (Anthropic), chiamato solo vicino al budget con
+  fallback trasparente alla stima per i provider che non lo espongono. La
+  `defaultPolicy` elenca anche `task`. 48 test nel package.
 
 ### Security
 

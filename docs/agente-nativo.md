@@ -70,12 +70,33 @@ Config via flag o ambiente:
 | `--model <id>` | `HARNESS_MODEL` | `claude-sonnet-5` |
 | `--cwd <dir>` | — | directory corrente |
 
-## Limiti noti / evoluzioni
+## Multi-provider
 
-- Un solo provider di wire (Anthropic Messages, via gateway). Un secondo
-  provider (OpenAI) si aggiunge con un traduttore in `llm.ts`, senza toccare i
-  tipi interni né il loop.
-- Nessun sub-agente/delega: il loop è a singolo agente. La struttura degli
-  eventi e dell'adapter è già pronta a ospitarli.
-- La stima dei token per la compaction è euristica (~4 caratteri/token): con
-  `count_tokens` del gateway diventerebbe esatta.
+L'agente lavora sempre sui tipi neutri; un `WireProvider` traduce da/verso il
+formato del provider. Sono supportati **Anthropic** (Messages,
+`/anthropic/v1/messages`) e **OpenAI** (Chat Completions,
+`/openai/v1/chat/completions`, con traduzione di `tool_calls`/ruolo `tool`).
+Si sceglie con `provider` nel client (`--` la CLI usa Anthropic di default).
+Aggiungere un terzo provider = implementare l'interfaccia, senza toccare il loop.
+
+## Sub-agenti (tool `task`)
+
+Con `subAgents` abilitato (la CLI lo attiva), l'agente espone il tool `task`:
+delega un sotto-compito a un **agente figlio** con contesto isolato ma lo
+**stesso** motore di enforcement (stessa policy, stesso audit, stesso
+fail-closed). Il padre riceve solo il risultato finale. La profondità di
+annidamento è limitata (`maxDepth`, default 2) per evitare ricorsione.
+
+## Conteggio dei token
+
+La decisione di compaction usa il conteggio **esatto** del provider
+(`count_tokens`, Anthropic) quando disponibile; la chiamata avviene solo quando
+la stima euristica (~4 caratteri/token) si avvicina al budget (80%), per non
+aggiungere un round-trip a ogni turno. Un provider senza `count_tokens`
+(OpenAI) ricade in modo trasparente sulla stima.
+
+## Evoluzioni ancora aperte
+
+- Streaming del testo dei sotto-agenti verso una UI annidata (oggi gli eventi
+  strutturati sono inoltrati, il testo del figlio no).
+- Riuso della cache di prompt del provider (header `anthropic-beta`) nel loop.

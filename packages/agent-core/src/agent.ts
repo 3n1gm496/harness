@@ -203,7 +203,7 @@ export class Agent {
 			}
 			iterations++;
 
-			const removed = await this.context.maybeCompact(this.llm, this.model);
+			const removed = await this.context.maybeCompact(this.llm, this.model, this.tools.definitions());
 			if (removed > 0) this.onEvent?.({ type: "compaction", removedMessages: removed });
 
 			const request = {

@@ -1,5 +1,5 @@
 import type { LlmClient } from "./llm.js";
-import type { Message, UserBlock } from "./types.js";
+import type { Message, ToolDefinition, UserBlock } from "./types.js";
 
 /**
  * Gestione della finestra di contesto. Un agente reale accumula una
@@ -42,13 +42,39 @@ export class ContextManager {
 	}
 
 	/**
+	 * Numero di token di input della conversazione corrente. Usa il conteggio
+	 * ESATTO del provider (`count_tokens`) quando disponibile, altrimenti la
+	 * stima euristica. La chiamata esatta si fa solo quando la stima si avvicina
+	 * al budget (soglia 80%), per non aggiungere un round-trip di rete a ogni
+	 * turno. Un conteggio esatto implausibile (0 su contesto non vuoto, es. un
+	 * provider che non lo espone) ricade sulla stima.
+	 */
+	async tokenCount(llm: LlmClient, model: string, tools?: ToolDefinition[]): Promise<number> {
+		const estimate = this.estimateTokens();
+		if (estimate < this.options.budgetTokens * 0.8) return estimate;
+		try {
+			const exact = await llm.countTokens({
+				model,
+				maxTokens: 1,
+				messages: this.messages,
+				...(this.system !== undefined ? { system: this.system } : {}),
+				...(tools && tools.length > 0 ? { tools } : {}),
+			});
+			if (typeof exact === "number" && exact > 0) return exact;
+		} catch {
+			// count_tokens non disponibile/errore: si ricade sulla stima.
+		}
+		return estimate;
+	}
+
+	/**
 	 * Se sopra budget, comprime il prefisso più vecchio in una sintesi.
 	 * Restituisce il numero netto di messaggi rimossi (0 se non ha compattato).
 	 * Un fallimento della sintesi NON perde contesto: si salta la compaction e
 	 * si lascia che l'eventuale limite del provider emerga come errore esplicito.
 	 */
-	async maybeCompact(llm: LlmClient, model: string): Promise<number> {
-		if (this.estimateTokens() < this.options.budgetTokens) return 0;
+	async maybeCompact(llm: LlmClient, model: string, tools?: ToolDefinition[]): Promise<number> {
+		if ((await this.tokenCount(llm, model, tools)) < this.options.budgetTokens) return 0;
 		const cut = this.findCleanCut();
 		if (cut <= 0) return 0;
 		const prefix = this.messages.slice(0, cut);
