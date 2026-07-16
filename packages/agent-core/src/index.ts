@@ -14,7 +14,7 @@ export { Agent } from "./agent.js";
 export type { ContextOptions } from "./context.js";
 export { ContextManager, DEFAULT_CONTEXT_OPTIONS } from "./context.js";
 export { createEnforcedAgent } from "./factory.js";
-export type { LlmClientOptions } from "./llm.js";
+export type { LlmClientOptions, ProviderName } from "./llm.js";
 export { assembleFromSse, LlmClient, LlmError } from "./llm.js";
 export { DEFAULT_SYSTEM_PROMPT } from "./system-prompt.js";
 export { DEFAULT_TOOLS, ToolRegistry } from "./tools/registry.js";
