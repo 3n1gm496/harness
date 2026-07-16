@@ -7,6 +7,25 @@ Versioning pubblico — la versione `0.1.0` copre l'intero sviluppo fino a oggi.
 
 ## [Unreleased]
 
+### Added
+
+- **Agente nativo `@harness/agent-core`**: Harness non è più solo un harness che
+  governa un agente di terze parti (PI) — ha ora un **agente proprio**,
+  LLM-driven, di prim'ordine. Loop reason-act-observe; client LLM che parla la
+  Messages API **solo via gateway** (device token come `x-api-key`, credenziali
+  del provider mai sul client), non-streaming e streaming SSE; runtime di tool
+  nativi in-process e zero-dep (`read_file`, `write_file`, `edit_file`,
+  `list_dir`, `grep`, `glob`, `bash` con kill del process-group e cap output);
+  gestione del contesto con compaction che non spezza mai le coppie
+  `tool_use`/`tool_result`; CLI `harness-agent-native` (one-shot e interattiva).
+  Ogni azione dell'agente attraversa lo **stesso** motore di
+  `@harness/enforcement-core` di qualunque adapter (gate → esecuzione →
+  redaction → audit): stessa policy firmata, stesso fail-closed, stesso audit.
+  Un `AgentAdapter` nativo tiene il motore identico a com'è per PI. 36 test,
+  inclusa una verifica end-to-end su HTTP reale (server-gateway finto in
+  streaming SSE che guida un `edit_file` sotto enforcement). La `defaultPolicy`
+  ora elenca anche i nomi dei tool nativi. Vedi `docs/agente-nativo.md`.
+
 ### Security
 
 - **Chiusi due bypass del motore di policy bash** (config di default):

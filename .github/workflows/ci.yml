@@ -57,7 +57,7 @@ jobs:
         # alzati man mano che la copertura di quei pacchetti migliora.
         run: |
           set -e
-          for pkg in shared enforcement-core control-plane llm-gateway agent-client fleet-extension; do
+          for pkg in shared enforcement-core agent-core control-plane llm-gateway agent-client fleet-extension; do
             tests=$(ls packages/$pkg/dist/test/*.test.js 2>/dev/null || true)
             if [ -z "$tests" ]; then echo "· $pkg: nessun test, salto"; continue; fi
             echo "▶ coverage floor $pkg"
