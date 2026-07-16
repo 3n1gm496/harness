@@ -78,6 +78,7 @@ async function main(): Promise<void> {
 		cwd,
 		stream: true,
 		hasUI: true,
+		subAgents: true,
 		onText: (text) => process.stdout.write(text),
 		onEvent: printEvent,
 	});

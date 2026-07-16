@@ -4,7 +4,8 @@ import { ContextManager, type ContextOptions, DEFAULT_CONTEXT_OPTIONS } from "./
 import type { LlmClient } from "./llm.js";
 import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt.js";
 import { ToolRegistry } from "./tools/registry.js";
-import type { ToolContext } from "./tools/types.js";
+import { createTaskTool } from "./tools/task-tool.js";
+import type { NativeTool, ToolContext } from "./tools/types.js";
 import { ToolInputError } from "./tools/types.js";
 import type { AssistantBlock, Message, ToolResultBlock, ToolUseBlock, UserBlock } from "./types.js";
 
@@ -58,6 +59,19 @@ export interface AgentOptions {
 	context?: ContextOptions;
 	/** true se c'è una UI umana (per le notifiche del motore). */
 	hasUI?: boolean;
+	/** Abilita il tool `task` per delegare sotto-compiti ad agenti figli (default false). */
+	subAgents?: boolean;
+	/** Profondità massima di annidamento dei sotto-agenti (default 2). */
+	maxDepth?: number;
+	/** Profondità corrente (uso interno: i figli la incrementano). */
+	depth?: number;
+	/**
+	 * Se emettere gli eventi di ciclo-vita della sessione al motore (default
+	 * true). I sotto-agenti la impostano a false: condividono l'adapter col
+	 * padre e non devono ri-aprire né chiudere la sessione condivisa (chiuderla
+	 * farebbe il flush/shutdown del FleetState mentre il padre lavora ancora).
+	 */
+	emitLifecycle?: boolean;
 }
 
 export interface AgentResult {
@@ -85,37 +99,87 @@ export class Agent {
 	private readonly context: ContextManager;
 	private readonly session: HostSession;
 	private readonly systemPrompt: string;
+	private readonly baseTools: NativeTool[];
+	private readonly depth: number;
+	private readonly maxDepth: number;
+	private readonly subAgents: boolean;
+	private readonly contextOptions: ContextOptions;
+	private readonly emitLifecycle: boolean;
+	private readonly hasUI: boolean;
 	private started = false;
 
 	constructor(options: AgentOptions) {
 		this.llm = options.llm;
 		this.model = options.model;
 		this.adapter = options.adapter;
-		this.tools = options.tools ?? new ToolRegistry();
 		this.cwd = options.cwd ?? process.cwd();
 		this.maxTokens = options.maxTokens ?? 4096;
 		this.maxIterations = options.maxIterations ?? 50;
 		this.stream = options.stream ?? false;
 		this.onText = options.onText;
 		this.onEvent = options.onEvent;
-		this.context = new ContextManager(
-			options.context ?? DEFAULT_CONTEXT_OPTIONS,
-			options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
-		);
+		this.contextOptions = options.context ?? DEFAULT_CONTEXT_OPTIONS;
+		this.context = new ContextManager(this.contextOptions, options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT);
 		this.systemPrompt = options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
-		this.session = { cwd: this.cwd, hasUI: options.hasUI ?? false };
+		this.hasUI = options.hasUI ?? false;
+		this.session = { cwd: this.cwd, hasUI: this.hasUI };
+		this.depth = options.depth ?? 0;
+		this.maxDepth = options.maxDepth ?? 2;
+		this.subAgents = options.subAgents ?? false;
+		this.emitLifecycle = options.emitLifecycle ?? true;
+
+		// Registro dei tool: base + (se abilitato e non oltre la profondità) il
+		// tool `task` per delegare a un agente figlio. La lista base è conservata
+		// per costruire i figli senza propagare `task` in modo incontrollato.
+		this.baseTools = (options.tools ?? new ToolRegistry()).list();
+		if (this.subAgents && this.depth < this.maxDepth) {
+			const taskTool = createTaskTool((_description, prompt) => this.spawnSubAgent(prompt));
+			this.tools = new ToolRegistry([...this.baseTools, taskTool]);
+		} else {
+			this.tools = new ToolRegistry(this.baseTools);
+		}
 	}
 
-	/** Notifica il motore dell'inizio sessione (una volta sola). */
+	/** Notifica il motore dell'inizio sessione (una volta sola; saltato dai figli). */
 	async start(): Promise<void> {
-		if (this.started) return;
+		if (this.started || !this.emitLifecycle) return;
 		this.started = true;
 		await this.adapter.emitSessionStart(this.session);
 	}
 
-	/** Chiude la sessione: il motore fa flush dell'audit e ferma i loop. */
+	/** Chiude la sessione: il motore fa flush dell'audit e ferma i loop (saltato dai figli). */
 	async stop(): Promise<void> {
+		if (!this.emitLifecycle) return;
 		await this.adapter.emitSessionEnd();
+	}
+
+	/**
+	 * Costruisce ed esegue un agente figlio a profondità+1, condividendo motore
+	 * di enforcement, LLM, tool e cwd. Il figlio non emette il ciclo-vita della
+	 * sessione (adapter condiviso) e non fa streaming del proprio testo — il
+	 * padre ne riceve solo il risultato finale. Gli eventi strutturati vengono
+	 * inoltrati per l'osservabilità.
+	 */
+	private async spawnSubAgent(prompt: string): Promise<string> {
+		const child = new Agent({
+			llm: this.llm,
+			model: this.model,
+			adapter: this.adapter,
+			tools: new ToolRegistry(this.baseTools),
+			systemPrompt: this.systemPrompt,
+			cwd: this.cwd,
+			maxTokens: this.maxTokens,
+			maxIterations: this.maxIterations,
+			context: this.contextOptions,
+			hasUI: this.hasUI,
+			subAgents: this.subAgents,
+			maxDepth: this.maxDepth,
+			depth: this.depth + 1,
+			emitLifecycle: false,
+			...(this.onEvent ? { onEvent: this.onEvent } : {}),
+		});
+		const result = await child.run(prompt);
+		return result.text;
 	}
 
 	/**

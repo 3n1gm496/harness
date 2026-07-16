@@ -29,6 +29,7 @@ export function defaultPolicy(): PolicyDocument {
 				"edit_file",
 				"list_dir",
 				"glob",
+				"task",
 			],
 			deny: [],
 		},
