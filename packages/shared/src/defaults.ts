@@ -13,7 +13,23 @@ export function defaultPolicy(): PolicyDocument {
 		killSwitch: false,
 		tools: {
 			defaultAction: "deny",
-			allow: ["read", "grep", "find", "ls", "bash", "write", "edit"],
+			// Nomi dei tool di PI (read/write/edit/ls) e quelli dell'agente nativo
+			// @harness/agent-core (read_file/write_file/edit_file/list_dir/glob):
+			// la stessa policy di default governa entrambi gli agenti senza modifiche.
+			allow: [
+				"read",
+				"grep",
+				"find",
+				"ls",
+				"bash",
+				"write",
+				"edit",
+				"read_file",
+				"write_file",
+				"edit_file",
+				"list_dir",
+				"glob",
+			],
 			deny: [],
 		},
 		bash: {
