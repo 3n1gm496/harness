@@ -131,3 +131,11 @@ HARNESS_LIVE_PROVIDER=openai OPENAI_API_KEY=sk-... npm run smoke:live-provider
 
 Variabili: `HARNESS_LIVE_PROVIDER` (anthropic|openai), `HARNESS_LIVE_MODEL`
 (default `claude-haiku-4-5-20251001` / `gpt-4o-mini`).
+
+**Esito verificato con token di abbonamento Anthropic:** lo smoke raggiunge
+l'API reale ma riceve `401 "OAuth access token is invalid"` — il token di
+`claude setup-token` è vincolato al client ufficiale e non è accettato su
+`/v1/messages` da un gateway di terze parti. Il test conferma comunque che lo
+stack inoltra correttamente il bearer OAuth e propaga l'errore in modo pulito
+(nessun retry su 401, nessun crash). Per esercitare le risposte reali del
+modello serve quindi una **API key** (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`).

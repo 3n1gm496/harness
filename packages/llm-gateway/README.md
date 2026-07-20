@@ -47,6 +47,17 @@ ogni provider il gateway accetta una di queste fonti (precedenza
   gateway non implementa il flusso OAuth interattivo né il refresh: ottenere e
   rinnovare il token è responsabilità dell'operatore (statico, o scritto nel file
   da uno script/servizio esterno).
+- **Verificato dal vivo (importante).** Il gateway inoltra correttamente un token
+  OAuth come `Authorization: Bearer` (mai `x-api-key`), ma **Anthropic rifiuta con
+  `401 "OAuth access token is invalid"` un token di abbonamento** (generato con
+  `claude setup-token`) presentato da un gateway di terze parti: quel token è
+  **vincolato al client ufficiale** e non è onorato su `/v1/messages` da terzi.
+  Di conseguenza, la modalità OAuth **non** permette oggi di usare l'abbonamento
+  Anthropic al posto dei crediti API. È utile invece verso provider/gateway che
+  accettano esplicitamente un bearer OAuth (es. gateway aziendali/self-hosted, o
+  provider OpenAI-compatibili che emettono token di sessione). OpenAI non offre
+  alcun percorso OAuth per l'API. In pratica: per Anthropic e OpenAI resta
+  necessaria una **API key**; la modalità OAuth è per canali che la supportano.
 
 Vedi la [guida operativa](../../docs/guida-operativa.md#3-gateway-llm) per
 la configurazione completa.
