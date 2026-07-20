@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { createInterface } from "node:readline";
 import { FleetState, loadAgentConfig } from "@harness/enforcement-core";
 import { createLogger, installProcessGuards, isSandboxSatisfied } from "@harness/shared";
 import type { AgentEvent } from "./agent.js";
 import { flagValue, parseInvocation } from "./cli-args.js";
+import { runRepl } from "./cli-repl.js";
 import { createEnforcedAgent } from "./factory.js";
 import { LlmClient } from "./llm.js";
 import { ToolRegistry } from "./tools/registry.js";
@@ -113,22 +113,11 @@ async function runOnce(agent: ReturnType<typeof createEnforcedAgent>, prompt: st
 	);
 }
 
-async function repl(agent: ReturnType<typeof createEnforcedAgent>): Promise<void> {
-	process.stdout.write(`${CYAN}Harness Agent${RESET} — sessione interattiva. Scrivi un compito; "exit" per uscire.\n`);
-	const rl = createInterface({ input: process.stdin, output: process.stdout });
-	for (;;) {
-		const line = await question(rl, `${CYAN}› ${RESET}`);
-		const trimmed = line.trim();
-		if (trimmed === "") continue;
-		if (trimmed === "exit" || trimmed === "quit") break;
-		try {
-			await agent.run(trimmed);
-			process.stdout.write("\n");
-		} catch (error) {
-			process.stderr.write(`${YELLOW}errore: ${error instanceof Error ? error.message : String(error)}${RESET}\n`);
-		}
-	}
-	rl.close();
+function repl(agent: ReturnType<typeof createEnforcedAgent>): Promise<void> {
+	return runRepl(agent, {
+		prompt: `${CYAN}› ${RESET}`,
+		banner: `${CYAN}Harness Agent${RESET} — sessione interattiva. Scrivi un compito; "exit" per uscire.\n`,
+	});
 }
 
 function printEvent(event: AgentEvent): void {
@@ -156,10 +145,6 @@ function printEvent(event: AgentEvent): void {
 		default:
 			break;
 	}
-}
-
-function question(rl: ReturnType<typeof createInterface>, prompt: string): Promise<string> {
-	return new Promise((resolve) => rl.question(prompt, resolve));
 }
 
 function compactJson(input: Record<string, unknown>): string {
