@@ -27,7 +27,8 @@
 		"lint:fix": "biome check --write .",
 		"format": "biome format --write .",
 		"example:mock-agent": "npm run build && node examples/mock-agent/run.mjs",
-		"example:native-agent": "npm run build && node examples/native-agent/run.mjs"
+		"example:native-agent": "npm run build && node examples/native-agent/run.mjs",
+		"smoke:live-provider": "npm run build && node scripts/live-provider-smoke.mjs"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.3",

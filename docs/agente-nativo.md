@@ -112,3 +112,22 @@ mostra: compito multi-step su file veri, `rm -rf /` bloccato dall'enforcement,
 segreto `.env` redatto, delega a un sotto-agente, e la prova che le **credenziali
 del provider non lasciano mai il gateway** (l'upstream vede la API key iniettata,
 non il device token). Vedi `examples/README.md`.
+
+### Smoke contro un provider reale
+
+`npm run smoke:live-provider` esegue lo stesso stack (control plane + gateway
+reale + agente) ma contro l'**API vera** del provider, per validare streaming,
+tool-use, `count_tokens` e l'autenticazione end-to-end (API key **o** OAuth).
+Consuma una piccola quantità di token. Config via ambiente:
+
+```bash
+# Anthropic con API key:
+ANTHROPIC_API_KEY=sk-ant-... npm run smoke:live-provider
+# Anthropic con token di account/sessione (OAuth):
+ANTHROPIC_AUTH_TOKEN=... ANTHROPIC_AUTH_BETA=oauth-2025-04-20 npm run smoke:live-provider
+# OpenAI:
+HARNESS_LIVE_PROVIDER=openai OPENAI_API_KEY=sk-... npm run smoke:live-provider
+```
+
+Variabili: `HARNESS_LIVE_PROVIDER` (anthropic|openai), `HARNESS_LIVE_MODEL`
+(default `claude-haiku-4-5-20251001` / `gpt-4o-mini`).
