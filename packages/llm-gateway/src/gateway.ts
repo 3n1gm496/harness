@@ -40,6 +40,13 @@ export interface ProviderCredential {
 	authToken?: string;
 	authTokenFile?: string;
 	betaHeader?: string;
+	/**
+	 * Backend che NON richiede autenticazione (modello locale/self-hosted
+	 * OpenAI-compatibile: Ollama, llama.cpp, LM Studio, vLLM senza chiave). Se
+	 * true il gateway inoltra SENZA header di auth. Da usare solo con un
+	 * `baseUrl` locale/interno di fiducia — mai verso un provider a pagamento.
+	 */
+	noAuth?: boolean;
 }
 
 export interface GatewayOptions {
@@ -224,30 +231,37 @@ export function createGatewayServer(options: GatewayOptions): Server | HttpsServ
 		}
 
 		const started = Date.now();
-		let token: string;
-		try {
-			token = resolveProviderToken(provider);
-		} catch (error) {
-			log({ ts: new Date().toISOString(), level: "error", error: `credenziale provider non disponibile: ${error}` });
-			sendJson(res, 503, { error: `credenziale del provider ${providerName} non disponibile` });
-			return;
+		const noAuth = provider.noAuth === true;
+		let token = "";
+		if (!noAuth) {
+			try {
+				token = resolveProviderToken(provider);
+			} catch (error) {
+				log({ ts: new Date().toISOString(), level: "error", error: `credenziale provider non disponibile: ${error}` });
+				sendJson(res, 503, { error: `credenziale del provider ${providerName} non disponibile` });
+				return;
+			}
 		}
 		const useOAuth = Boolean(provider.authToken || provider.authTokenFile);
 		const headers: Record<string, string> = {
 			"content-type": headerValue(req, "content-type") ?? "application/json",
 		};
 		if (providerName === "anthropic") {
-			// OAuth/sessione → Authorization: Bearer (SENZA x-api-key). API key → x-api-key.
-			if (useOAuth) headers.authorization = `Bearer ${token}`;
-			else headers["x-api-key"] = token;
+			// Keyless → nessun header di auth. OAuth/sessione → Authorization: Bearer
+			// (SENZA x-api-key). API key → x-api-key.
+			if (!noAuth) {
+				if (useOAuth) headers.authorization = `Bearer ${token}`;
+				else headers["x-api-key"] = token;
+			}
 			const version = headerValue(req, "anthropic-version");
 			if (version) headers["anthropic-version"] = version;
 			// Header beta: unione tra quello del client (prompt caching, ecc.) e
 			// quello eventualmente richiesto dal flusso OAuth del provider.
 			const beta = mergeCsv(headerValue(req, "anthropic-beta"), provider.betaHeader);
 			if (beta) headers["anthropic-beta"] = beta;
-		} else {
+		} else if (!noAuth) {
 			// OpenAI usa Authorization: Bearer sia per la API key sia per il token OAuth.
+			// Un backend locale keyless non riceve alcun header di auth.
 			headers.authorization = `Bearer ${token}`;
 		}
 

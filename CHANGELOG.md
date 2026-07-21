@@ -59,6 +59,17 @@ Versioning pubblico — la versione `0.1.0` copre l'intero sviluppo fino a oggi.
   client; senza credenziale il gateway risponde 503. Documentato in
   `packages/llm-gateway/README.md` e nella guida operativa.
 
+- **Gateway: modalità keyless per un percorso d'uso GRATUITO (modello locale).**
+  Con `OPENAI_NO_AUTH=1` + `OPENAI_BASE_URL` il gateway inoltra le richieste a un
+  backend OpenAI-compatibile **senza chiave** (Ollama / llama.cpp / LM Studio /
+  vLLM) e **non aggiunge alcun header di auth** all'upstream — l'agente funziona a
+  **costo zero**, senza API key né crediti API, mantenendo governance identica
+  (device token introspezionato, policy firmata, redaction, audit). Nuovo esempio
+  e gate CI `npm run example:local-agent` (agente → gateway keyless → backend
+  locale, con asserzioni: tool-use sotto enforcement, nessun header di auth
+  all'upstream, risposta finale corretta). Documentato in
+  `packages/llm-gateway/README.md`, `examples/README.md` e `deploy/.env.example`.
+
 ### Fixed (review pre-release agente nativo)
 
 - **A1** — gestione del contesto robusta anche senza `count_tokens` (OpenAI):

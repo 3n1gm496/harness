@@ -32,6 +32,16 @@ function buildProvider(prefix: string, defaultBaseUrl: string): ProviderCredenti
 	const apiKey = process.env[`${prefix}_API_KEY`];
 	const authToken = process.env[`${prefix}_AUTH_TOKEN`];
 	const authTokenFile = process.env[`${prefix}_AUTH_TOKEN_FILE`];
+	const noAuth = isTruthy(process.env[`${prefix}_NO_AUTH`]);
+	// Keyless (modello locale/self-hosted) richiede solo un baseUrl esplicito.
+	if (noAuth) {
+		const baseUrl = process.env[`${prefix}_BASE_URL`];
+		if (!baseUrl) {
+			console.error(`${prefix}_NO_AUTH richiede ${prefix}_BASE_URL (es. un backend locale OpenAI-compatibile)`);
+			process.exit(2);
+		}
+		return { baseUrl, noAuth: true };
+	}
 	if (!apiKey && !authToken && !authTokenFile) return undefined;
 	const provider: ProviderCredential = { baseUrl: process.env[`${prefix}_BASE_URL`] ?? defaultBaseUrl };
 	if (apiKey) provider.apiKey = apiKey;
@@ -40,6 +50,10 @@ function buildProvider(prefix: string, defaultBaseUrl: string): ProviderCredenti
 	const beta = process.env[`${prefix}_AUTH_BETA`];
 	if (beta) provider.betaHeader = beta;
 	return provider;
+}
+
+function isTruthy(value: string | undefined): boolean {
+	return value === "1" || value === "true" || value === "yes";
 }
 
 function main(): void {

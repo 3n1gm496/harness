@@ -132,3 +132,10 @@ test("nessuna credenziale configurata → 503 (non si inoltra senza auth)", asyn
 	const status = await callAnthropic({});
 	assert.equal(status, 503);
 });
+
+test("keyless (backend locale): inoltra SENZA header di auth, non 503", async () => {
+	const status = await callAnthropic({ noAuth: true });
+	assert.equal(status, 200);
+	assert.equal(seen.xApiKey, undefined);
+	assert.equal(seen.authorization, undefined);
+});

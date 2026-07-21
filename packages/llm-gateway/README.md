@@ -31,6 +31,36 @@ ogni provider il gateway accetta una di queste fonti (precedenza
 | Token account/sessione (OAuth) | `*_AUTH_TOKEN` | `Authorization: Bearer` (mai `x-api-key`) | abbonamento dell'account |
 | Token da file rotante | `*_AUTH_TOKEN_FILE` | come sopra, riletto a ogni richiesta | abbonamento dell'account |
 
+### Uso GRATUITO con un modello locale (nessuna API key, nessun credito)
+
+Il gateway può puntare a un backend **OpenAI-compatibile locale** che non richiede
+autenticazione — così l'agente gira **gratis**, senza API a pagamento:
+
+```bash
+# Esempio con Ollama (https://ollama.com) sul tuo PC:
+ollama serve &
+ollama pull qwen2.5:3b            # o llama3.2:3b, ecc.
+
+# Gateway keyless verso Ollama (endpoint OpenAI-compatibile su :11434):
+CONTROL_PLANE_URL=... GATEWAY_TOKEN=... \
+OPENAI_NO_AUTH=1 OPENAI_BASE_URL=http://localhost:11434 \
+node packages/llm-gateway/dist/cli.js
+
+# Agente che usa il provider "openai" (→ modello locale):
+HARNESS_GATEWAY_URL=http://localhost:8788 HARNESS_MODEL=qwen2.5:3b \
+harness-agent-native run "elenca i file .ts e conta le righe di README.md"
+```
+
+Con `*_NO_AUTH=1` il gateway inoltra **senza** header di auth (serve un
+`*_BASE_URL` locale/di fiducia). Funziona con Ollama, llama.cpp
+(`llama-server`), LM Studio, vLLM e ogni altro server OpenAI-compatibile. Il
+resto della governance (device token, policy, audit, redaction) resta identico.
+Alternative gratuite cloud (richiedono una chiave *free*, non a pagamento):
+OpenRouter (modelli `:free`), Groq, Google AI Studio — puntando `OPENAI_BASE_URL`
+al loro endpoint OpenAI-compatibile.
+
+### Credenziale metered o account/sessione
+
 - **Configurazione.** Ottieni il token di sessione dal login ufficiale del
   provider e passalo via `*_AUTH_TOKEN` o, meglio, scrivilo in un file indicato
   da `*_AUTH_TOKEN_FILE`. Per Anthropic imposta anche l'header beta richiesto dal

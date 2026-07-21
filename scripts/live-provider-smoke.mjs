@@ -19,10 +19,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ControlPlaneService, createControlPlaneServer, Store } from "../packages/control-plane/dist/index.js";
-import { createGatewayServer } from "../packages/llm-gateway/dist/index.js";
 import { createEnforcedAgent, LlmClient } from "../packages/agent-core/dist/index.js";
+import { ControlPlaneService, createControlPlaneServer, Store } from "../packages/control-plane/dist/index.js";
 import { FleetState } from "../packages/enforcement-core/dist/index.js";
+import { createGatewayServer } from "../packages/llm-gateway/dist/index.js";
 
 const PROVIDER = process.env.HARNESS_LIVE_PROVIDER === "openai" ? "openai" : "anthropic";
 const DEFAULT_MODEL = PROVIDER === "openai" ? "gpt-4o-mini" : "claude-haiku-4-5-20251001";
@@ -110,7 +110,12 @@ async function main() {
 	});
 
 	writeFileSync(join(dir, "nota.txt"), "il numero magico è 42\n");
-	const llm = new LlmClient({ gatewayUrl, deviceToken: enrollment.deviceToken, provider: PROVIDER, promptCache: PROVIDER === "anthropic" });
+	const llm = new LlmClient({
+		gatewayUrl,
+		deviceToken: enrollment.deviceToken,
+		provider: PROVIDER,
+		promptCache: PROVIDER === "anthropic",
+	});
 
 	let ok = true;
 	try {
@@ -125,7 +130,7 @@ async function main() {
 			onEvent: (e) => events.push(e),
 		});
 		log("[test A]", "prompt di sola risposta testuale…");
-		const a = await agentA.run('Rispondi esattamente con la parola: PRONTO. Nient\'altro.');
+		const a = await agentA.run("Rispondi esattamente con la parola: PRONTO. Nient'altro.");
 		await agentA.stop();
 		log("[test A]", `risposta="${a.text.trim().slice(0, 60)}" · ${a.usage.inputTokens}+${a.usage.outputTokens} token`);
 		assert.ok(a.usage.outputTokens > 0, "il provider non ha restituito token di output");

@@ -71,6 +71,8 @@ jobs:
         run: node examples/mock-agent/run.mjs
       - name: Demo live dell'agente nativo (agente reale → gateway reale → upstream finto)
         run: node examples/native-agent/run.mjs
+      - name: Demo percorso gratuito (agente → gateway keyless → modello locale OpenAI-compatibile)
+        run: node examples/local-agent/run.mjs
       - name: Valida deploy/docker-compose.yml
         run: |
           export HARNESS_SIGNING_KEK=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")

@@ -70,3 +70,31 @@ gate CI):
    attività annidata indentata;
 5. le **credenziali del provider non lasciano mai il gateway**: l'upstream vede
    la API key iniettata, non il device token (che viene introspezionato).
+
+## `local-agent` — percorso GRATUITO con un modello locale (nessuna API key)
+
+Dimostra l'agente contro un backend **OpenAI-compatibile locale e senza chiave**
+(`OPENAI_NO_AUTH`), attraverso il gateway reale — a **costo zero**, senza API a
+pagamento.
+
+```bash
+npm run example:local-agent
+```
+
+Qui il backend è uno stub che parla la Chat Completions API in streaming,
+esattamente come **Ollama / llama.cpp / LM Studio / vLLM** sul tuo PC. Con
+asserzioni (gate CI) verifica:
+
+1. **tool-use reale sotto enforcement** guidato dal modello locale;
+2. il gateway **keyless non invia alcun header di auth** all'upstream;
+3. la governance (device token introspezionato, policy, audit) resta identica.
+
+Per usarlo per davvero con un modello vero, sul tuo PC:
+
+```bash
+ollama serve & ollama pull qwen2.5:3b
+OPENAI_NO_AUTH=1 OPENAI_BASE_URL=http://localhost:11434 \
+  CONTROL_PLANE_URL=... GATEWAY_TOKEN=... node packages/llm-gateway/dist/cli.js
+HARNESS_GATEWAY_URL=http://localhost:8788 HARNESS_MODEL=qwen2.5:3b \
+  harness-agent-native run "…"
+```

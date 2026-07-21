@@ -28,6 +28,7 @@
 		"format": "biome format --write .",
 		"example:mock-agent": "npm run build && node examples/mock-agent/run.mjs",
 		"example:native-agent": "npm run build && node examples/native-agent/run.mjs",
+		"example:local-agent": "npm run build && node examples/local-agent/run.mjs",
 		"smoke:live-provider": "npm run build && node scripts/live-provider-smoke.mjs"
 	},
 	"devDependencies": {

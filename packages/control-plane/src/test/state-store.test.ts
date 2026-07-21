@@ -429,11 +429,8 @@ test("migrazioni PG: due istanze in cold-start concorrente non vanno in race (ad
 		// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
 		await Promise.all([(a as any).ensureReady(), (b as any).ensureReady()]);
 		// biome-ignore lint/suspicious/noExplicitAny: accesso interno per il test
-		const versions = (
-			(await (a as any).query("SELECT version FROM cp_schema_version ORDER BY version")).rows as {
-				version: number;
-			}[]
-		).map((r) => Number(r.version));
+		const res = await (a as any).query("SELECT version FROM cp_schema_version ORDER BY version");
+		const versions = (res.rows as { version: number }[]).map((r) => Number(r.version));
 		assert.deepEqual(versions, [1, 2, 3, 4, 5, 6, 7]);
 	} finally {
 		await a.close();
